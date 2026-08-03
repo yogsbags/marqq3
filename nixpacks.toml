@@ -1,0 +1,4 @@
+# Prefer Node 22 on Railway/Nixpacks (native WebSocket).
+# Server also polyfills with `ws` so Node 18 still boots.
+[variables]
+NIXPACKS_NODE_VERSION = "22"

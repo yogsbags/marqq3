@@ -1,8 +1,12 @@
 /**
  * Server Supabase clients (Marqq2 parity).
  * Service role for workspace/GTM/outreach/agent writes; anon available for light reads.
+ *
+ * Node < 22 has no native WebSocket — supabase-js realtime requires an explicit
+ * transport (`ws`). Without it, createClient() throws at boot on Railway/Nixpacks Node 18.
  */
 import { createClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 
 function resolveConfig(env = process.env) {
   return {
@@ -12,15 +16,29 @@ function resolveConfig(env = process.env) {
   };
 }
 
+function clientOptions(extra = {}) {
+  return {
+    realtime: {
+      // Required on Node.js < 22 (no global WebSocket)
+      transport: WebSocket,
+    },
+    ...extra,
+  };
+}
+
 const { url, anonKey, serviceKey } = resolveConfig();
 
-export const supabase = url && anonKey ? createClient(url, anonKey) : null;
+export const supabase = url && anonKey ? createClient(url, anonKey, clientOptions()) : null;
 
 export const supabaseAdmin =
   url && serviceKey
-    ? createClient(url, serviceKey, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      })
+    ? createClient(
+        url,
+        serviceKey,
+        clientOptions({
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      )
     : null;
 
 if (!supabase) {
