@@ -1125,7 +1125,8 @@ router.post('/integrations/connect', async (req, res) => {
       body: JSON.stringify({
         auth_config_id: authConfigId,
         user_id: companyId,
-        callback_url: `${appUrl}/onboarding`,
+        // Marqq2-style callback: popup lands here, posts success to opener, then closes
+        callback_url: `${appUrl}/integrations?connected=${encodeURIComponent(connectorId)}`,
         allow_multiple: false
       })
     });
