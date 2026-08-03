@@ -23,17 +23,16 @@ const CREATIVE_PACK = {
   secondary: ['paid-ads'],
 };
 
-const NOURIVA_DEFAULTS = {
-  companyName: 'Nouriva AI',
-  website: 'https://nouriva.tech',
-  northStarMetric: 'Activated Paid Users',
-  northStarDefinition:
-    'A user who uploads a lab report, subscribes to a paid plan, and logs at least two meals within the first seven days.',
-  quantifiedTarget: '500 Activated Paid Users',
+const WORKSPACE_DEFAULTS = {
+  companyName: 'Your company',
+  website: '',
+  northStarMetric: '',
+  northStarDefinition: '',
+  quantifiedTarget: '',
   timeline: '90 days',
-  audience: 'Health-conscious adults with recent lab reports seeking personalized nutrition',
+  audience: '',
   selectedChannel: 'Meta Ads',
-  metaAccountId: 'act_1721558035534754',
+  metaAccountId: process.env.META_AD_ACCOUNT_ID || '',
   deliveryMode: 'draft',
 };
 
@@ -109,16 +108,16 @@ export function getPaidRun(runId) {
 
 export async function createPaidRun(input = {}) {
   const goals = {
-    northStarMetric: String(input.northStarMetric || input.north_star_metric || NOURIVA_DEFAULTS.northStarMetric),
+    northStarMetric: String(input.northStarMetric || input.north_star_metric || WORKSPACE_DEFAULTS.northStarMetric),
     northStarDefinition: String(
-      input.northStarDefinition || input.north_star_definition || NOURIVA_DEFAULTS.northStarDefinition
+      input.northStarDefinition || input.north_star_definition || WORKSPACE_DEFAULTS.northStarDefinition
     ),
-    quantifiedTarget: String(input.quantifiedTarget || input.quantified_target || NOURIVA_DEFAULTS.quantifiedTarget),
-    timeline: String(input.timeline || input.timeline_target || NOURIVA_DEFAULTS.timeline),
-    audience: String(input.audience || NOURIVA_DEFAULTS.audience),
-    website: String(input.website || NOURIVA_DEFAULTS.website),
-    selectedChannel: String(input.selectedChannel || NOURIVA_DEFAULTS.selectedChannel),
-    metaAccountId: String(input.metaAccountId || input.meta_ads_account_id || NOURIVA_DEFAULTS.metaAccountId),
+    quantifiedTarget: String(input.quantifiedTarget || input.quantified_target || WORKSPACE_DEFAULTS.quantifiedTarget),
+    timeline: String(input.timeline || input.timeline_target || WORKSPACE_DEFAULTS.timeline),
+    audience: String(input.audience || WORKSPACE_DEFAULTS.audience),
+    website: String(input.website || WORKSPACE_DEFAULTS.website),
+    selectedChannel: String(input.selectedChannel || WORKSPACE_DEFAULTS.selectedChannel),
+    metaAccountId: String(input.metaAccountId || input.meta_ads_account_id || WORKSPACE_DEFAULTS.metaAccountId),
     topic: String(input.topic || 'paid acquisition for lab-personalized nutrition').trim(),
   };
 
@@ -126,7 +125,7 @@ export async function createPaidRun(input = {}) {
     id: randomUUID(),
     workspaceId: String(input.workspaceId || input.companyId || 'marqq-ws-1').trim(),
     companyId: String(input.companyId || input.workspaceId || 'marqq-ws-1').trim(),
-    companyName: String(input.companyName || NOURIVA_DEFAULTS.companyName).trim(),
+    companyName: String(input.companyName || WORKSPACE_DEFAULTS.companyName).trim(),
     channel: 'meta',
     deliveryMode: String(input.deliveryMode || 'draft').toLowerCase() === 'live' ? 'draft' : 'draft', // force draft in slice 1
     goals,

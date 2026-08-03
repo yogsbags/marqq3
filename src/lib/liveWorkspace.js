@@ -3,7 +3,7 @@
  * Prefer these over hardcoded demo clinics / Elevate competitors.
  */
 
-import { loadLocalBrandContext } from "./brandContext";
+import { loadLocalBrandContext, WORKSPACE_ID } from "./brandContext";
 import { formatStrategySectionForChat } from "./askMarqqContext";
 import { loadStrategyDoc, northStarLabel } from "./journeyHandoff";
 
@@ -157,4 +157,58 @@ export function playsFromSection(sectionId, fallbackLabel = "Play") {
 
 export function emptyStrategyCta(setActiveScreen) {
   return { setActiveScreen, screen: "gtmwizard" };
+}
+
+/**
+ * Shared seed for Content / Social / Creative / Paid / Outreach studios.
+ * Never hardcodes Nouriva or Elevate.
+ */
+export function studioSeed() {
+  const brand = loadLocalBrandContext() || {};
+  const audience = getAudienceProfile();
+  const company = getCompanyName();
+  const website = getWebsite() || brand.website || "";
+  const domain = String(website)
+    .replace(/^https?:\/\//i, "")
+    .split("/")[0]
+    .trim();
+  const doc = loadStrategyDoc();
+  const ga = doc?.goalAlignment || {};
+  const niche = audience.niche || brand.niche || localStorage.getItem("marqq_ob_niche") || "";
+  const icp = audience.icp || brand.icp || localStorage.getItem("marqq_ob_icp") || "";
+  const brandContext =
+    brand.brandSummary ||
+    brand.brandTagline ||
+    [company !== "Your workspace" ? company : "", niche, icp].filter(Boolean).join(" — ") ||
+    "Brand DNA not set yet — complete onboarding.";
+  const quantified =
+    ga.quantified_target || northStarLabel() || localStorage.getItem("marqq_ob_target") || "";
+  const timeline =
+    ga.timeline_target || localStorage.getItem("marqq_ob_timeWindow") || "90 days";
+  const topicBase =
+    wizardAnswerLabel("priority_90d") ||
+    brand.outcome ||
+    localStorage.getItem("marqq_ob_outcome") ||
+    ga.priority_90d ||
+    "";
+
+  return {
+    companyName: company,
+    companyId: WORKSPACE_ID,
+    workspaceId: WORKSPACE_ID,
+    website,
+    domain: domain || "example.com",
+    marketType: "b2b",
+    brandContext,
+    quantifiedTarget: quantified,
+    timelineTarget: timeline,
+    timeline,
+    audience: icp || "Set ICP in Brand DNA / GTM Audience",
+    topic: [topicBase, niche].filter(Boolean).join(" · ") || `GTM motion for ${company}`,
+    northStarMetric: ga.north_star_metric || "",
+    northStarDefinition: ga.metric_definition || "",
+    channels: ["linkedin", "instagram", "twitter", "facebook"],
+    platform: "instagram",
+    aspectRatio: "1:1",
+  };
 }

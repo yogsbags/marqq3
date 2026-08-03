@@ -203,7 +203,7 @@ function mapPerson(person, index) {
 export async function createOutreachRun(input = {}) {
   const workspaceId = String(input.workspaceId || input.companyId || 'marqq-ws-1').trim();
   const companyId = String(input.companyId || workspaceId).trim();
-  const companyName = String(input.companyName || 'Nouriva AI').trim();
+  const companyName = String(input.companyName || 'Your company').trim();
   const limit = Math.min(Math.max(Number(input.limit) || 10, 1), 25);
   const titles = Array.isArray(input.titles)
     ? input.titles.map(String).filter(Boolean).slice(0, 8)
@@ -225,7 +225,7 @@ export async function createOutreachRun(input = {}) {
     per_page: Math.min(limit * 2, 25),
     person_titles: titles.length
       ? titles
-      : ['Endocrinologist', 'Dietitian', 'Medical Director', 'Head of Nutrition', 'Clinical Nutrition Manager'],
+      : ['Founder', 'CEO', 'Head of Marketing', 'VP Sales', 'Managing Director'],
     person_locations: [country],
     contact_email_status: contactChannels.includes('email') || !contactChannels.length ? ['verified', 'likely to engage'] : undefined,
   };

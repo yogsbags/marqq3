@@ -57,12 +57,12 @@ function publishConfig(overrides = {}) {
     overrides.branch || process.env.BLOG_GITHUB_BRANCH || process.env.GITHUB_BRANCH || 'main'
   ).trim();
   const pathPrefix = String(
-    overrides.path_prefix || process.env.BLOG_PATH_PREFIX || 'nouriva-landing/blog'
+    overrides.path_prefix || process.env.BLOG_PATH_PREFIX || 'blog'
   )
     .trim()
     .replace(/^\/|\/$/g, '');
   const publicBase = String(
-    overrides.public_base || process.env.BLOG_PUBLIC_BASE_URL || 'https://nouriva.tech'
+    overrides.public_base || process.env.BLOG_PUBLIC_BASE_URL || ''
   )
     .trim()
     .replace(/\/$/, '');
@@ -117,8 +117,8 @@ export function buildSeoBlogDocument(article = {}, opts = {}) {
   const canonical = `${cfg.publicBase}/blog/${slug}`;
   const keyword = String(article.primary_keyword || '').trim();
   const published = article.approvedAt || article.createdAt || new Date().toISOString();
-  const company = String(opts.companyName || article.companyName || 'Nouriva AI').trim();
-  const pageTitle = title.includes('Nouriva') ? title : `${title} | Nouriva AI`;
+  const company = String(opts.companyName || article.companyName || 'Your company').trim();
+  const pageTitle = title.includes(company) ? title : `${title} | ${company}`;
   const file_path =
     cfg.pathStyle === 'flat_html'
       ? `${cfg.pathPrefix}/${slug}.html`
@@ -144,7 +144,7 @@ export function buildSeoBlogDocument(article = {}, opts = {}) {
 
   const html = `<!DOCTYPE html><html lang="${escapeHtml(chrome.lang || 'en-IN')}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(chrome.themeColor || '#0F3D2E')}"><meta name="robots" content="index,follow"><title>${escapeHtml(pageTitle)}</title>${meta ? `<meta name="description" content="${escapeHtml(meta)}">` : ''}${keyword ? `<meta name="keywords" content="${escapeHtml(keyword)}">` : ''}<link rel="canonical" href="${escapeHtml(canonical)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(title)}">${meta ? `<meta property="og:description" content="${escapeHtml(meta)}">` : ''}<meta property="og:url" content="${escapeHtml(canonical)}"><meta property="og:site_name" content="${escapeHtml(company)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}">${meta ? `<meta name="twitter:description" content="${escapeHtml(meta)}">` : ''}${chrome.fontsLink || ''}${chrome.styleBlock || ''}${chrome.blogNavFixStyle || ''}<script type="application/ld+json">${JSON.stringify(schema)}</script></head><body>
 ${chrome.navHtml || ''}
-<main class="blog-shell"><div class="container blog-wrap"><a class="blog-back" href="/blog/">← Nouriva Blog</a><div class="blog-card"><div class="blog-kicker">${escapeHtml(chrome.kicker || 'Nouriva AI · Nutrition insights')}</div><!-- META: ${escapeHtml(meta)} -->
+<main class="blog-shell"><div class="container blog-wrap"><a class="blog-back" href="/blog/">← Blog</a><div class="blog-card"><div class="blog-kicker">${escapeHtml(chrome.kicker || `${company} · Insights`)}</div><!-- META: ${escapeHtml(meta)} -->
 <!-- SLUG: ${escapeHtml(slug)} -->
 <article>
 ${body}

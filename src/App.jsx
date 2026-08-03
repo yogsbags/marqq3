@@ -251,7 +251,7 @@ export default function App() {
       budget: newCamp.budget || '$50,000',
       spend: '$0',
       roas: '0.0x',
-      owner: 'Sarah Cole',
+      owner: session?.user?.user_metadata?.full_name || session?.user?.email || 'Owner',
       updated: 'Just now',
       pacing: '0%'
     };
@@ -333,10 +333,12 @@ export default function App() {
         <Header
           activeScreen={activeScreen}
           setActiveScreen={setActiveScreen}
-          creditBalance="1,790"
-          pendingApprovalsCount={3 - Object.keys(approvedActions).length}
-          onOpenModal={(modal) => setActiveModal(modal)}
+          setActiveModal={setActiveModal}
           onLogout={handleLogout}
+          credits={null}
+          approvalsCount={Array.isArray(approvals) ? Math.max(0, approvals.length - Object.keys(approvedActions).length) : 0}
+          userName={session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || ''}
+          userEmail={session?.user?.email || ''}
         />
 
         <main style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 60px' }}>

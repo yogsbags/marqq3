@@ -1,20 +1,30 @@
 import React, { useState } from 'react';
-import { Search, Bell, CheckCircle, ChevronDown, User, Shield, CreditCard, LogOut } from 'lucide-react';
+import { Search, Bell, CheckCircle, ChevronDown, Shield, CreditCard, LogOut } from 'lucide-react';
 import { getCompanyName } from '../../lib/liveWorkspace';
 
 export default function Header({
   activeScreen,
   setActiveScreen,
   setActiveModal,
+  onLogout,
   approvalsCount = 0,
   credits = null,
+  userName = '',
+  userEmail = '',
 }) {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
-  const pendingApprovalsCount = approvalsCount || 0;
+  const pendingApprovalsCount = Number(approvalsCount) || 0;
   const workspaceName = getCompanyName();
+  const displayName = String(userName || '').trim() || workspaceName || 'Workspace owner';
+  const initials = displayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join('') || 'M';
 
   return (
     <header style={{
@@ -29,19 +39,18 @@ export default function Header({
       top: 0,
       zIndex: 50
     }}>
-      {/* Left: Workspace Selector */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <button
+          type="button"
           className="btn btn-secondary"
           style={{ border: '1px solid var(--color-divider)', padding: '5px 10px', fontSize: '13px', borderRadius: '0px' }}
-          onClick={() => setActiveModal('workspace')}
+          onClick={() => setActiveModal && setActiveModal('workspace')}
         >
           <span style={{ fontWeight: 800 }}>{workspaceName}</span>
           <ChevronDown size={14} style={{ opacity: 0.7 }} />
         </button>
       </div>
 
-      {/* Center: Global Search Bar */}
       <div style={{ flex: 1, maxWidth: '420px', margin: '0 20px' }}>
         <div
           onClick={() => setShowSearchModal(true)}
@@ -63,9 +72,7 @@ export default function Header({
         </div>
       </div>
 
-      {/* Right: Credits, Approvals, Profile */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        {/* Credit Counter Badge */}
         <div
           onClick={() => setActiveScreen('billing')}
           style={{
@@ -86,7 +93,6 @@ export default function Header({
           </span>
         </div>
 
-        {/* Approvals Quick Gate Button */}
         <button
           type="button"
           className="btn btn-secondary btn-icon"
@@ -126,7 +132,6 @@ export default function Header({
           <Bell size={16} />
         </button>
 
-        {/* Profile Avatar & Menu — 0px Sharp Square */}
         <div style={{ position: 'relative' }}>
           <div
             style={{
@@ -145,7 +150,7 @@ export default function Header({
             }}
             onClick={() => setShowProfileMenu(!showProfileMenu)}
           >
-            SC
+            {initials}
           </div>
 
           {showProfileMenu && (
@@ -153,7 +158,7 @@ export default function Header({
               position: 'absolute',
               right: 0,
               top: '40px',
-              width: '200px',
+              width: '220px',
               background: 'var(--color-surface)',
               border: '2px solid var(--color-divider)',
               borderRadius: '0px',
@@ -162,8 +167,10 @@ export default function Header({
               padding: '6px 0'
             }}>
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-divider)' }}>
-                <div style={{ fontWeight: 800, fontSize: '13px' }}>Sarah Cole</div>
-                <div style={{ fontSize: '11px', color: 'var(--color-muted)' }}>CMO · Workspace Owner</div>
+                <div style={{ fontWeight: 800, fontSize: '13px' }}>{displayName}</div>
+                <div style={{ fontSize: '11px', color: 'var(--color-muted)' }}>
+                  {userEmail || 'Workspace owner'}
+                </div>
               </div>
               <div
                 style={{ padding: '8px 12px', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
@@ -179,7 +186,11 @@ export default function Header({
               </div>
               <div
                 style={{ padding: '8px 12px', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-accent-2)' }}
-                onClick={() => { setActiveScreen('login'); setShowProfileMenu(false); }}
+                onClick={() => {
+                  setShowProfileMenu(false);
+                  if (onLogout) onLogout();
+                  else setActiveScreen('login');
+                }}
               >
                 <LogOut size={14} /> Sign out
               </div>
@@ -188,53 +199,16 @@ export default function Header({
         </div>
       </div>
 
-      {/* Global Search Modal */}
       {showSearchModal && (
-        <div className="modal-overlay" onClick={() => setShowSearchModal(false)}>
-          <div className="modal-box" onClick={e => e.stopPropagation()} style={{ borderRadius: '0px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderBottom: '1px solid var(--color-divider)', paddingBottom: '10px' }}>
-              <Search size={16} />
-              <input
-                className="input"
-                autoFocus
-                placeholder="Type to search workspace..."
-                style={{ border: 'none', background: 'transparent', fontSize: '14px', borderRadius: '0px' }}
-              />
-            </div>
-            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px' }}>
-              <div className="text-muted" style={{ fontSize: '11px', textTransform: 'uppercase' }}>Quick Jump</div>
-              <div onClick={() => { setActiveScreen('command'); setShowSearchModal(false); }} style={{ padding: '8px 12px', background: 'var(--color-bg)', borderRadius: '0px', cursor: 'pointer' }}>⚡ Go to Command Center</div>
-              <div onClick={() => { setActiveScreen('gtmwizard'); setShowSearchModal(false); }} style={{ padding: '8px 12px', background: 'var(--color-bg)', borderRadius: '0px', cursor: 'pointer' }}>🚀 Launch GTM Strategy Wizard</div>
-              <div onClick={() => { setActiveScreen('outreach'); setShowSearchModal(false); }} style={{ padding: '8px 12px', background: 'var(--color-bg)', borderRadius: '0px', cursor: 'pointer' }}>✉️ Open Outreach Prospecting Studio</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Notifications Drawer */}
-      {showNotifications && (
-        <div style={{
-          position: 'absolute',
-          right: '50px',
-          top: '60px',
-          width: '320px',
-          background: 'var(--color-surface)',
-          border: '2px solid var(--color-divider)',
-          borderRadius: '0px',
-          padding: '12px',
-          boxShadow: 'var(--shadow-lg)',
-          zIndex: 100
-        }}>
-          <div style={{ fontWeight: 800, fontSize: '14px', marginBottom: '8px', borderBottom: '1px solid var(--color-divider)', paddingBottom: '6px' }}>
-            Notifications &amp; Agent Alerts
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
-            <div style={{ padding: '8px', background: 'var(--color-bg)', borderRadius: '0px' }}>
-              <strong style={{ color: 'var(--color-accent)' }}>Dev Agent:</strong> Drafted budget reallocation ($12K shift).
-            </div>
-            <div style={{ padding: '8px', background: 'var(--color-bg)', borderRadius: '0px' }}>
-              <strong style={{ color: 'var(--color-accent-2)' }}>Google Ads:</strong> Account sync error — token expired.
-            </div>
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 200,
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80
+          }}
+          onClick={() => setShowSearchModal(false)}
+        >
+          <div className="card" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
+            <input className="input" autoFocus placeholder="Type to search workspace..." />
           </div>
         </div>
       )}

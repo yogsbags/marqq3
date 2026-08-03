@@ -163,7 +163,8 @@ export async function listAnalyticsConnections(companyId) {
 async function fetchGscData(companyId, period, gscSiteUrl) {
   try {
     const { connectedAccountId } = await resolveAccount(companyId, 'gsc');
-    const siteUrl = gscSiteUrl || 'https://nouriva.tech/';
+    const siteUrl = gscSiteUrl || process.env.GSC_SITE_URL || '';
+    if (!siteUrl) return null;
     const { startDate, endDate, periodDays } = periodToDates(period);
 
     const prevEnd = new Date(startDate);
@@ -281,7 +282,8 @@ async function fetchGscData(companyId, period, gscSiteUrl) {
 async function fetchMetaAdsData(companyId, period, metaAdsAccount) {
   try {
     const { connectedAccountId } = await resolveAccount(companyId, 'meta_ads');
-    const objectId = metaAdsAccount || process.env.META_AD_ACCOUNT_ID || 'act_1721558035534754';
+    const objectId = metaAdsAccount || process.env.META_AD_ACCOUNT_ID || '';
+    if (!objectId) return null;
     const datePreset = period === '7d' ? 'last_7d' : period === '90d' ? 'last_90d' : 'last_30d';
 
     const raw = await runComposioAction(connectedAccountId, 'METAADS_GET_INSIGHTS', {
@@ -508,14 +510,14 @@ export async function getAnalyticsDashboard({
 
   const prefs = preferences || {};
   const site =
-    gscSiteUrl || prefs.gsc_site_url || process.env.GSC_SITE_URL || 'https://nouriva.tech/';
+    gscSiteUrl || prefs.gsc_site_url || process.env.GSC_SITE_URL || '';
   const metaAcct =
     metaAdsAccount ||
     prefs.meta_ads_account_id ||
     process.env.META_AD_ACCOUNT_ID ||
-    'act_1721558035534754';
+    '';
   const ga4Prop =
-    ga4PropertyId || prefs.ga4_property_id || process.env.GA4_PROPERTY_ID || 'properties/534425303';
+    ga4PropertyId || prefs.ga4_property_id || process.env.GA4_PROPERTY_ID || '';
 
   const connectedSources = await listAnalyticsConnections(companyId);
   if (!connectedSources.length) return empty;

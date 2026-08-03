@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, FileText } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
 import { stashJourneyHandoff } from '../lib/journeyHandoff';
+import { studioSeed, getCompanyName } from '../lib/liveWorkspace';
 
 const STEPS = [
   { id: 'research', label: '1 · Research', agent: 'Maya' },
@@ -11,19 +12,8 @@ const STEPS = [
   { id: 'publish', label: '5 · Publish', agent: 'GitHub' },
 ];
 
-const NOURIVA_DEFAULTS = {
-  companyName: 'Nouriva AI',
-  companyId: 'marqq-ws-1',
-  workspaceId: 'marqq-ws-1',
-  domain: 'nouriva.tech',
-  marketType: 'b2c',
-  brandContext:
-    'Nouriva AI — lab-personalized nutrition guidance for patients and clinical partners. B2B hospital/clinic partners + consumer app.',
-  quantifiedTarget: 'Clinical partner pipeline + organic traffic to nouriva.tech',
-  timelineTarget: '90 days',
-};
-
 export default function ContentStudio({ setActiveScreen }) {
+  const [seed] = useState(() => studioSeed());
   const [step, setStep] = useState('research');
   const [runId, setRunId] = useState(null);
   const [run, setRun] = useState(null);
@@ -77,7 +67,7 @@ export default function ContentStudio({ setActiveScreen }) {
       const res = await fetch('/api/content/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(NOURIVA_DEFAULTS),
+        body: JSON.stringify(seed),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -99,7 +89,7 @@ export default function ContentStudio({ setActiveScreen }) {
         const res = await fetch('/api/content/runs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(NOURIVA_DEFAULTS),
+          body: JSON.stringify(seed),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -309,7 +299,7 @@ export default function ContentStudio({ setActiveScreen }) {
             <div>
               <h3 style={{ margin: 0 }}>Maya · SEO research</h3>
               <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                Domain {NOURIVA_DEFAULTS.domain} · skills: ai-seo, content-strategy, seo-audit
+                Domain {seed.domain} · skills: ai-seo, content-strategy, seo-audit
               </p>
             </div>
             <button type="button" className="btn btn-primary" disabled={!!busy} onClick={() => void doResearch()}>
@@ -374,7 +364,7 @@ export default function ContentStudio({ setActiveScreen }) {
             </>
           ) : (
             <p className="text-muted" style={{ fontSize: 13 }}>
-              Start research to generate an SEO article queue and LLMO gaps for Nouriva.
+              Start research to generate an SEO article queue and LLMO gaps for {getCompanyName()}.
             </p>
           )}
         </div>
@@ -527,9 +517,9 @@ export default function ContentStudio({ setActiveScreen }) {
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <h3 style={{ margin: 0 }}>Publish · SEO HTML → GitHub</h3>
           <p className="text-muted" style={{ fontSize: 13, margin: 0 }}>
-            Formats a full SEO page (canonical, OG, Article JSON-LD), then optionally pushes to{' '}
-            <code>yogsbags/nouriva</code> at <code>nouriva-landing/blog/&#123;slug&#125;/index.html</code>.
-            Live URL: <code>https://nouriva.tech/blog/&#123;slug&#125;</code>.
+            Formats a full SEO page (canonical, OG, Article JSON-LD), then optionally pushes to the
+            configured GitHub blog path for {getCompanyName() || 'this workspace'}.
+            Destination repo and public URL come from publish settings / env — not a hardcoded demo site.
           </p>
           {!article ? (
             <p className="text-muted" style={{ fontSize: 13 }}>Approve an article first.</p>

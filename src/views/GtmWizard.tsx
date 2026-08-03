@@ -138,23 +138,23 @@ function getCtx(): OnboardingCtx {
   const auto = loadGtmAutoSections(WORKSPACE_ID);
   const market = auto.find((s) => s.id === "market_analysis");
   return {
-    companyName: localStorage.getItem("marqq_ob_companyName") || String(brand?.companyName || "Elevate"),
-    website: localStorage.getItem("marqq_ob_website") || String(brand?.website || "theelevate.co.in"),
+    companyName: localStorage.getItem("marqq_ob_companyName") || String(brand?.companyName || "Your company"),
+    website: localStorage.getItem("marqq_ob_website") || String(brand?.website || ""),
     niche:
       localStorage.getItem("marqq_ob_niche") ||
-      String(brand?.niche || "Management strategy, AI solutions & digital transformation consulting"),
+      String(brand?.niche || ""),
     icp:
       localStorage.getItem("marqq_ob_icp") ||
-      String(brand?.icp || "Growth-stage companies and mid-market leaders seeking strategy-to-execution partners"),
+      String(brand?.icp || ""),
     outcome:
       localStorage.getItem("marqq_ob_outcome") ||
-      String(brand?.outcome || "Grow qualified leads from strategy and AI transformation buyers"),
+      String(brand?.outcome || ""),
     timeWindow: localStorage.getItem("marqq_ob_timeWindow") || String(brand?.timeWindow || "90 days"),
-    target: localStorage.getItem("marqq_ob_target") || String(brand?.target || "5 qualified leads per month"),
-    baseline: localStorage.getItem("marqq_ob_baseline") || String(brand?.baseline || "1 qualified lead per month"),
+    target: localStorage.getItem("marqq_ob_target") || String(brand?.target || ""),
+    baseline: localStorage.getItem("marqq_ob_baseline") || String(brand?.baseline || ""),
     brandTagline:
       localStorage.getItem("marqq_ob_tagline") ||
-      String(brand?.brandTagline || brand?.tagline || "Strategy Meets Execution"),
+      String(brand?.brandTagline || brand?.tagline || ""),
     businessSummary: String(
       brand?.businessSummary || brand?.brandSummary || brand?.summary || ""
     ),

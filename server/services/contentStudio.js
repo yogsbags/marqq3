@@ -127,8 +127,8 @@ export function listContentRuns(workspaceId) {
 }
 
 export async function createContentRun(input = {}) {
-  const companyName = String(input.companyName || 'Nouriva AI').trim();
-  const domain = String(input.domain || 'nouriva.tech')
+  const companyName = String(input.companyName || 'Your company').trim();
+  const domain = String(input.domain || '')
     .trim()
     .replace(/^https?:\/\//i, '')
     .replace(/\/$/, '');
@@ -193,7 +193,7 @@ export async function runContentResearch(runId) {
         company: run.companyName,
         domain: run.domain,
         market_type: run.marketType,
-        brand_context: run.brandContext || `${run.companyName} — lab-personalized nutrition / clinical partners`,
+        brand_context: run.brandContext || `${run.companyName} — brand context from onboarding`,
         quantified_target: run.quantifiedTarget || null,
         timeline_target: run.timelineTarget || null,
       },

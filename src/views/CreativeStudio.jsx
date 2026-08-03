@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, Image as ImageIcon, Video } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import { studioSeed } from '../lib/liveWorkspace';
 
 const STEPS = [
   { id: 'concept', label: '1 · Concept' },
@@ -9,24 +10,15 @@ const STEPS = [
   { id: 'approve', label: '4 · Approve' },
 ];
 
-const DEFAULTS = {
-  companyName: 'Nouriva AI',
-  companyId: 'marqq-ws-1',
-  workspaceId: 'marqq-ws-1',
-  topic: 'lab-personalized nutrition made simple',
-  brandContext: 'Nouriva AI — clinical-grade personalized nutrition for patients and partners.',
-  platform: 'instagram',
-  aspectRatio: '1:1',
-};
-
 export default function CreativeStudio({ setActiveScreen }) {
+  const [seed] = useState(() => studioSeed());
   const [step, setStep] = useState('concept');
   const [runId, setRunId] = useState(null);
   const [run, setRun] = useState(null);
   const [concept, setConcept] = useState(null);
   const [image, setImage] = useState(null);
   const [video, setVideo] = useState(null);
-  const [topic, setTopic] = useState(DEFAULTS.topic);
+  const [topic, setTopic] = useState(() => seed.topic);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -45,7 +37,7 @@ export default function CreativeStudio({ setActiveScreen }) {
     const res = await fetch('/api/creative/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...DEFAULTS, topic }),
+      body: JSON.stringify({ ...seed, topic }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);

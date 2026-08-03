@@ -310,7 +310,7 @@ async function generateBriefing({ dashboard, insights, context }) {
     .map((i) => `[${i.severity}] ${i.title}`)
     .join('\n');
 
-  const prompt = `You are Marqq Command Center for Nouriva AI.
+  const prompt = `You are Marqq Command Center for this workspace.
 North Star: ${context.northStar || context.quantifiedTarget || 'not locked'}
 Loop: ${context.loopStatus || 'n/a'} · Bottleneck: ${context.bottleneck || 'none'}
 KPIs: ${kpis || 'none'}

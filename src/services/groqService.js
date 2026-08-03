@@ -100,13 +100,13 @@ You are Veena, the Chief Orchestration AI Agent for Marqq B2B Marketing Platform
 Analyze the following company onboarding inputs and generate structured GTM Brand DNA and strategy data.
 
 Company Details:
-- Name: ${companyInfo.companyName || 'Elevate'}
-- Website: ${companyInfo.website || 'theelevate.co.in'}
-- Industry Niche: ${companyInfo.niche || 'Healthcare scheduling software'}
-- Target ICP: ${companyInfo.icp || 'Mid-market outpatient clinics, 20-200 staff'}
+- Name: ${companyInfo.companyName || 'Your company'}
+- Website: ${companyInfo.website || 'not provided'}
+- Industry Niche: ${companyInfo.niche || 'not provided'}
+- Target ICP: ${companyInfo.icp || 'not provided'}
 - Goal/Outcome: ${companyInfo.outcome || 'Grow qualified pipeline'}
-- Target Window: ${companyInfo.timeWindow || '60 days'}
-- Target Metric: ${companyInfo.target || '$2M pipeline'}
+- Target Window: ${companyInfo.timeWindow || '90 days'}
+- Target Metric: ${companyInfo.target || 'to be defined'}
 
 Return JSON strictly matching this structure:
 {
@@ -135,10 +135,10 @@ Return JSON strictly matching this structure:
 
   // Resilient Fallback
   return {
-    brandSummary: `Clinically credible ${companyInfo.niche || 'B2B automation'} platform built for ${companyInfo.icp || 'mid-market teams'}.`,
-    positioningTags: ['Clinically Credible', 'Effortlessly Automated', 'Built for Scale'],
-    primaryValueProp: `Cut no-shows and accelerate ${companyInfo.target || 'pipeline'} in ${companyInfo.timeWindow || '60 days'}.`,
-    recommendedChannels: ['LinkedIn ABM', 'Google Ads', 'SEO Cluster'],
-    topPillarStrategy: `${companyInfo.companyName || 'Elevate'} Q3 Pipeline Acceleration`
+    brandSummary: `${companyInfo.companyName || 'This company'} — ${companyInfo.niche || 'B2B'} for ${companyInfo.icp || 'target buyers'}.`,
+    positioningTags: ['Clear', 'Credible', 'Execution-focused'],
+    primaryValueProp: `Drive ${companyInfo.target || 'the North Star'} in ${companyInfo.timeWindow || '90 days'}.`,
+    recommendedChannels: ['LinkedIn', 'Owned content', 'Outbound'],
+    topPillarStrategy: `${companyInfo.companyName || 'Company'} GTM acceleration`
   };
 }

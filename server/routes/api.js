@@ -1150,15 +1150,15 @@ router.post('/integrations/connect', async (req, res) => {
 // In-memory connector preferences store per companyId
 const preferencesStore = new Map();
 
-const NOURIVA_DEFAULT_PREFS = {
-  google_ads_customer_id: '842-192-3841',
-  meta_ads_account_id: 'act_1721558035534754',
-  linkedin_ads_account_id: '503920194',
-  ga4_property_id: 'properties/534425303',
-  gsc_site_url: 'https://nouriva.tech/',
-  google_sheets_spreadsheet_id: process.env.GOOGLE_SHEETS_SPREADSHEET_ID || '1VcoUynWArCt6RaKdSHfOfb0pPka3nPd0AzA28NeKAxk',
-  salesforce_account_id: '00D5e0000014abc',
-  hubspot_account_id: '29401928',
+const WORKSPACE_DEFAULT_PREFS = {
+  google_ads_customer_id: '',
+  meta_ads_account_id: process.env.META_AD_ACCOUNT_ID || '',
+  linkedin_ads_account_id: '',
+  ga4_property_id: '',
+  gsc_site_url: '',
+  google_sheets_spreadsheet_id: process.env.GOOGLE_SHEETS_SPREADSHEET_ID || '',
+  salesforce_account_id: '',
+  hubspot_account_id: '',
 };
 
 /** GET /api/analytics/dashboard — live GSC + Meta (+ GA4 status) scorecard */
@@ -1174,7 +1174,7 @@ router.get('/analytics/dashboard', async (req, res) => {
       gscSiteUrl: req.query.gscSiteUrl || null,
       metaAdsAccount: req.query.metaAdsAccount || null,
       googleAdsCustomer: req.query.googleAdsCustomer || null,
-      preferences: { ...NOURIVA_DEFAULT_PREFS, ...prefs },
+      preferences: { ...WORKSPACE_DEFAULT_PREFS, ...prefs },
     });
     res.json(data);
   } catch (err) {
@@ -1211,7 +1211,7 @@ async function handleCommandCenter(req, res) {
     const data = await getCommandCenter({
       companyId,
       period,
-      preferences: { ...NOURIVA_DEFAULT_PREFS, ...prefs },
+      preferences: { ...WORKSPACE_DEFAULT_PREFS, ...prefs },
       context,
       withLlm,
     });
@@ -1228,7 +1228,7 @@ router.post('/command-center', handleCommandCenter);
 // GET /api/integrations/preferences?companyId=X
 router.get('/integrations/preferences', (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
-  const prefs = preferencesStore.get(companyId) || { ...NOURIVA_DEFAULT_PREFS };
+  const prefs = preferencesStore.get(companyId) || { ...WORKSPACE_DEFAULT_PREFS };
   res.json({ preferences: prefs });
 });
 
@@ -1283,9 +1283,9 @@ router.post('/brand-dna', async (req, res) => {
     res.json({
       ok: false,
       brandDna: {
-        companyName: companyName || 'Elevate',
-        brandSummary: `Clinically credible ${industry || 'healthcare'} platform for ${icp || 'mid-market clinics'}.`,
-        positioningTags: ['GROWTH ENABLEMENT', 'DIGITAL TRANSFORMATION', 'INDUSTRY EXPERTISE'],
+        companyName: companyName || 'Your company',
+        brandSummary: `${companyName || 'Company'} — ${industry || 'B2B'} for ${icp || 'target buyers'}.`,
+        positioningTags: ['Clear', 'Credible', 'Execution-focused'],
         colors: ['#ff6a00', '#f2790a', '#191613'],
         fonts: 'Archivo · headings & body'
       }

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, Send } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import { studioSeed, getCompanyName } from '../lib/liveWorkspace';
+import { WORKSPACE_ID } from '../lib/brandContext';
 
 const STEPS = [
   { id: 'brief', label: '1 · Brief' },
@@ -8,25 +10,16 @@ const STEPS = [
   { id: 'approve', label: '3 · Approve & publish' },
 ];
 
-const DEFAULTS = {
-  companyName: 'Nouriva AI',
-  companyId: 'marqq-ws-1',
-  workspaceId: 'marqq-ws-1',
-  topic: 'lab-personalized nutrition for everyday health',
-  audience: 'health-conscious consumers and clinic partners in India',
-  brandContext: 'Nouriva AI — scan meals & labs for personalized nutrition guidance.',
-  channels: ['linkedin', 'instagram', 'twitter', 'facebook'],
-};
-
 const NEEDS_MEDIA = new Set(['instagram', 'youtube']);
 
 export default function SocialStudio({ setActiveScreen }) {
+  const [seed] = useState(() => studioSeed());
   const [step, setStep] = useState('brief');
   const [runId, setRunId] = useState(null);
   const [run, setRun] = useState(null);
   const [brief, setBrief] = useState(null);
   const [posts, setPosts] = useState([]);
-  const [topic, setTopic] = useState(DEFAULTS.topic);
+  const [topic, setTopic] = useState(() => seed.topic);
   const [busy, setBusy] = useState(null);
   const [busyPostId, setBusyPostId] = useState(null);
   const [error, setError] = useState(null);
@@ -43,7 +36,7 @@ export default function SocialStudio({ setActiveScreen }) {
   };
 
   const loadReadiness = () => {
-    fetch('/api/social/publish-readiness?companyId=marqq-ws-1')
+    fetch(`/api/social/publish-readiness?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
       .then((r) => r.json())
       .then((d) => setReadiness(d.platforms || []))
       .catch(() => {});
@@ -64,7 +57,7 @@ export default function SocialStudio({ setActiveScreen }) {
     const res = await fetch('/api/social/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...DEFAULTS, topic }),
+      body: JSON.stringify({ ...seed, topic }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
