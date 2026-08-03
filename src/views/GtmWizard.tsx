@@ -685,6 +685,74 @@ async function generateGtmStrategy(
   answers: GtmAnswers,
   approvedDrafts: GtmStrategySectionDraft[] = []
 ): Promise<StrategyDoc> {
+  // Prefer skillful server generation (Marqq2 playbooks + lanes) — mid-wizard briefs were retired.
+  try {
+    const res = await fetch("/api/gtm/strategy/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        companyName: ctx.companyName,
+        website: ctx.website,
+        websiteUrl: ctx.website,
+        niche: ctx.niche,
+        icp: ctx.icp,
+        outcome: ctx.outcome,
+        target: ctx.target,
+        timeWindow: ctx.timeWindow,
+        baseline: ctx.baseline,
+        brandSummary: ctx.businessSummary || ctx.brandTagline || "",
+        answers,
+        brandDna: {
+          companyName: ctx.companyName,
+          website: ctx.website,
+          niche: ctx.niche,
+          icp: ctx.icp,
+          brandSummary: ctx.businessSummary || "",
+          brandTagline: ctx.brandTagline || "",
+          toneOfVoice: ctx.toneOfVoice || "",
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok && data?.strategy?.sections?.length) {
+      const auto = Array.isArray(data.autoSections) ? data.autoSections : [];
+      try {
+        saveGtmAutoSections(getActiveWorkspaceId(), auto);
+      } catch {
+        /* ignore */
+      }
+      console.info(
+        `[gtm] skillful generate: ${data.skillsLoadedCount || 0}/${data.strategy.sections.length} sections with skills`,
+        data.skillsUsed || []
+      );
+      const assembled = assembleStrategyFromBriefs(ctx, answers, approvedDrafts, auto);
+      // Prefer server skillful section bodies over thin stubs
+      const bySkill = new Map(
+        (data.strategy.sections as StrategySection[]).map((s) => [s.id, s])
+      );
+      assembled.sections = assembled.sections.map((s) => {
+        const rich = bySkill.get(s.id);
+        if (!rich) return s;
+        const hasBody = Boolean(String(rich.body || "").trim() || (rich.bullets || []).length >= 3);
+        return hasBody
+          ? {
+              ...s,
+              summary: rich.summary || s.summary,
+              body: rich.body || s.body,
+              bullets: rich.bullets?.length ? rich.bullets : s.bullets,
+            }
+          : s;
+      });
+      if (data.strategy.executiveSummary) {
+        assembled.executiveSummary = String(data.strategy.executiveSummary);
+      }
+      if (data.strategy.title) assembled.title = String(data.strategy.title);
+      return enrichGoalAlignment(ctx, answers, assembled);
+    }
+  } catch (err) {
+    console.warn("[gtm] skillful generate failed, falling back:", err);
+  }
+
   const auto = loadGtmAutoSections(getActiveWorkspaceId());
   const assembled = assembleStrategyFromBriefs(ctx, answers, approvedDrafts, auto);
   const covered = assembled.sections.filter(

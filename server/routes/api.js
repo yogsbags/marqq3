@@ -95,6 +95,7 @@ import { useSupabasePersistence } from '../lib/persistence.js';
 import { upsertGtmModule, getActiveGtmModule, listGtmModules, lockGtmStrategy } from '../services/gtmModules.js';
 import { upsertCompanyFromBrand, loadCompanyBrand } from '../services/companiesStore.js';
 import { persistDeploymentToSupabase } from '../services/agentSupabase.js';
+import { generateFullStrategyDocument } from '../services/gtmFullStrategy.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
@@ -154,6 +155,17 @@ router.post('/gtm/modules/lock', requireAuth, async (req, res) => {
   });
   if (!result.ok) return res.status(503).json(result);
   res.json(result);
+});
+
+/** POST /api/gtm/strategy/generate — full 16-section doc with Marqq2 skill playbooks */
+router.post('/gtm/strategy/generate', async (req, res) => {
+  try {
+    const result = await generateFullStrategyDocument(req.body || {});
+    res.json(result);
+  } catch (err) {
+    console.error('[gtm/strategy/generate]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Strategy generation failed' });
+  }
 });
 
 /** GET /api/gtm/strategy-section-skills/:sectionId — Marqq2 skill playbook for Goals drafts */
