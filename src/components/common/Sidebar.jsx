@@ -1,4 +1,5 @@
 import React from 'react';
+import { getCompanyName } from '../../lib/liveWorkspace';
 
 const navConfig = [
   { name: 'Operate', items: [{ id: 'command', label: 'Command Center' }, { id: 'chat', label: 'Ask Marqq' }, { id: 'orchestration', label: 'Orchestration' }, { id: 'approvals', label: 'Approvals' }] },
@@ -11,6 +12,7 @@ const navConfig = [
 ];
 
 export default function Sidebar({ activeScreen, setActiveScreen, onOpenModal }) {
+  const workspaceName = getCompanyName();
   return (
     <aside style={{
       width: '232px',
@@ -100,7 +102,7 @@ export default function Sidebar({ activeScreen, setActiveScreen, onOpenModal }) 
       >
         <div style={{ fontSize: '11px', opacity: 0.5, marginBottom: '2px' }}>Workspace</div>
         <div style={{ fontSize: '13px', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>
-          Elevate <span className="text-muted" style={{ fontWeight: 400, fontSize: '11px' }}>· + New</span>
+          {workspaceName} <span className="text-muted" style={{ fontWeight: 400, fontSize: '11px' }}>· + New</span>
         </div>
       </div>
     </aside>

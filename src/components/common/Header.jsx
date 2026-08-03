@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
 import { Search, Bell, CheckCircle, ChevronDown, User, Shield, CreditCard, LogOut } from 'lucide-react';
+import { getCompanyName } from '../../lib/liveWorkspace';
 
 export default function Header({
   activeScreen,
   setActiveScreen,
   setActiveModal,
   approvalsCount = 0,
-  credits = 1790
+  credits = null,
 }) {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
-  const pendingApprovalsCount = approvalsCount || 3;
+  const pendingApprovalsCount = approvalsCount || 0;
+  const workspaceName = getCompanyName();
 
   return (
     <header style={{
@@ -34,7 +36,7 @@ export default function Header({
           style={{ border: '1px solid var(--color-divider)', padding: '5px 10px', fontSize: '13px', borderRadius: '0px' }}
           onClick={() => setActiveModal('workspace')}
         >
-          <span style={{ fontWeight: 800 }}>Elevate</span>
+          <span style={{ fontWeight: 800 }}>{workspaceName}</span>
           <ChevronDown size={14} style={{ opacity: 0.7 }} />
         </button>
       </div>
@@ -79,7 +81,9 @@ export default function Header({
             borderRadius: '0px'
           }}
         >
-          <span style={{ color: 'var(--color-accent)' }}>⚡ {credits.toLocaleString()} credits</span>
+          <span style={{ color: 'var(--color-accent)' }}>
+            {credits != null ? `⚡ ${Number(credits).toLocaleString()} credits` : '⚡ Usage unmetered'}
+          </span>
         </div>
 
         {/* Approvals Quick Gate Button */}

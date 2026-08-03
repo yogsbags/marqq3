@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, Target } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
-import { stashJourneyHandoff, loadStrategyDoc } from '../lib/journeyHandoff';
+import { stashJourneyHandoff, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
+import { loadLocalBrandContext, WORKSPACE_ID } from '../lib/brandContext';
+import { getAudienceProfile, getCompanyName, getWebsite, wizardAnswerLabel } from '../lib/liveWorkspace';
 
 const STEPS = [
   { id: 'goals', label: '1 · Goals' },
@@ -10,35 +12,42 @@ const STEPS = [
   { id: 'approve', label: '4 · Approve' },
 ];
 
-const DEFAULTS = {
-  companyName: 'Nouriva AI',
-  companyId: 'marqq-ws-1',
-  workspaceId: 'marqq-ws-1',
-  deliveryMode: 'draft',
-  northStarMetric: 'Activated Paid Users',
-  northStarDefinition:
-    'A user who uploads a lab report, subscribes to a paid plan, and logs at least two meals within the first seven days.',
-  quantifiedTarget: '500 Activated Paid Users',
-  timeline: '90 days',
-  audience: 'Health-conscious adults with recent lab reports seeking personalized nutrition',
-  website: 'https://nouriva.tech',
-  metaAccountId: 'act_1721558035534754',
-  topic: 'paid acquisition for lab-personalized nutrition',
-};
+function livePaidDefaults() {
+  const brand = loadLocalBrandContext() || {};
+  const audience = getAudienceProfile();
+  const company = getCompanyName();
+  const website = getWebsite() || brand.website || '';
+  const doc = loadStrategyDoc();
+  const ga = doc?.goalAlignment || {};
+  const channel = wizardAnswerLabel('channel_bet') || ga.channel_bet || '';
+  return {
+    companyName: company,
+    companyId: WORKSPACE_ID,
+    workspaceId: WORKSPACE_ID,
+    deliveryMode: 'draft',
+    northStarMetric: ga.north_star_metric || northStarLabel() || 'Primary outcome',
+    northStarDefinition: ga.metric_definition || brand.outcome || '',
+    quantifiedTarget: ga.quantified_target || localStorage.getItem('marqq_ob_target') || '',
+    timeline: ga.timeline_target || localStorage.getItem('marqq_ob_timeWindow') || '90 days',
+    audience: audience.icp || brand.icp || localStorage.getItem('marqq_ob_icp') || '',
+    website,
+    metaAccountId: import.meta.env.VITE_META_AD_ACCOUNT_ID || '',
+    topic: [
+      'paid acquisition',
+      company !== 'Your workspace' ? `for ${company}` : '',
+      channel ? `via ${channel}` : '',
+      audience.niche || brand.niche || '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  };
+}
 
 function seedFromStrategy() {
   try {
-    const doc = loadStrategyDoc();
-    if (!doc) return {};
-    const ga = doc.goalAlignment || {};
-    return {
-      quantifiedTarget: ga.quantified_target || DEFAULTS.quantifiedTarget,
-      timeline: ga.timeline_target || DEFAULTS.timeline,
-      northStarMetric: ga.north_star_metric || DEFAULTS.northStarMetric,
-      topic: DEFAULTS.topic,
-    };
+    return livePaidDefaults();
   } catch {
-    return {};
+    return livePaidDefaults();
   }
 }
 
@@ -47,7 +56,7 @@ export default function PaidStudio({ setActiveScreen }) {
   const [step, setStep] = useState('goals');
   const [runId, setRunId] = useState(null);
   const [run, setRun] = useState(null);
-  const [goals, setGoals] = useState({ ...DEFAULTS, ...seeded });
+  const [goals, setGoals] = useState(() => ({ ...livePaidDefaults(), ...seeded }));
   const [plan, setPlan] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -65,10 +74,11 @@ export default function PaidStudio({ setActiveScreen }) {
 
   const ensureRun = async () => {
     if (runId) return runId;
+    const payload = { ...livePaidDefaults(), ...goals, deliveryMode: 'draft' };
     const res = await fetch('/api/paid/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...DEFAULTS, ...goals, deliveryMode: 'draft' }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);

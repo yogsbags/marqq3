@@ -12,9 +12,29 @@ import {
 } from '../lib/brandContext';
 import JourneyBar from '../components/JourneyBar.jsx';
 import { openSectionScreen, loadStrategyDoc, northStarLabel, stashJourneyHandoff } from '../lib/journeyHandoff';
+import { formatStrategySectionForChat } from '../lib/askMarqqContext';
+import {
+  getAudienceProfile,
+  getCompanyName,
+  getMarketIntel,
+  getStrategySection,
+  playsFromSection,
+  sectionPlainText,
+  wizardAnswerLabel,
+} from '../lib/liveWorkspace';
 import { loadAgentOs } from '../lib/agents/persist';
 import { planAgentTask } from '../lib/agents/planTask';
 import { sectionBriefForScreen } from '../lib/journeyHandoff';
+
+function strategySectionPreview(s) {
+  const text =
+    (typeof s?.content === 'string' && s.content.trim()) ||
+    (typeof s?.summary === 'string' && s.summary.trim()) ||
+    (typeof s?.body === 'string' && s.body.trim()) ||
+    formatStrategySectionForChat(s || {}) ||
+    '';
+  return text;
+}
 
 export function StrategyView({ setActiveModal, setActiveScreen }) {
   const [doc, setDoc] = useState(() => {
@@ -98,25 +118,31 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
           <h4 style={{ margin: 0 }}>Strategy sections</h4>
           {sections.map((s) => {
             const t = targetById[s.id];
+            const preview = strategySectionPreview(s);
             return (
               <div key={s.id} className="card" style={{ padding: '14px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div className="card-title" style={{ margin: 0 }}>{s.title}</div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="card-title" style={{ margin: 0, color: 'var(--color-text)' }}>{s.title}</div>
                     {t?.metric ? (
                       <div style={{ fontSize: 12, color: 'var(--color-muted)', marginTop: 4 }}>
                         Leading metric: {t.metric}
                       </div>
                     ) : null}
                     <p className="card-body" style={{ margin: '8px 0 0', fontSize: 13 }}>
-                      {(s.content || '').slice(0, 160)}{(s.content || '').length > 160 ? '…' : ''}
+                      {preview ? `${preview.slice(0, 160)}${preview.length > 160 ? '…' : ''}` : 'No section body yet.'}
                     </p>
                   </div>
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    style={{ flex: 'none' }}
-                    onClick={() => openSectionScreen(s.id, setActiveScreen, { sectionTitle: s.title, summary: s.content })}
+                    style={{ flex: 'none', color: 'var(--color-text)' }}
+                    onClick={() =>
+                      openSectionScreen(s.id, setActiveScreen, {
+                        sectionTitle: s.title,
+                        summary: preview,
+                      })
+                    }
                   >
                     Open →
                   </button>
@@ -143,7 +169,7 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
               if (measurement) {
                 openSectionScreen('measurement_optimization', setActiveScreen, {
                   sectionTitle: measurement.title,
-                  summary: measurement.content,
+                  summary: strategySectionPreview(measurement),
                 });
                 return;
               }
@@ -178,41 +204,87 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
 
 
 export function MarketView({ setActiveScreen }) {
-  const competitors = [
-    { name: 'Vantage Health', sov: '31%', move: 'Launched an AI scheduling feature, added 2 pricing tiers.', threat: 'High' },
-    { name: 'Carecue', sov: '18%', move: 'Ran a category-defining LinkedIn campaign this month.', threat: 'Medium' },
-    { name: 'Sched.io', sov: '9%', move: 'No notable activity in the last 30 days.', threat: 'Low' }
-  ];
+  const intel = getMarketIntel();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="market" setActiveScreen={setActiveScreen} title="Market & Competitor Intelligence" />
-      <p className="text-muted">Track competitor moves, share of voice, and market search trends.</p>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Live from GTM <strong>Market analysis</strong> + <strong>Risks</strong> for {intel.companyName}
+        {intel.niche ? ` · ${intel.niche}` : ''}.
+      </p>
 
-      <div className="card">
-        <h3>Competitor Watch</h3>
-        <div className="table-container" style={{ marginTop: '12px' }}>
-          <table className="data-table">
-            <thead>
-              <tr><th>Competitor</th><th>Share of Voice</th><th>Recent Move</th><th>Threat Level</th></tr>
-            </thead>
-            <tbody>
-              {competitors.map((c, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{c.name}</td>
-                  <td>{c.sov}</td>
-                  <td>{c.move}</td>
-                  <td>
-                    <span className={c.threat === 'High' ? 'tag tag-accent-2' : c.threat === 'Medium' ? 'tag tag-outline' : 'tag tag-neutral'}>
-                      {c.threat}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {!intel.hasStrategy ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No market brief yet</h3>
+          <p className="card-body">
+            Finish the GTM Wizard so Isha can work from your locked market analysis — not demo competitors.
+          </p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="card">
+            <div className="card-kicker">North Star</div>
+            <div className="card-title" style={{ fontSize: 16, color: 'var(--color-text)' }}>{intel.northStar}</div>
+          </div>
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>{intel.marketTitle}</h3>
+            {intel.marketBody ? (
+              <p className="card-body" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
+                {intel.marketBody.slice(0, 1200)}
+                {intel.marketBody.length > 1200 ? '…' : ''}
+              </p>
+            ) : null}
+            {intel.marketBullets.length ? (
+              <ul style={{ margin: '12px 0 0', paddingLeft: 18 }}>
+                {intel.marketBullets.map((b, i) => (
+                  <li key={i} style={{ fontSize: 13, marginBottom: 6 }}>{b}</li>
+                ))}
+              </ul>
+            ) : null}
+            <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('audiences')}>
+                Audiences
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() =>
+                  openSectionScreen('market_analysis', setActiveScreen, {
+                    sectionTitle: intel.marketTitle,
+                    summary: intel.marketBody,
+                  })
+                }
+              >
+                Open in Ask Marqq
+              </button>
+            </div>
+          </div>
+
+          {(intel.risksBody || intel.risksBullets.length) ? (
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>{intel.risksTitle}</h3>
+              {intel.risksBody ? (
+                <p className="card-body" style={{ whiteSpace: 'pre-wrap' }}>
+                  {intel.risksBody.slice(0, 800)}
+                  {intel.risksBody.length > 800 ? '…' : ''}
+                </p>
+              ) : null}
+              {intel.risksBullets.length ? (
+                <ul style={{ margin: '12px 0 0', paddingLeft: 18 }}>
+                  {intel.risksBullets.map((b, i) => (
+                    <li key={i} style={{ fontSize: 13, marginBottom: 6 }}>{b}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -220,19 +292,107 @@ export function MarketView({ setActiveScreen }) {
 export { AnalyticsView } from './AnalyticsScorecard.jsx';
 
 export function AudiencesView({ setActiveScreen }) {
+  const a = getAudienceProfile();
+  const segments = [];
+  if (a.icp) {
+    segments.push({
+      title: a.icp,
+      detail: [a.persona && `Champion: ${a.persona}`, a.jtbd && `Jobs: ${a.jtbd}`, a.triggers && `Triggers: ${a.triggers}`]
+        .filter(Boolean)
+        .join(' · ') || a.sectionBody.slice(0, 200),
+      tags: ['ICP', a.niche].filter(Boolean),
+    });
+  }
+  if (a.persona && a.persona !== a.icp) {
+    segments.push({
+      title: a.persona,
+      detail: a.jtbd || 'Primary champion / buyer persona from interview',
+      tags: ['Persona'],
+    });
+  }
+  if (a.notAFit) {
+    segments.push({
+      title: 'Not a fit',
+      detail: a.notAFit,
+      tags: ['Exclude'],
+    });
+  }
+  // Extra segments from strategy bullets when distinct
+  for (const b of a.bullets.slice(0, 4)) {
+    if (segments.some((s) => s.title === b || s.detail === b)) continue;
+    segments.push({ title: b.length > 80 ? `${b.slice(0, 80)}…` : b, detail: b, tags: ['From strategy'] });
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="audiences" setActiveScreen={setActiveScreen} title="Audiences & ICP Segmentation" />
-      <p className="text-muted">Target buyer personas and intent-surged account lists.</p>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Live ICP from onboarding + GTM Audience interview + <strong>Target customer</strong> strategy for {a.companyName}.
+      </p>
 
-      <div className="card">
-        <h3>Mid-Market Clinic Decision Makers</h3>
-        <p className="text-muted" style={{ marginTop: '4px' }}>VP Clinical Operations &amp; Practice Managers at 20-200 staff clinics.</p>
-        <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
-          <span className="tag tag-accent">Fit Score 90%+</span>
-          <span className="tag tag-outline">1,240 Target Accounts</span>
+      {!a.hasStrategy && !a.icp ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No ICP locked yet</h3>
+          <p className="card-body">
+            Complete Brand DNA and the Audience step in GTM Wizard. Demo clinic lists have been removed.
+          </p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <>
+          {a.northStar ? (
+            <div className="card">
+              <div className="card-kicker">North Star</div>
+              <div className="card-title" style={{ fontSize: 16, color: 'var(--color-text)' }}>{a.northStar}</div>
+            </div>
+          ) : null}
+
+          {segments.length ? (
+            segments.map((seg, i) => (
+              <div key={i} className="card">
+                <h3 style={{ marginTop: 0, color: 'var(--color-text)' }}>{seg.title}</h3>
+                {seg.detail ? (
+                  <p className="text-muted" style={{ marginTop: 4, lineHeight: 1.5 }}>{seg.detail}</p>
+                ) : null}
+                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {seg.tags.map((t) => (
+                    <span key={t} className={t === 'Exclude' ? 'tag tag-outline' : 'tag tag-accent'}>{t}</span>
+                  ))}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="card">
+              <p className="card-body" style={{ margin: 0 }}>
+                {a.sectionBody || 'Target customer section is empty — regenerate strategy or refine Audience answers.'}
+              </p>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('market')}>
+              Market
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('brand')}>
+              Brand
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() =>
+                openSectionScreen('target_customer', setActiveScreen, {
+                  sectionTitle: a.sectionTitle,
+                  summary: a.sectionBody || a.icp,
+                })
+              }
+            >
+              Open in Ask Marqq
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -253,14 +413,16 @@ export function BrandView({ setActiveScreen }) {
     return () => { cancelled = true; };
   }, []);
 
-  const company = ctx?.companyName || 'Elevate';
-  const website = ctx?.website || 'https://theelevate.co.in';
-  const tagline = ctx?.brandTagline || 'Strategy Meets Execution';
-  const tone = ctx?.toneOfVoice || 'Clear, senior, execution-focused';
+  const company = ctx?.companyName || getCompanyName();
+  const website = ctx?.website || localStorage.getItem('marqq_ob_website') || '';
+  const tagline = ctx?.brandTagline || localStorage.getItem('marqq_ob_tagline') || '';
+  const tone = ctx?.toneOfVoice || localStorage.getItem('marqq_ob_tone') || '';
   const summary = ctx?.brandSummary || 'Brand context will appear here after onboarding Brand DNA synthesis.';
-  const colors = Array.isArray(ctx?.colors) && ctx.colors.length ? ctx.colors : ['#ff6a00', '#f2790a', '#191613'];
+  const colors = Array.isArray(ctx?.colors) && ctx.colors.length ? ctx.colors : [];
   const tags = Array.isArray(ctx?.positioningTags) ? ctx.positioningTags : [];
   const voice = ctx?.voiceTranscript || '';
+  const positioning = getStrategySection('positioning_messaging');
+  const positioningText = sectionPlainText(positioning);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -327,13 +489,17 @@ export function BrandView({ setActiveScreen }) {
 
           <div className="card">
             <h3>Palette &amp; type</h3>
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              {colors.map((c) => (
-                <div key={c} title={c} style={{ width: 36, height: 36, background: c, border: '1px solid var(--color-divider)' }} />
-              ))}
-            </div>
+            {colors.length ? (
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                {colors.map((c) => (
+                  <div key={c} title={c} style={{ width: 36, height: 36, background: c, border: '1px solid var(--color-divider)' }} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted" style={{ marginTop: 10, fontSize: 13 }}>No palette extracted yet — re-run Brand DNA.</p>
+            )}
             <p className="text-muted" style={{ marginTop: 10, fontSize: 13 }}>
-              {ctx?.fonts || 'Archivo · headings & body'}
+              {ctx?.fonts || 'Set fonts in Brand DNA'}
             </p>
             {(ctx?.niche || ctx?.icp) && (
               <p style={{ marginTop: 10, fontSize: 13 }}>
@@ -342,83 +508,158 @@ export function BrandView({ setActiveScreen }) {
               </p>
             )}
           </div>
+
+          {positioningText ? (
+            <div className="card">
+              <h3>Positioning (from strategy)</h3>
+              <p className="card-body" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
+                {positioningText.slice(0, 900)}
+                {positioningText.length > 900 ? '…' : ''}
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ marginTop: 10 }}
+                onClick={() =>
+                  openSectionScreen('positioning_messaging', setActiveScreen, {
+                    sectionTitle: positioning?.title,
+                    summary: positioningText,
+                  })
+                }
+              >
+                Open in Ask Marqq
+              </button>
+            </div>
+          ) : null}
         </>
       )}
     </div>
   );
 }
 
-export function LandingPagesView() {
-  const landingPages = [
-    { name: 'Atlas Launch', url: '/atlas', visits: '4,210', conversion: '6.8%', status: 'Live' },
-    { name: 'Enterprise ABM Hub', url: '/enterprise', visits: '1,860', conversion: '9.1%', status: 'Live' },
-    { name: 'Winter Event Series', url: '/winter-event', visits: '0', conversion: '—', status: 'Draft' }
-  ];
+export function LandingPagesView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const plays = [
+    ...playsFromSection('marketing_strategy', 'Campaign page'),
+    ...playsFromSection('positioning_messaging', 'Message page'),
+  ].slice(0, 8);
+  const website = localStorage.getItem('marqq_ob_website') || '';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <h1>Landing Pages</h1>
-      <p className="text-muted">High-converting landing pages built and audited by Tara Agent.</p>
-
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Page Name</th><th>URL</th><th>Visits</th><th>Conversion Rate</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {landingPages.map((lp, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{lp.name}</td>
-                  <td>{lp.url}</td>
-                  <td>{lp.visits}</td>
-                  <td><strong style={{ color: 'var(--color-accent)' }}>{lp.conversion}</strong></td>
-                  <td><span className={lp.status === 'Live' ? 'tag tag-accent' : 'tag tag-neutral'}>{lp.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <JourneyBar screenId="landingpages" setActiveScreen={setActiveScreen} title="Landing Pages" />
+      <p className="text-muted" style={{ margin: 0 }}>
+        Planned pages from locked strategy for {company} — not demo Atlas / clinic URLs.
+      </p>
+      {!plays.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No landing plays yet</h3>
+          <p className="card-body">Lock marketing / positioning sections in GTM Wizard, then return here.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Planned page / offer</th><th>Source</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {plays.map((lp, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{lp.name}</td>
+                    <td className="text-muted">{website || 'Strategy'}</td>
+                    <td><span className="tag tag-outline">{lp.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="button" className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => setActiveScreen && setActiveScreen('leadmagnets')}>
+            Lead magnets
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-export function BillingView() {
-  const usage = [
-    { label: 'Agent runs', value: '4,210 / 6,000', pct: '70%' },
-    { label: 'Model tokens', value: '18.2M / 25M', pct: '73%' },
-    { label: 'Seats', value: '14 / 20', pct: '70%' }
+export function BillingView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const [stats, setStats] = useState({ agents: 0, deployments: 0, files: 0, connectors: 0, loading: true });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [dep, files, intRes] = await Promise.all([
+          fetch('/api/agents/deployments').then((r) => r.json()).catch(() => ({})),
+          fetchKnowledgeFiles().catch(() => []),
+          fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`).then((r) => r.json()).catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        const connectors = Array.isArray(intRes?.connectors) ? intRes.connectors : Array.isArray(intRes) ? intRes : [];
+        const os = loadAgentOs();
+        setStats({
+          agents: os?.agent_roster?.agents?.length || 0,
+          deployments: Array.isArray(dep.deployments) ? dep.deployments.length : 0,
+          files: Array.isArray(files) ? files.length : 0,
+          connectors: connectors.filter((c) => c.connected || c.status === 'ACTIVE').length,
+          loading: false,
+        });
+      } catch {
+        if (!cancelled) setStats((s) => ({ ...s, loading: false }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const rows = [
+    { label: 'Agents in roster', value: String(stats.agents), pct: Math.min(100, stats.agents * 8) },
+    { label: 'Section deployments', value: String(stats.deployments), pct: Math.min(100, stats.deployments * 10) },
+    { label: 'Knowledge files', value: String(stats.files), pct: Math.min(100, stats.files * 12) },
+    { label: 'Live connectors', value: String(stats.connectors), pct: Math.min(100, stats.connectors * 15) },
   ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>Billing &amp; Usage</h1>
-      <p className="text-muted">Credits, token consumption pacing, and billing history.</p>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Live workspace usage for {company}. Credit metering is not enabled yet — numbers below are real activity counts, not demo quotas.
+      </p>
 
-      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <div className="text-muted">Current Balance</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: 'var(--color-accent)' }}>1,790 Credits</div>
+          <div className="text-muted">Plan</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-text)' }}>Workspace · usage-based (unmetered)</div>
+          <div className="card-meta" style={{ marginTop: 4 }}>North Star: {northStarLabel()}</div>
         </div>
-        <button className="btn btn-primary">Top Up Credits</button>
+        <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('integrations')}>
+          Manage connectors
+        </button>
       </div>
 
       <div className="card">
-        <h3>Resource Usage Pacing</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '12px' }}>
-          {usage.map((u, i) => (
-            <div key={i}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                <span>{u.label}</span>
-                <span style={{ fontWeight: 700 }}>{u.value}</span>
+        <h3 style={{ marginTop: 0 }}>Activity pacing</h3>
+        {stats.loading ? (
+          <p className="text-muted">Loading…</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '12px' }}>
+            {rows.map((u, i) => (
+              <div key={i}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
+                  <span>{u.label}</span>
+                  <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{u.value}</span>
+                </div>
+                <div style={{ width: '100%', height: '8px', background: 'var(--color-bg)', overflow: 'hidden' }}>
+                  <div style={{ width: `${u.pct}%`, height: '100%', background: 'var(--color-accent)' }} />
+                </div>
               </div>
-              <div style={{ width: '100%', height: '8px', background: 'var(--color-bg)', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: u.pct, height: '100%', background: 'var(--color-accent)' }} />
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -724,7 +965,7 @@ export function SeoView({ setActiveScreen }) {
       from: 'seo',
       toScreen: 'content',
       agentId: 'maya',
-      mission: 'Start SEO blog research for Nouriva in Content Studio',
+      mission: `Start SEO blog research for ${getCompanyName()} in Content Studio`,
     });
     setActiveScreen && setActiveScreen('content');
   };
@@ -796,7 +1037,7 @@ export function IdeasView({ setActiveScreen }) {
     }
     return {
       strategy,
-      companyName: localStorage.getItem('marqq_ob_companyName') || 'Elevate',
+      companyName: localStorage.getItem('marqq_ob_companyName') || getCompanyName(),
       website: localStorage.getItem('marqq_ob_website') || '',
       niche: localStorage.getItem('marqq_ob_niche') || '',
       icp: localStorage.getItem('marqq_ob_icp') || '',
@@ -1083,310 +1324,384 @@ export function IdeasView({ setActiveScreen }) {
   );
 }
 
-export function CalendarView() {
-  const calendarDays = [
-    { dow: 'Mon', num: 28, items: [{ time: '9:00a', title: 'Q3 Pipeline — LinkedIn ad refresh', channel: 'Paid Social' }] },
-    { dow: 'Tue', num: 29, items: [{ time: '7:00a', title: 'Weekly nurture email #14', channel: 'Email' }] },
-    { dow: 'Wed', num: 30, items: [{ time: '10:30a', title: '"Reducing no-shows" blog post', channel: 'Content' }] },
-    { dow: 'Thu', num: 31, items: [{ time: '9:00a', title: 'Product Launch — Atlas go-live', channel: 'Campaign' }] },
-    { dow: 'Fri', num: 1, items: [{ time: '11:00a', title: 'ABM sequence — Healthcare accounts', channel: 'Outbound' }] },
-    { dow: 'Sat', num: 2, items: [] },
-    { dow: 'Sun', num: 3, items: [] }
-  ];
-
-  const upcoming = [
-    { date: 'Aug 5', title: 'Winter Event Series — teaser email', channel: 'Email', owner: 'M. Chen', status: 'Scheduled' },
-    { date: 'Aug 6', title: 'SEO cluster refresh — 4 pages live', channel: 'Content', owner: 'D. Park', status: 'In review' },
-    { date: 'Aug 8', title: 'LinkedIn thought-leadership post', channel: 'Social', owner: 'M. Chen', status: 'Scheduled' }
-  ];
+export function CalendarView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const launchPlays = playsFromSection('launch_plan', 'Launch milestone');
+  const timelinePlays = playsFromSection('timeline_roadmap', 'Roadmap item');
+  const plays = [...launchPlays, ...timelinePlays].slice(0, 12);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <h1>Marketing Calendar</h1>
-      <p className="text-muted">7-day schedule &amp; upcoming campaign sends across all channels.</p>
+      <JourneyBar screenId="calendar" setActiveScreen={setActiveScreen} title="Marketing Calendar" />
+      <p className="text-muted" style={{ margin: 0 }}>
+        Milestones from <strong>Launch plan</strong> + <strong>Timeline</strong> for {company}. Demo clinic calendars removed.
+      </p>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px' }}>
-        {calendarDays.map((day, i) => (
-          <div key={i} className="card" style={{ padding: '12px', minHeight: '140px' }}>
-            <div style={{ fontWeight: 800, fontSize: '14px', marginBottom: '8px', color: day.dow === 'Thu' ? 'var(--color-accent)' : 'var(--color-text)' }}>
-              {day.dow} {day.num}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {day.items.map((it, idx) => (
-                <div key={idx} style={{ padding: '6px', background: 'var(--color-bg)', borderRadius: '4px', fontSize: '11px' }}>
-                  <div style={{ opacity: 0.6 }}>{it.time} · {it.channel}</div>
-                  <div style={{ fontWeight: 600, marginTop: '2px' }}>{it.title}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="card">
-        <h3>Upcoming Launches &amp; Sends</h3>
-        <div className="table-container" style={{ marginTop: '12px' }}>
-          <table className="data-table">
-            <thead>
-              <tr><th>Date</th><th>Campaign / Asset</th><th>Channel</th><th>Owner</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {upcoming.map((u, idx) => (
-                <tr key={idx}>
-                  <td>{u.date}</td>
-                  <td style={{ fontWeight: 700 }}>{u.title}</td>
-                  <td>{u.channel}</td>
-                  <td>{u.owner}</td>
-                  <td><span className="tag tag-accent">{u.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {!plays.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No launch milestones yet</h3>
+          <p className="card-body">Generate strategy with launch / timeline sections, then schedule from here.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Upcoming from strategy</h3>
+          <div className="table-container" style={{ marginTop: 12 }}>
+            <table className="data-table">
+              <thead>
+                <tr><th>#</th><th>Milestone / send</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {plays.map((u, idx) => (
+                  <tr key={idx}>
+                    <td>{idx + 1}</td>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{u.detail || u.name}</td>
+                    <td><span className="tag tag-accent">{u.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="button" className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => setActiveScreen && setActiveScreen('campaigns')}>
+            Campaigns
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-export function LeadMagnetsView() {
-  const leadMagnets = [
-    { name: 'No-Show Reduction Playbook', type: 'PDF guide', downloads: '842', conversion: '18%' },
-    { name: 'Patient Intake ROI Calculator', type: 'Interactive tool', downloads: '511', conversion: '24%' },
-    { name: 'Q3 Benchmark Report', type: 'PDF report', downloads: '1,204', conversion: '15%' }
-  ];
+export function LeadMagnetsView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const plays = playsFromSection('marketing_strategy', 'Lead magnet').slice(0, 8);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <h1>Lead Magnets &amp; Interactive Tools</h1>
-      <p className="text-muted">Gated playbooks, calculators, and reports driving inbound lead capture.</p>
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Name</th><th>Type</th><th>Downloads</th><th>Conversion Rate</th></tr>
-            </thead>
-            <tbody>
-              {leadMagnets.map((lm, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{lm.name}</td>
-                  <td>{lm.type}</td>
-                  <td>{lm.downloads}</td>
-                  <td><strong style={{ color: 'var(--color-accent)' }}>{lm.conversion}</strong></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <JourneyBar screenId="leadmagnets" setActiveScreen={setActiveScreen} title="Lead Magnets" />
+      <p className="text-muted" style={{ margin: 0 }}>
+        Gated offers derived from marketing strategy for {company}.
+      </p>
+      {!plays.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No magnets planned</h3>
+          <p className="card-body">Lock marketing strategy in the wizard — clinic playbook stubs are gone.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Offer / asset</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {plays.map((lm, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{lm.detail || lm.name}</td>
+                    <td><span className="tag tag-outline">{lm.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export function CrmView({ setActiveScreen }) {
-  const accounts = [
-    { name: 'Summit Ridge Medical Group', fit: '94%', intent: 'High intent (Pricing + Demo visits)', stage: 'Prospect', owner: 'R. Iyer' },
-    { name: 'Coastal Family Health', fit: '89%', intent: 'Medium intent', stage: 'Engaged', owner: 'R. Iyer' },
-    { name: 'Riverside Outpatient Partners', fit: '91%', intent: 'High intent', stage: 'Prospect', owner: 'S. Cole' }
-  ];
+  const audience = getAudienceProfile();
+  const salesBullets = playsFromSection('sales_strategy', 'Sales play');
+  const segments = [];
+  if (audience.icp) {
+    segments.push({
+      name: audience.icp,
+      fit: 'ICP',
+      intent: audience.triggers || audience.jtbd || 'From Audience interview',
+      stage: 'Priority segment',
+      owner: 'Arjun',
+    });
+  }
+  if (audience.persona) {
+    segments.push({
+      name: audience.persona,
+      fit: 'Persona',
+      intent: audience.jtbd || 'Champion',
+      stage: 'Buyer',
+      owner: 'Arjun',
+    });
+  }
+  for (const p of salesBullets.slice(0, 4)) {
+    segments.push({
+      name: p.name,
+      fit: 'Play',
+      intent: p.detail,
+      stage: 'From sales strategy',
+      owner: 'Arjun',
+    });
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="crm" setActiveScreen={setActiveScreen} title="CRM Sync & Account Priorities" />
-      <p className="text-muted">Real-time target account signals synced with Salesforce and HubSpot.</p>
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Account Name</th><th>ICP Fit</th><th>Intent Signals</th><th>Stage</th><th>Owner</th></tr>
-            </thead>
-            <tbody>
-              {accounts.map((a, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{a.name}</td>
-                  <td><span className="tag tag-accent">{a.fit}</span></td>
-                  <td>{a.intent}</td>
-                  <td><span className="tag tag-outline">{a.stage}</span></td>
-                  <td>{a.owner}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Priority segments from ICP + sales strategy for {audience.companyName}. Fake clinic accounts removed.
+      </p>
+      {!segments.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No segments yet</h3>
+          <p className="card-body">Complete Audience + Sales strategy, then sync CRM connectors.</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('audiences')}>
+              Audiences
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('integrations')}>
+              Connectors
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Segment / play</th><th>Type</th><th>Signal</th><th>Stage</th><th>Owner</th></tr>
+              </thead>
+              <tbody>
+                {segments.map((a, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{a.name}</td>
+                    <td><span className="tag tag-accent">{a.fit}</span></td>
+                    <td>{a.intent}</td>
+                    <td><span className="tag tag-outline">{a.stage}</span></td>
+                    <td>{a.owner}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="button" className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setActiveScreen && setActiveScreen('outreach')}>
+            Outreach Studio
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 export function PaidView({ setActiveScreen }) {
-  const [tab, setTab] = useState('dashboard');
+  const company = getCompanyName();
+  const plays = playsFromSection('distribution_channels', 'Paid channel').concat(
+    playsFromSection('marketing_strategy', 'Demand play')
+  ).slice(0, 8);
+  const [connectors, setConnectors] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
+      .then((r) => r.json())
+      .then((intRes) => {
+        if (cancelled) return;
+        const list = Array.isArray(intRes?.connectors) ? intRes.connectors : Array.isArray(intRes) ? intRes : [];
+        setConnectors(
+          list
+            .filter((c) => /meta|facebook|google.?ads|linkedin/i.test(String(c.id || c.name || '')))
+            .map((c) => ({
+              id: c.id || c.connectorId,
+              name: c.name || c.label || c.id,
+              connected: Boolean(c.connected || c.status === 'ACTIVE'),
+            }))
+        );
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <JourneyBar screenId="paid" setActiveScreen={setActiveScreen} title="Paid Media Planner & Ad Accounts" />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <JourneyBar screenId="paid" setActiveScreen={setActiveScreen} title="Paid Media" />
+      <p className="text-muted" style={{ margin: 0 }}>
+        North Star: {northStarLabel()} · {company}. Fake ROAS cards removed — use Paid Studio for live Meta drafts.
+      </p>
+
+      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
-          <p className="text-muted" style={{ margin: 0 }}>Target CPA $340 · Current $298 · North Star: $2M pipeline in 60 days</p>
+          <div className="card-kicker">Execute</div>
+          <div style={{ fontWeight: 700, color: 'var(--color-text)' }}>Paid Studio (Zara)</div>
+          <p className="card-body" style={{ margin: '4px 0 0' }}>Goals → plan → creative draft → approve (draft / PAUSED only).</p>
         </div>
-        <div style={{ display: 'flex', gap: '6px' }}>
-          {['research', 'plan', 'launch', 'dashboard'].map((t) => (
-            <button
-              key={t}
-              className={tab === t ? 'btn btn-primary' : 'btn btn-secondary'}
-              onClick={() => setTab(t)}
-              style={{ textTransform: 'capitalize', fontSize: '12px' }}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+        <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('paid')}>
+          Open Paid Studio
+        </button>
       </div>
 
-      {tab === 'dashboard' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
-            <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700 }}>Google Ads</span>
-                <span className="tag tag-accent-2">Sync error</span>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Ad connectors</h3>
+        {!connectors.length ? (
+          <p className="card-body">No Meta / Google / LinkedIn connectors detected — connect in Integrations.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {connectors.map((c) => (
+              <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{c.name}</span>
+                <span className={c.connected ? 'tag tag-accent' : 'tag tag-outline'}>{c.connected ? 'Connected' : 'Not connected'}</span>
               </div>
-              <div className="card-meta">Spend $61K · ROAS 3.4x</div>
-            </div>
-            <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700 }}>Meta Ads</span>
-                <span className="tag tag-accent">Connected</span>
-              </div>
-              <div className="card-meta">Spend $28K · ROAS 2.9x</div>
-            </div>
-            <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700 }}>LinkedIn Ads</span>
-                <span className="tag tag-accent">Connected</span>
-              </div>
-              <div className="card-meta">Spend $44K · ROAS 4.6x</div>
-            </div>
+            ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {tab === 'plan' && (
-        <div className="card">
-          <h3>Channel Allocation Mix</h3>
-          <p className="text-muted" style={{ marginTop: '4px' }}>
-            LinkedIn Ads (55%), Google Ads (30%), Meta Ads (15%)
-          </p>
-        </div>
-      )}
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Plays from strategy</h3>
+        {!plays.length ? (
+          <p className="card-body">Lock distribution / marketing strategy to seed paid plays.</p>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {plays.map((p, i) => (
+              <li key={i} style={{ fontSize: 13, marginBottom: 6, color: 'var(--color-text)' }}>{p.detail || p.name}</li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
 
-export function SocialView() {
-  const posts = [
-    { date: 'Aug 4', channel: 'LinkedIn', copy: 'Atlas launch announcement variant #1', status: 'Needs approval' },
-    { date: 'Aug 8', channel: 'LinkedIn', copy: 'Thought-leadership: Cutting clinic drop-off rates', status: 'Scheduled' },
-    { date: 'Aug 10', channel: 'X / Twitter', copy: '5 patient scheduling wins for practice managers', status: 'Draft' }
-  ];
-
+export function SocialView({ setActiveScreen }) {
+  const plays = playsFromSection('distribution_channels', 'Social play').slice(0, 8);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <h1>Social Media Publisher</h1>
-      <p className="text-muted">Schedule and manage social content across LinkedIn, X, and Instagram.</p>
+      <JourneyBar screenId="social" setActiveScreen={setActiveScreen} title="Social Media" />
+      <p className="text-muted" style={{ margin: 0 }}>
+        Use Social Studio for live publish. Strategy distribution plays for {getCompanyName()}:
+      </p>
       <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Date</th><th>Channel</th><th>Copy Snippet</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {posts.map((p, i) => (
-                <tr key={i}>
-                  <td>{p.date}</td>
-                  <td>{p.channel}</td>
-                  <td>{p.copy}</td>
-                  <td><span className="tag tag-accent">{p.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {!plays.length ? (
+          <p className="card-body">No distribution plays yet — finish GTM Wizard.</p>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {plays.map((p, i) => (
+              <li key={i} style={{ fontSize: 13, marginBottom: 6 }}>{p.detail || p.name}</li>
+            ))}
+          </ul>
+        )}
+        <button type="button" className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setActiveScreen && setActiveScreen('social')}>
+          Open Social Studio
+        </button>
       </div>
     </div>
   );
 }
 
 export function VoicebotView() {
+  const company = getCompanyName();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>Voice &amp; Video Bot Manager</h1>
-      <p className="text-muted">Autonomous AI agents handling inbound calls and interactive video demos.</p>
+      <p className="text-muted">AI agents for inbound qualification and product explainers — tied to {company}.</p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
         <div className="card">
           <span className="tag tag-accent">Voice Bot</span>
-          <h3 style={{ margin: '8px 0 4px' }}>Inbound Qualifier Bot</h3>
-          <p className="text-muted" style={{ fontSize: '13px' }}>Qualifies inbound demo requests and books meetings on reps' calendars.</p>
-          <div style={{ marginTop: '12px', fontSize: '12px', fontWeight: 700 }}>312 calls handled this month</div>
+          <h3 style={{ margin: '8px 0 4px', color: 'var(--color-text)' }}>Inbound Qualifier</h3>
+          <p className="text-muted" style={{ fontSize: '13px' }}>
+            Qualifies inbound demos against your ICP ({wizardAnswerLabel('icp') || 'set in Audience interview'}) and books meetings.
+          </p>
+          <div style={{ marginTop: '12px', fontSize: '12px', fontWeight: 700 }}>Connect voice providers in Integrations to go live</div>
         </div>
 
         <div className="card">
           <span className="tag tag-outline">Video Bot</span>
-          <h3 style={{ margin: '8px 0 4px' }}>Atlas Explainer Bot</h3>
-          <p className="text-muted" style={{ fontSize: '13px' }}>Short AI-presented video explainer answering top objections for the Atlas launch page.</p>
-          <div style={{ marginTop: '12px', fontSize: '12px', opacity: 0.6 }}>0 views (Draft)</div>
+          <h3 style={{ margin: '8px 0 4px', color: 'var(--color-text)' }}>{company} Explainer</h3>
+          <p className="text-muted" style={{ fontSize: '13px' }}>
+            Draft video explainer from positioning / offer strategy — not a demo product launch.
+          </p>
+          <div style={{ marginTop: '12px', fontSize: '12px', opacity: 0.6 }}>Draft · wire HeyGen in Creative / Social</div>
         </div>
       </div>
     </div>
   );
 }
 
-export function ExperimentsView() {
-  const experiments = [
-    { name: 'Email subject line: benefit vs question', status: 'Completed', confidence: '97%', winner: 'Question framing' },
-    { name: 'Landing page: single CTA vs dual CTA', status: 'Completed', confidence: '89%', winner: 'Single CTA' },
-    { name: 'Pricing table layout test', status: 'Running', confidence: '74%', winner: 'TBD' }
-  ];
+export function ExperimentsView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const plays = [
+    ...playsFromSection('marketing_strategy', 'Marketing test'),
+    ...playsFromSection('pricing_monetization', 'Pricing test'),
+    ...playsFromSection('positioning_messaging', 'Messaging test'),
+  ].slice(0, 10);
+  const experiments = plays.map((p, i) => ({
+    name: p.detail || p.name,
+    status: i === 0 ? 'Proposed' : 'Backlog',
+    confidence: '—',
+    winner: 'Not run yet',
+  }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>A/B Experiments &amp; Conversion Tests</h1>
-      <p className="text-muted">Conversion tests managed by Tara Agent.</p>
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Experiment</th><th>Status</th><th>Confidence</th><th>Leading Variant</th></tr>
-            </thead>
-            <tbody>
-              {experiments.map((e, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{e.name}</td>
-                  <td><span className="tag tag-accent">{e.status}</span></td>
-                  <td>{e.confidence}</td>
-                  <td>{e.winner}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Hypotheses from locked strategy for {company}. Demo “completed” tests removed — nothing is marked won until you run it.
+      </p>
+      {!experiments.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No experiment backlog</h3>
+          <p className="card-body">Lock marketing / pricing / positioning sections first.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+            Open GTM Wizard
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Experiment</th><th>Status</th><th>Confidence</th><th>Leading Variant</th></tr>
+              </thead>
+              <tbody>
+                {experiments.map((e, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{e.name}</td>
+                    <td><span className="tag tag-outline">{e.status}</span></td>
+                    <td>{e.confidence}</td>
+                    <td>{e.winner}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button type="button" className="btn btn-secondary" style={{ marginTop: 12 }} onClick={() => setActiveScreen && setActiveScreen('landingpages')}>
+            Landing pages
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 export function ReportingView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const financial = getStrategySection('financial_plan');
+  const measurement = getStrategySection('measurement_optimization');
   const reports = [
-    { name: 'July Board Update', type: 'Board report', created: 'Jul 29' },
-    { name: 'Q3 Campaign Performance', type: 'Campaign report', created: 'Jul 26' },
-    { name: 'GEO Visibility — Monthly', type: 'SEO & GEO report', created: 'Jul 20' }
-  ];
+    financial && { name: `${company} financial plan`, type: 'Strategy · financial_plan', body: sectionPlainText(financial) },
+    measurement && { name: `${company} measurement`, type: 'Strategy · measurement', body: sectionPlainText(measurement) },
+    { name: 'North Star scorecard', type: 'Live analytics', body: northStarLabel() },
+  ].filter(Boolean);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h1>Executive &amp; Board Reporting</h1>
-          <p className="text-muted">Export automated executive PDF reports and board updates.</p>
+          <p className="text-muted" style={{ margin: 0 }}>
+            Reports seeded from strategy + live scorecard for {company} — not July board stubs.
+          </p>
         </div>
         {setActiveScreen ? (
           <button type="button" className="btn btn-primary" onClick={() => setActiveScreen('analytics')}>
@@ -1394,24 +1709,18 @@ export function ReportingView({ setActiveScreen }) {
           </button>
         ) : null}
       </div>
-      <div className="card" style={{ padding: '12px 16px' }}>
-        <div className="card-kicker">Source of truth</div>
-        <p className="card-body" style={{ margin: '4px 0 0' }}>
-          Pull North Star progress from the Performance Scorecard (GSC + Meta) before drafting board PDFs.
-        </p>
-      </div>
       <div className="card">
         <div className="table-container">
           <table className="data-table">
             <thead>
-              <tr><th>Report Name</th><th>Type</th><th>Created</th></tr>
+              <tr><th>Report</th><th>Source</th><th>Preview</th></tr>
             </thead>
             <tbody>
               {reports.map((r, i) => (
                 <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{r.name}</td>
+                  <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{r.name}</td>
                   <td>{r.type}</td>
-                  <td>{r.created}</td>
+                  <td className="text-muted">{String(r.body || '').slice(0, 100)}{String(r.body || '').length > 100 ? '…' : ''}</td>
                 </tr>
               ))}
             </tbody>
@@ -1422,70 +1731,106 @@ export function ReportingView({ setActiveScreen }) {
   );
 }
 
-export function ReferralsView() {
-  const referrals = [
-    { name: 'Customer Referral Rewards', reward: '$500 credit', referrals: '64', converted: '19', status: 'Active' },
-    { name: 'Partner Referral Program', reward: '10% rev share', referrals: '22', converted: '8', status: 'Active' }
-  ];
+export function ReferralsView({ setActiveScreen }) {
+  const company = getCompanyName();
+  const allPlays = [
+    ...playsFromSection('customer_success', 'Referral / retention'),
+    ...playsFromSection('marketing_strategy', 'Referral play'),
+  ].slice(0, 10);
+  const referralPlays = allPlays.filter((p) =>
+    /refer|partner|advocate|affiliate|word.of.mouth|incentive|invite/i.test(`${p.detail || ''} ${p.name || ''}`)
+  );
+  const rows = referralPlays.length ? referralPlays : allPlays.slice(0, 6);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>Referral &amp; Affiliate Programs</h1>
-      <p className="text-muted">Customer referral incentives and partner rev-share tracking.</p>
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Program Name</th><th>Reward</th><th>Referrals</th><th>Converted</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {referrals.map((r, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{r.name}</td>
-                  <td>{r.reward}</td>
-                  <td>{r.referrals}</td>
-                  <td>{r.converted}</td>
-                  <td><span className="tag tag-accent">{r.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Programs proposed from customer success / marketing strategy for {company}. Fake “64 referrals” removed.
+      </p>
+      {!rows.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No referral plays yet</h3>
+          <p className="card-body">Add referral mechanics in customer success or marketing strategy, then return.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('strategy')}>
+            Strategy
+          </button>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Proposed program / play</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{r.detail || r.name}</td>
+                    <td><span className="tag tag-outline">{r.status || 'Proposed'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export function EvaluationsView() {
-  const evals = [
-    { name: 'Brand voice adherence', metric: 'Adherence score', score: '94%', trend: '+2pts' },
-    { name: 'Factuality — content drafts', metric: 'Factual accuracy', score: '97%', trend: 'flat' },
-    { name: 'Campaign Agent — budget calls', metric: 'Approval rate', score: '89%', trend: '-3pts ⚠' }
-  ];
+export function EvaluationsView({ setActiveScreen }) {
+  const os = loadAgentOs();
+  const agents = os?.agent_roster?.agents || [];
+  const evals = agents.length
+    ? agents.map((a) => ({
+        name: a.name || a.id,
+        metric: a.mission || a.reason || a.role || 'Mission',
+        score: a.status || 'standby',
+        trend: a.priority != null ? `priority ${a.priority}` : '—',
+      }))
+    : [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>AI Agent Evaluations &amp; Accuracy</h1>
-      <p className="text-muted">Quality benchmarks and factual adherence tracking across all 12 agents.</p>
-      <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>Evaluation Metric</th><th>Benchmark</th><th>Score</th><th>Trend</th></tr>
-            </thead>
-            <tbody>
-              {evals.map((e, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{e.name}</td>
-                  <td>{e.metric}</td>
-                  <td><strong style={{ color: 'var(--color-accent)' }}>{e.score}</strong></td>
-                  <td>{e.trend}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Live agent OS roster for {getCompanyName()} after strategy lock — not fake 94% scores.
+      </p>
+      {!evals.length ? (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>No agent OS yet</h3>
+          <p className="card-body">Generate GTM strategy to bootstrap the 12-agent roster, then evaluate from real runs.</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
+              GTM Wizard
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('agents')}>
+              Agents Hub
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>Agent</th><th>Mission / brief</th><th>Status</th><th>Note</th></tr>
+              </thead>
+              <tbody>
+                {evals.map((e, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{e.name}</td>
+                    <td>{e.metric}</td>
+                    <td><span className="tag tag-outline">{e.score}</span></td>
+                    <td>{e.trend}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1704,36 +2049,68 @@ export function KnowledgeView() {
   );
 }
 
-export function FilesView() {
-  const files = [
-    { name: 'Brand Guidelines 2026.pdf', type: 'PDF', size: '4.2 MB', owner: 'M. Chen', updated: '2d ago' },
-    { name: 'Q3 Campaign Brief.docx', type: 'Doc', size: '380 KB', owner: 'S. Cole', updated: '4d ago' },
-    { name: 'Atlas Launch Assets', type: 'Folder', size: '18 items', owner: 'D. Park', updated: '1w ago' }
-  ];
+export function FilesView({ setActiveScreen }) {
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await fetchKnowledgeFiles();
+        if (cancelled) return;
+        setFiles(Array.isArray(list) ? list : []);
+      } catch {
+        if (!cancelled) setFiles([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const fmtSize = (n) => {
+    const num = Number(n) || 0;
+    if (num < 1024) return `${num} B`;
+    if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+    return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>Workspace Files &amp; Agent Artifacts</h1>
-      <p className="text-muted">Manage campaign briefs, uploaded PDFs, CSV lists, and generated agent artifacts.</p>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Knowledge-base uploads for {getCompanyName()} — Atlas / clinic demo files removed.
+      </p>
       <div className="card">
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr><th>File Name</th><th>Type</th><th>Size</th><th>Owner</th><th>Updated</th></tr>
-            </thead>
-            <tbody>
-              {files.map((f, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 700 }}>{f.name}</td>
-                  <td>{f.type}</td>
-                  <td>{f.size}</td>
-                  <td>{f.owner}</td>
-                  <td>{f.updated}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {loading ? (
+          <p className="text-muted">Loading…</p>
+        ) : !files.length ? (
+          <>
+            <p className="card-body">No files yet. Upload in Knowledge Base during onboarding or Brand DNA.</p>
+            <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('knowledge')}>
+              Knowledge Base
+            </button>
+          </>
+        ) : (
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr><th>File Name</th><th>Type</th><th>Size</th><th>Category</th></tr>
+              </thead>
+              <tbody>
+                {files.map((f, i) => (
+                  <tr key={f.id || i}>
+                    <td style={{ fontWeight: 700, color: 'var(--color-text)' }}>{f.name || f.id}</td>
+                    <td>{f.mime || f.type || '—'}</td>
+                    <td>{fmtSize(f.size)}</td>
+                    <td><span className="tag tag-outline">{f.category || 'kb'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1743,9 +2120,15 @@ export { IntegrationsView } from './IntegrationsView.jsx';
 
 export function AdminView() {
   const members = [
-    { name: 'Sarah Cole', email: 'hello@theelevate.co.in', role: 'CMO (Workspace Owner)' },
-    { name: 'Rahul Iyer', email: 'rahul@theelevate.co.in', role: 'Approver' },
-    { name: 'Mia Chen', email: 'mia@theelevate.co.in', role: 'Editor' }
+    {
+      name: 'Workspace owner',
+      email: (() => {
+        const site = localStorage.getItem('marqq_ob_website') || '';
+        const host = String(site).replace(/^https?:\/\//, '').split('/')[0];
+        return host ? `hello@${host}` : 'owner@workspace';
+      })(),
+      role: 'Owner',
+    },
   ];
 
   return (
@@ -1775,24 +2158,31 @@ export function AdminView() {
   );
 }
 
-export function HelpView() {
+export function HelpView({ setActiveScreen }) {
+  const company = getCompanyName();
   const topics = [
-    { title: 'Connecting your first integration', desc: 'Step-by-step setup for Google Ads, LinkedIn, Salesforce and more.' },
-    { title: 'How agent approvals work', desc: 'What agents can act on automatically vs. what needs your sign-off.' },
-    { title: 'Understanding attribution in Analytics', desc: 'How Marqq credits channels and campaigns for pipeline.' },
-    { title: 'Managing seats and billing', desc: 'Add teammates, change plans, and read your invoice.' }
+    { title: 'Connect integrations', desc: 'Google, Meta, CRM, WhatsApp — live connectors for this workspace.', screen: 'integrations' },
+    { title: 'Finish GTM Wizard', desc: `Lock North Star and strategy sections for ${company}.`, screen: 'gtmwizard' },
+    { title: 'Agent approvals', desc: 'What agents can draft vs what needs your sign-off.', screen: 'approvals' },
+    { title: 'Performance Scorecard', desc: 'Live GSC + Meta against your North Star.', screen: 'analytics' },
   ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <h1>Help Center &amp; Support</h1>
-      <p className="text-muted">Documentation and step-by-step guides for Marqq features.</p>
+      <p className="text-muted" style={{ margin: 0 }}>Guides linked to live screens for {company}.</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' }}>
         {topics.map((t, i) => (
-          <div key={i} className="card">
-            <h3 style={{ fontSize: '15px' }}>{t.title}</h3>
+          <button
+            key={i}
+            type="button"
+            className="card"
+            style={{ textAlign: 'left', cursor: 'pointer', color: 'var(--color-text)' }}
+            onClick={() => setActiveScreen && setActiveScreen(t.screen)}
+          >
+            <h3 style={{ fontSize: '15px', marginTop: 0, color: 'var(--color-text)' }}>{t.title}</h3>
             <p className="text-muted" style={{ fontSize: '13px', marginTop: '4px' }}>{t.desc}</p>
-          </div>
+          </button>
         ))}
       </div>
     </div>

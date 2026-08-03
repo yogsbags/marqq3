@@ -1334,21 +1334,29 @@ function QuestionPanel({
                 className="btn btn-secondary"
                 onClick={() => (question.type === "multi_select" ? onToggleMulti(opt) : onSelect(opt))}
                 style={{
+                  width: "100%",
+                  height: "auto",
+                  minHeight: 36,
                   justifyContent: "flex-start",
+                  alignItems: "flex-start",
                   textAlign: "left",
+                  whiteSpace: "normal",
+                  lineHeight: 1.45,
+                  paddingTop: 10,
+                  paddingBottom: 10,
                   borderColor: active ? "var(--color-accent)" : undefined,
                   background: active ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : undefined,
                 }}
               >
-                <span style={{ flex: 1 }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }}>
                   {opt.label}
                   {opt.recommended ? (
-                    <span className="tag tag-accent" style={{ marginLeft: 8 }}>
+                    <span className="tag tag-accent" style={{ marginLeft: 8, whiteSpace: "nowrap" }}>
                       Recommended
                     </span>
                   ) : null}
                 </span>
-                {active ? "✓" : null}
+                {active ? <span style={{ flexShrink: 0, marginLeft: 8 }}>✓</span> : null}
               </button>
             );
           })}

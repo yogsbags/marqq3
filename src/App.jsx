@@ -401,30 +401,30 @@ export default function App() {
 
           {/* Full-featured implementations of all remaining views */}
           {activeScreen === 'ideas' && <IdeasView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'calendar' && <CalendarView />}
-          {activeScreen === 'leadmagnets' && <LeadMagnetsView />}
+          {activeScreen === 'calendar' && <CalendarView setActiveScreen={setActiveScreen} />}
+          {activeScreen === 'leadmagnets' && <LeadMagnetsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'crm' && <CrmView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'paid' && <PaidStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'social' && <SocialStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'voicebot' && <VoicebotView />}
-          {activeScreen === 'experiments' && <ExperimentsView />}
+          {activeScreen === 'experiments' && <ExperimentsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'reporting' && <ReportingView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'referrals' && <ReferralsView />}
+          {activeScreen === 'referrals' && <ReferralsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'orchestration' && <OrchestrationView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'evaluations' && <EvaluationsView />}
+          {activeScreen === 'evaluations' && <EvaluationsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'knowledge' && <KnowledgeView />}
-          {activeScreen === 'files' && <FilesView />}
+          {activeScreen === 'files' && <FilesView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'integrations' && <IntegrationsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'admin' && <AdminView />}
-          {activeScreen === 'help' && <HelpView />}
+          {activeScreen === 'help' && <HelpView setActiveScreen={setActiveScreen} />}
 
           {activeScreen === 'strategy' && <StrategyView setActiveModal={setActiveModal} setActiveScreen={setActiveScreen} />}
           {activeScreen === 'market' && <MarketView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'analytics' && <AnalyticsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'audiences' && <AudiencesView setActiveModal={setActiveModal} setActiveScreen={setActiveScreen} />}
           {activeScreen === 'brand' && <BrandView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'landingpages' && <LandingPagesView />}
-          {activeScreen === 'billing' && <BillingView />}
+          {activeScreen === 'landingpages' && <LandingPagesView setActiveScreen={setActiveScreen} />}
+          {activeScreen === 'billing' && <BillingView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'workflows' && <WorkflowsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'pricing' && <PricingView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'seo' && <SeoView setActiveScreen={setActiveScreen} />}

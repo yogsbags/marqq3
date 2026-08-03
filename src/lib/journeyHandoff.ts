@@ -7,6 +7,7 @@ import { ownershipForScreen, ownershipForSection, SECTION_OWNERSHIP } from "./ag
 import { loadAgentOs, agentsFromOs } from "./agents/persist";
 import { planAgentTask } from "./agents/planTask";
 import { AGENT_CATALOG_BY_ID } from "./agents/catalog";
+import { formatStrategySectionForChat, stashAskMarqqContext } from "./askMarqqContext";
 
 export const JOURNEY_HANDOFF_KEY = "marqq_journey_handoff";
 
@@ -23,11 +24,21 @@ export type JourneyHandoff = {
   createdAt: string;
 };
 
+type StrategySectionRow = {
+  id: string;
+  title: string;
+  content?: string;
+  summary?: string;
+  body?: string;
+  bullets?: string[];
+  subsections?: Array<{ title?: string; body?: string; bullets?: string[] }>;
+};
+
 export function loadStrategyDoc(): {
   title?: string;
   executiveSummary?: string;
   goalAlignment?: Record<string, unknown>;
-  sections?: Array<{ id: string; title: string; content?: string; subsections?: unknown[] }>;
+  sections?: StrategySectionRow[];
   nextSteps?: string[];
 } | null {
   try {
@@ -37,6 +48,14 @@ export function loadStrategyDoc(): {
   } catch {
     return null;
   }
+}
+
+function sectionPlainText(section: StrategySectionRow | null | undefined): string {
+  if (!section) return "";
+  if (typeof section.content === "string" && section.content.trim()) {
+    return section.content.trim();
+  }
+  return formatStrategySectionForChat(section);
 }
 
 export function stashJourneyHandoff(input: Omit<JourneyHandoff, "createdAt">): void {
@@ -77,26 +96,47 @@ export function openSectionScreen(
   setActiveScreen: (id: string) => void,
   opts: { summary?: string; sectionTitle?: string } = {}
 ): boolean {
+  if (typeof setActiveScreen !== "function") return false;
+
   const own = ownershipForSection(sectionId);
-  const screen = own?.openScreen;
-  if (!screen) {
-    setActiveScreen("strategy");
-    return false;
-  }
+  const screen = own?.openScreen || null;
   const doc = loadStrategyDoc();
   const section = (doc?.sections || []).find((s) => s.id === sectionId);
+  const title = opts.sectionTitle || section?.title || own?.sectionId || sectionId;
+  const summary =
+    (opts.summary && String(opts.summary).trim()) ||
+    sectionPlainText(section) ||
+    "";
+
+  // No execute room, or destination is Strategy itself → Ask Marqq with this section
+  if (!screen || screen === "strategy") {
+    stashAskMarqqContext({
+      sectionId,
+      title,
+      text:
+        summary ||
+        `## ${title}\n\n(No written content yet — ask Marqq to draft or refine this section.)`,
+    });
+    setActiveScreen("chat");
+    return true;
+  }
+
   const target = planAgentTask({ sectionId, screenId: screen });
-  stashJourneyHandoff({
-    from: "strategy",
-    toScreen: screen,
-    sectionId,
-    sectionTitle: opts.sectionTitle || section?.title || own?.sectionId || sectionId,
-    agentId: target.agentName,
-    metric: target.metric,
-    mission: target.mission,
-    summary: opts.summary || (typeof section?.content === "string" ? section.content.slice(0, 500) : null),
-    nextScreen: suggestNextScreen(screen),
-  });
+  try {
+    stashJourneyHandoff({
+      from: "strategy",
+      toScreen: screen,
+      sectionId,
+      sectionTitle: title,
+      agentId: target.agentName,
+      metric: target.metric,
+      mission: target.mission,
+      summary: summary ? summary.slice(0, 500) : null,
+      nextScreen: suggestNextScreen(screen),
+    });
+  } catch {
+    /* still navigate */
+  }
   setActiveScreen(screen);
   return true;
 }
@@ -213,9 +253,10 @@ export function sectionBriefForScreen(screenId: string): {
 } {
   const own = ownershipForScreen(screenId);
   const doc = loadStrategyDoc();
-  const sectionOwn = SECTION_OWNERSHIP.find(
-    (s) => s.openScreen === screenId || (own && s.primaryAgent === own.primary)
-  );
+  // Prefer exact openScreen match over primary-agent heuristic
+  const sectionOwn =
+    SECTION_OWNERSHIP.find((s) => s.openScreen === screenId) ||
+    SECTION_OWNERSHIP.find((s) => own && s.primaryAgent === own.primary);
   const sectionId = sectionOwn?.sectionId || null;
   const section = sectionId
     ? (doc?.sections || []).find((s) => s.id === sectionId)
@@ -224,10 +265,19 @@ export function sectionBriefForScreen(screenId: string): {
     ? ((doc!.goalAlignment as { sectionTargets: Array<{ sectionId: string; metric?: string }> }).sectionTargets)
     : [];
   const t = sectionId ? targets.find((x) => x.sectionId === sectionId) : null;
+  let content: string | null = null;
+  if (section) {
+    if (typeof section.content === "string" && section.content.trim()) {
+      content = section.content.trim();
+    } else {
+      const formatted = formatStrategySectionForChat(section);
+      content = formatted || null;
+    }
+  }
   return {
     sectionId,
     title: section?.title || sectionOwn?.sectionId || null,
-    content: typeof section?.content === "string" ? section.content : null,
+    content,
     metric: t?.metric || null,
     agentId: own?.primary || sectionOwn?.primaryAgent || null,
   };

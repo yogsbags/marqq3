@@ -192,11 +192,17 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
             key={`${k.label}-${i}`}
             type="button"
             className="card elev-sm"
-            style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--color-divider)', background: 'var(--color-surface)' }}
+            style={{
+              textAlign: 'left',
+              cursor: 'pointer',
+              border: '1px solid var(--color-divider)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text)',
+            }}
             onClick={() => setActiveScreen && setActiveScreen(k.screen || 'analytics')}
           >
             <div className="card-kicker">{k.label}</div>
-            <div className="card-title" style={{ fontSize: 18 }}>{k.value}</div>
+            <div className="card-title" style={{ fontSize: 18, color: 'var(--color-text)' }}>{k.value}</div>
             <div
               className="card-meta"
               style={{ color: k.trend === 'down' ? 'var(--color-accent-2)' : 'var(--color-accent)' }}
