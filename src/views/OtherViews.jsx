@@ -72,6 +72,9 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
           <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
             Open wizard
           </button>
+          <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('analytics')}>
+            Performance Scorecard
+          </button>
           <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('chat')}>
             Ask Marqq
           </button>
@@ -135,6 +138,24 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
             type="button"
             className="btn btn-primary"
             style={{ marginTop: 16, width: '100%' }}
+            onClick={() => {
+              const measurement = sections.find((s) => s.id === 'measurement_optimization');
+              if (measurement) {
+                openSectionScreen('measurement_optimization', setActiveScreen, {
+                  sectionTitle: measurement.title,
+                  summary: measurement.content,
+                });
+                return;
+              }
+              setActiveScreen && setActiveScreen('analytics');
+            }}
+          >
+            Open Performance Scorecard
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginTop: 8, width: '100%' }}
             onClick={() => setActiveScreen && setActiveScreen('orchestration')}
           >
             Open orchestration
@@ -196,29 +217,7 @@ export function MarketView({ setActiveScreen }) {
   );
 }
 
-export function AnalyticsView({ setActiveScreen }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <JourneyBar screenId="analytics" setActiveScreen={setActiveScreen} title="Performance Analytics" />
-      <p className="text-muted">Cross-channel attribution and pipeline influence metrics.</p>
-
-      <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-        <div style={{ padding: '14px', background: 'var(--color-bg)', borderRadius: '6px' }}>
-          <div className="text-muted" style={{ fontSize: '12px' }}>Paid Search Share</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: 'var(--color-accent)', marginTop: '4px' }}>34%</div>
-        </div>
-        <div style={{ padding: '14px', background: 'var(--color-bg)', borderRadius: '6px' }}>
-          <div className="text-muted" style={{ fontSize: '12px' }}>LinkedIn ABM Share</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, color: 'var(--color-accent)', marginTop: '4px' }}>26%</div>
-        </div>
-        <div style={{ padding: '14px', background: 'var(--color-bg)', borderRadius: '6px' }}>
-          <div className="text-muted" style={{ fontSize: '12px' }}>Organic Search Share</div>
-          <div style={{ fontSize: '28px', fontWeight: 800, marginTop: '4px' }}>21%</div>
-        </div>
-      </div>
-    </div>
-  );
-}
+export { AnalyticsView } from './AnalyticsScorecard.jsx';
 
 export function AudiencesView({ setActiveScreen }) {
   return (
@@ -428,16 +427,40 @@ export function BillingView() {
 export function WorkflowsView({ setActiveScreen }) {
   const doc = loadStrategyDoc();
   const ops = (doc?.sections || []).find((s) => s.id === 'operations_execution');
+  const [deployments, setDeployments] = useState([]);
+  const [automations, setAutomations] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      fetch('/api/agents/deployments').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/automations/scheduled').then((r) => r.json()).catch(() => ({})),
+    ]).then(([dep, auto]) => {
+      if (cancelled) return;
+      setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
+      setAutomations(Array.isArray(auto.automations) ? auto.automations : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const rules = [
-    { name: 'Reallocate underperforming spend', trigger: 'ROAS drops below 2.5x for 3 days', action: 'draft budget reallocation for approval', status: 'Active', screen: 'paid' },
+    ...automations.map((a) => ({
+      name: a.automation_id,
+      trigger: a.cron || 'scheduled',
+      action: `Agent ${a.params?.agent || 'neel'} · section ${a.params?.sectionId || '—'}`,
+      status: a.active ? 'Active' : 'Paused',
+      screen: a.params?.sectionId === 'distribution_channels' ? 'social' : 'orchestration',
+      next: a.next_run,
+    })),
     { name: 'Approval reminder', trigger: 'an approval sits >24h', action: 'notify the assigned approver', status: 'Active', screen: 'approvals' },
-    { name: 'Weekly SEO scan', trigger: 'every Monday 6:00a', action: 'run rank + AI-visibility scan and update Content', status: 'Active', screen: 'seo' },
   ];
-  if (ops?.content) {
+  if (ops?.content || ops?.summary) {
     rules.unshift({
       name: 'Ops runbook from strategy',
       trigger: 'operations_execution section locked',
-      action: (ops.content || '').slice(0, 120) + '…',
+      action: String(ops.summary || ops.content || '').slice(0, 120) + '…',
       status: 'Seeded',
       screen: 'orchestration',
     });
@@ -447,7 +470,7 @@ export function WorkflowsView({ setActiveScreen }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="workflows" setActiveScreen={setActiveScreen} title="Workflows & Automation" />
       <p className="text-muted" style={{ marginTop: -8 }}>
-        Automated hands under Orchestration decisions. Rules seed from operations_execution.
+        Scheduled automations + agent deployments from locked strategy. Draft-gated until you approve.
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {rules.map((r, i) => (
@@ -456,6 +479,7 @@ export function WorkflowsView({ setActiveScreen }) {
               <div style={{ fontWeight: 700, fontSize: '14px' }}>{r.name}</div>
               <div style={{ fontSize: '12px', color: 'var(--color-muted)', marginTop: '2px' }}>
                 <strong>When:</strong> {r.trigger} → <strong>Then:</strong> {r.action}
+                {r.next ? ` · next ${new Date(r.next).toLocaleString()}` : ''}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 'none' }}>
@@ -467,12 +491,57 @@ export function WorkflowsView({ setActiveScreen }) {
           </div>
         ))}
       </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Agent deployments ({deployments.length})</h3>
+        {!deployments.length ? (
+          <p className="card-body">Lock a GTM strategy to seed recurring section deployments.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {deployments.slice(0, 12).map((d) => (
+              <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                <div>
+                  <strong>{d.agentDisplayName || d.agentName}</strong> · {d.sectionTitle}
+                  <div style={{ color: 'var(--color-muted)' }}>
+                    {d.status} · runs {d.runCount || 0}
+                    {d.scheduledFor ? ` · next ${new Date(d.scheduledFor).toLocaleString()}` : ''}
+                  </div>
+                </div>
+                {setActiveScreen && d.openScreen && (
+                  <button type="button" className="btn btn-ghost" onClick={() => setActiveScreen(d.openScreen)}>
+                    Studio
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 export function OrchestrationView({ setActiveScreen }) {
-  const os = loadAgentOs();
+  const osLocal = loadAgentOs();
+  const [os, setOs] = useState(osLocal);
+  const [deployments, setDeployments] = useState([]);
+  const [ticking, setTicking] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      fetch('/api/agent-os').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/agents/deployments').then((r) => r.json()).catch(() => ({})),
+    ]).then(([osRes, dep]) => {
+      if (cancelled) return;
+      if (osRes?.agentOs) setOs(osRes.agentOs);
+      setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const loop = os?.control_loop;
   const roster = os?.agent_roster;
   const checkpoints = loop?.checkpointPlan?.checkpoints || [];
@@ -484,13 +553,41 @@ export function OrchestrationView({ setActiveScreen }) {
     { day: 'Thu', focus: 'Approve' },
     { day: 'Fri', focus: 'Execute' },
   ];
+  const due = deployments.filter((d) => d.status === 'pending' || d.status === 'active' || d.status === 'running');
+  const last = os?.last_executed_task;
+
+  const runTick = async () => {
+    setTicking(true);
+    try {
+      await fetch('/api/agents/scheduler/tick', { method: 'POST' });
+      const dep = await fetch('/api/agents/deployments').then((r) => r.json());
+      setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
+      const osRes = await fetch('/api/agent-os').then((r) => r.json()).catch(() => ({}));
+      if (osRes?.agentOs) setOs(osRes.agentOs);
+    } finally {
+      setTicking(false);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="orchestration" setActiveScreen={setActiveScreen} title="Orchestration" />
       <p className="text-muted" style={{ marginTop: -8 }}>
         Control plane for {northStarLabel()}. Status: <strong>{loop?.status || 'pending'}</strong>
+        {last?.at ? ` · last run ${new Date(last.at).toLocaleString()} (${last.agentName})` : ''}
       </p>
+
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <h3 style={{ margin: 0 }}>Scheduler</h3>
+          <button type="button" className="btn btn-primary" disabled={ticking} onClick={runTick}>
+            {ticking ? 'Running…' : 'Run due deployments now'}
+          </button>
+        </div>
+        <p className="card-body" style={{ marginTop: 8 }}>
+          {due.length} active/pending deployments · drafts land in Approvals (no live spend).
+        </p>
+      </div>
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Weekly cycle</h3>
@@ -539,7 +636,30 @@ export function OrchestrationView({ setActiveScreen }) {
         </div>
       </div>
 
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Section deployments</h3>
+        {!deployments.length ? (
+          <p className="card-body">No deployments yet.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {deployments.slice(0, 10).map((d) => (
+              <div key={d.id} style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <span>
+                  <strong>{d.agentName}</strong> · {d.sectionTitle} · <span className="tag tag-outline">{d.status}</span>
+                </span>
+                {setActiveScreen && d.openScreen && (
+                  <button type="button" className="btn btn-ghost" onClick={() => setActiveScreen(d.openScreen)}>Open</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('analytics')}>
+          Performance Scorecard
+        </button>
         <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('approvals')}>
           Approvals
         </button>
@@ -1254,7 +1374,7 @@ export function ExperimentsView() {
   );
 }
 
-export function ReportingView() {
+export function ReportingView({ setActiveScreen }) {
   const reports = [
     { name: 'July Board Update', type: 'Board report', created: 'Jul 29' },
     { name: 'Q3 Campaign Performance', type: 'Campaign report', created: 'Jul 26' },
@@ -1263,8 +1383,23 @@ export function ReportingView() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <h1>Executive &amp; Board Reporting</h1>
-      <p className="text-muted">Export automated executive PDF reports and board updates.</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h1>Executive &amp; Board Reporting</h1>
+          <p className="text-muted">Export automated executive PDF reports and board updates.</p>
+        </div>
+        {setActiveScreen ? (
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen('analytics')}>
+            Open live Scorecard
+          </button>
+        ) : null}
+      </div>
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <div className="card-kicker">Source of truth</div>
+        <p className="card-body" style={{ margin: '4px 0 0' }}>
+          Pull North Star progress from the Performance Scorecard (GSC + Meta) before drafting board PDFs.
+        </p>
+      </div>
       <div className="card">
         <div className="table-container">
           <table className="data-table">

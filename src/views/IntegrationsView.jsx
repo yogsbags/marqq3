@@ -3,7 +3,7 @@ import { connectComposioConnector, formatConnectorError } from '../lib/composio'
 import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel } from '../lib/connectormeta';
 import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
 
-export function IntegrationsView() {
+export function IntegrationsView({ setActiveScreen }) {
   const [connectors, setConnectors] = useState([
     { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
     { id: 'linkedin', name: 'LinkedIn', connected: false, status: 'not_connected' },
@@ -11,7 +11,10 @@ export function IntegrationsView() {
     { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
-    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' }
+    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
+    { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
+    { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
+    { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
   ]);
   const [preferences, setPreferences] = useState({});
   const [connectingId, setConnectingId] = useState(null);
@@ -70,6 +73,7 @@ export function IntegrationsView() {
       linkedin_ads: 'linkedin_ads_account_id',
       ga4: 'ga4_property_id',
       gsc: 'gsc_site_url',
+      google_sheets: 'google_sheets_spreadsheet_id',
       salesforce: 'salesforce_account_id',
       hubspot: 'hubspot_account_id'
     };
@@ -77,14 +81,40 @@ export function IntegrationsView() {
     return preferences[field] || null;
   };
 
+  const analyticsReady = connectors.some(
+    (c) => isConnectorActive(c) && ['ga4', 'gsc', 'meta_ads', 'google_ads', 'google_sheets'].includes(c.id)
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h1>Integrations &amp; Connectors</h1>
           <p className="text-muted" style={{ marginTop: '4px' }}>Manage ad platform OAuth tokens, CRM syncs, and web analytics connectors.</p>
         </div>
+        {setActiveScreen ? (
+          <button
+            type="button"
+            className={analyticsReady ? 'btn btn-primary' : 'btn btn-secondary'}
+            onClick={() => setActiveScreen('analytics')}
+          >
+            {analyticsReady ? 'View Performance Scorecard' : 'Open Scorecard'}
+          </button>
+        ) : null}
       </div>
+      {analyticsReady ? (
+        <div className="card" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div className="card-kicker">Measurement ready</div>
+            <p className="card-body" style={{ margin: '4px 0 0' }}>
+              Analytics connectors are active — review GSC + Meta on the Performance Scorecard.
+            </p>
+          </div>
+          <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('analytics')}>
+            Go to Scorecard
+          </button>
+        </div>
+      ) : null}
       <div className="card">
         <div className="table-container">
           <table className="data-table">

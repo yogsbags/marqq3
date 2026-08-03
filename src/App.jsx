@@ -112,8 +112,9 @@ export default function App() {
       };
 
       try {
-        const [dashRes, campRes, agRes, appRes, prosRes, taskRes] = await Promise.all([
+        const [dashRes, analyticsRes, campRes, agRes, appRes, prosRes, taskRes] = await Promise.all([
           safeFetchJson('/api/dashboard'),
+          safeFetchJson('/api/analytics/dashboard?period=30d&companyId=marqq-ws-1'),
           safeFetchJson('/api/campaigns'),
           safeFetchJson('/api/agents'),
           safeFetchJson('/api/approvals'),
@@ -121,7 +122,11 @@ export default function App() {
           safeFetchJson('/api/tasks')
         ]);
 
-        if (dashRes && dashRes.kpis) setKpis(dashRes.kpis);
+        if (analyticsRes?.kpis?.length) {
+          setKpis(analyticsRes.kpis);
+        } else if (dashRes && dashRes.kpis) {
+          setKpis(dashRes.kpis);
+        }
         if (dashRes && dashRes.changes) setChanges(dashRes.changes);
         if (dashRes && dashRes.priorities) setPriorities(dashRes.priorities);
         if (campRes && campRes.campaigns) setCampaigns(campRes.campaigns);
@@ -229,11 +234,7 @@ export default function App() {
         <main style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 60px' }}>
           {activeScreen === 'command' && (
             <CommandCenter
-              kpis={kpis}
-              changes={changes}
-              priorities={priorities}
               agents={agents}
-              campaigns={campaigns}
               setActiveScreen={setActiveScreen}
             />
           )}
@@ -299,13 +300,13 @@ export default function App() {
           {activeScreen === 'social' && <SocialStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'voicebot' && <VoicebotView />}
           {activeScreen === 'experiments' && <ExperimentsView />}
-          {activeScreen === 'reporting' && <ReportingView />}
+          {activeScreen === 'reporting' && <ReportingView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'referrals' && <ReferralsView />}
           {activeScreen === 'orchestration' && <OrchestrationView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'evaluations' && <EvaluationsView />}
           {activeScreen === 'knowledge' && <KnowledgeView />}
           {activeScreen === 'files' && <FilesView />}
-          {activeScreen === 'integrations' && <IntegrationsView />}
+          {activeScreen === 'integrations' && <IntegrationsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'admin' && <AdminView />}
           {activeScreen === 'help' && <HelpView />}
 

@@ -38,6 +38,20 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
     description: 'Enter your verified Google Search Console site domain for rank monitoring.',
     helpText: 'Enter full domain with https:// or sc-domain:yourdomain.com.'
   },
+  google_sheets: {
+    title: 'Configure Google Spreadsheet',
+    field: 'google_sheets_spreadsheet_id',
+    placeholder: '1VcoUynWArCt6RaKdSHfOfb0pPka3nPd0AzA28NeKAxk',
+    description: 'Enter the spreadsheet ID used for lead capture / ops tables (from Marqq2).',
+    helpText: 'From the Sheet URL: docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit'
+  },
+  google_drive: {
+    title: 'Configure Google Drive Folder (optional)',
+    field: 'google_drive_folder_id',
+    placeholder: 'root or folder ID',
+    description: 'Optional default Drive folder for asset uploads and report delivery.',
+    helpText: 'Leave blank to use Drive root; folder ID is in the Drive URL after /folders/.'
+  },
   salesforce: {
     title: 'Configure Salesforce CRM Instance',
     field: 'salesforce_account_id',

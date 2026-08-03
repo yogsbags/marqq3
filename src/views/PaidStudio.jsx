@@ -327,9 +327,12 @@ export default function PaidStudio({ setActiveScreen }) {
             <CheckCircle size={14} />{' '}
             {run?.status === 'approved' ? 'Approved' : busy === 'approve' ? 'Saving…' : 'Approve draft'}
           </button>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('approvals')}>
               Open Approvals
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('analytics')}>
+              Performance Scorecard
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('creative')}>
               Creative Studio (assets)

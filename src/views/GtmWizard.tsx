@@ -1775,6 +1775,25 @@ function GtmDocumentView({
           </div>
 
           <div className="card" style={{ marginTop: 20 }}>
+            <div className="card-kicker">Measure</div>
+            <div className="card-title" style={{ fontSize: 15 }}>
+              Performance Scorecard
+            </div>
+            <p className="card-body">
+              Measurement &amp; optimization lands here — live GSC + Meta for your North Star, then weekly
+              course-correction in Orchestration.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="btn btn-primary" onClick={() => setActiveScreen("analytics")}>
+                Open Scorecard
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen("orchestration")}>
+                Control loop
+              </button>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginTop: 20 }}>
             <div className="card-kicker">Journey</div>
             <div className="card-title" style={{ fontSize: 15 }}>
               Strategy home
@@ -1858,6 +1877,14 @@ function GtmDocumentView({
           </button>
           <button
             type="button"
+            className="btn btn-secondary"
+            style={{ marginLeft: 8 }}
+            onClick={() => setActiveScreen("analytics")}
+          >
+            Performance Scorecard
+          </button>
+          <button
+            type="button"
             className="btn btn-ghost"
             style={{ marginLeft: 8 }}
             onClick={() => setActiveScreen("strategy")}
@@ -1882,6 +1909,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
   const optionsCache = useRef<Record<string, GtmOption[]>>({});
   const optionsReqId = useRef(0);
   const autoAdvancedStage = useRef<string | null>(null);
+  const activatedStrategyKey = useRef<string | null>(null);
 
   const navigateToSection = (target: {
     kind: "interview" | "auto" | "end";
@@ -1953,6 +1981,19 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
           },
         });
         saveAgentOs(os);
+        const strategyKey = `${normalized.strategy.title || ""}::${normalized.strategy.generatedAt || ""}`;
+        if (activatedStrategyKey.current !== strategyKey) {
+          activatedStrategyKey.current = strategyKey;
+          void fetch("/api/strategy/activate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              workspaceId: WORKSPACE_ID,
+              strategy: normalized.strategy,
+              agentOs: os,
+            }),
+          }).catch((err) => console.warn("[gtm] strategy activate failed:", err));
+        }
       } catch (err) {
         console.warn("[gtm] agent OS bootstrap failed:", err);
       }

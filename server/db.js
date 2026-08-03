@@ -115,13 +115,25 @@ function ensureDb() {
   }
 }
 
+function withAgentDefaults(data) {
+  return {
+    ...data,
+    agent_os: data.agent_os ?? null,
+    agent_deployments: Array.isArray(data.agent_deployments) ? data.agent_deployments : [],
+    scheduled_automations: Array.isArray(data.scheduled_automations)
+      ? data.scheduled_automations
+      : [],
+    automation_runs: Array.isArray(data.automation_runs) ? data.automation_runs : [],
+  };
+}
+
 export function getDb() {
   ensureDb();
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf8');
-    return JSON.parse(raw);
+    return withAgentDefaults(JSON.parse(raw));
   } catch (err) {
-    return initialData;
+    return withAgentDefaults(initialData);
   }
 }
 

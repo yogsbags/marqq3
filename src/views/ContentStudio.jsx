@@ -263,6 +263,16 @@ export default function ContentStudio({ setActiveScreen }) {
         <p className="text-muted" style={{ margin: 0 }}>
           One door for SEO blogs: Maya → Riya (Marqq2 seo_article / seo_article_b2c skills + humanizer) → approve → GitHub publish. Social/image/video stay on their own screens.
         </p>
+        {setActiveScreen ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ marginTop: 8, paddingLeft: 0 }}
+            onClick={() => setActiveScreen('analytics')}
+          >
+            Check organic on Performance Scorecard →
+          </button>
+        ) : null}
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

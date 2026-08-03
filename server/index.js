@@ -5,6 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import apiRoutes from './routes/api.js';
+import { startDeploymentScheduler } from './services/agentScheduler.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -51,5 +52,6 @@ if (isDirectRun) {
   const PORT = process.env.PORT || 3001;
   apiApp.listen(PORT, () => {
     console.log(`🚀 Marqq Standalone Backend Server running on http://localhost:${PORT}`);
+    startDeploymentScheduler();
   });
 }

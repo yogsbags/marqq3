@@ -65,9 +65,26 @@ import {
   runPaidCreativeDraft,
   approvePaidRun,
 } from '../services/paidStudio.js';
+import {
+  activateStrategyExecution,
+  listDeployments,
+  listScheduledAutomations,
+  loadAgentOsProfile,
+  saveAgentOsProfile,
+} from '../services/agentOsStore.js';
+import {
+  executeAgentRun,
+  processDeploymentQueueTick,
+  startDeploymentScheduler,
+} from '../services/agentScheduler.js';
+import { getAnalyticsDashboard, buildEmptyDashboard } from '../services/analyticsDashboard.js';
+import { getCommandCenter } from '../services/commandCenterInsights.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
+
+// Ensure scheduler is up even when API is imported by tests/smokes
+startDeploymentScheduler();
 
 /** GET /api/gtm/strategy-section-skills/:sectionId — Marqq2 skill playbook for Goals drafts */
 router.get('/gtm/strategy-section-skills/:sectionId', async (req, res) => {
@@ -187,6 +204,51 @@ router.get('/agents', (req, res) => {
   res.json({ agents, agentLogs });
 });
 
+// Static agent paths MUST be registered before /agents/:id
+router.get('/agents/deployments', (req, res) => {
+  const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+  const status = req.query?.status ? String(req.query.status) : null;
+  res.json({ ok: true, deployments: listDeployments({ workspaceId, status }) });
+});
+
+router.post('/agents/deployments', (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
+  const agentName = String(req.body?.agentName || '').trim().toLowerCase();
+  if (!agentName) return res.status(400).json({ ok: false, error: 'agentName required' });
+  const id = `dep_${Date.now().toString(36)}`;
+  const entry = {
+    id,
+    agentName,
+    agentDisplayName: req.body?.agentDisplayName || agentName,
+    workspaceId,
+    companyId: workspaceId,
+    sectionId: req.body?.sectionId || null,
+    sectionTitle: req.body?.sectionTitle || req.body?.sectionId || 'Manual deployment',
+    summary: req.body?.summary || '',
+    bullets: Array.isArray(req.body?.bullets) ? req.body.bullets : [],
+    openScreen: req.body?.openScreen || null,
+    scheduleMode: req.body?.scheduleMode || 'once',
+    recurrenceMinutes: Number(req.body?.recurrenceMinutes || 10080),
+    deliveryMode: req.body?.deliveryMode || 'draft',
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    scheduledFor: req.body?.scheduledFor || new Date().toISOString(),
+    runCount: 0,
+    triggeredBy: 'api',
+  };
+  updateDb((state) => ({
+    ...state,
+    agent_deployments: [entry, ...(state.agent_deployments || [])],
+  }));
+  processDeploymentQueueTick().catch(() => {});
+  res.json({ ok: true, deployment: entry });
+});
+
+router.post('/agents/scheduler/tick', async (_req, res) => {
+  const result = await processDeploymentQueueTick();
+  res.json({ ok: true, ...result });
+});
+
 // GET agent logs & stats
 router.get('/agents/:id', (req, res) => {
   const db = getDb();
@@ -207,12 +269,67 @@ router.post('/agents/plan', (req, res) => {
   res.json({ plan });
 });
 
+/** POST /api/strategy/activate — persist Agent OS + seed scheduled deployments from locked GTM */
+router.post('/strategy/activate', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
+    const result = activateStrategyExecution({
+      strategy: req.body?.strategy,
+      agentOs: req.body?.agentOs || null,
+      workspaceId,
+      companyId: workspaceId,
+    });
+    // Kick an immediate tick so drafts appear without waiting a full minute
+    processDeploymentQueueTick().catch(() => {});
+    res.json(result);
+  } catch (err) {
+    console.error('[strategy/activate]', err);
+    res.status(400).json({ ok: false, error: err?.message || 'Activate failed' });
+  }
+});
+
+router.get('/agent-os', (req, res) => {
+  const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+  const os = loadAgentOsProfile(workspaceId);
+  res.json({ ok: true, agentOs: os });
+});
+
+router.post('/agent-os', (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+  const saved = saveAgentOsProfile(req.body?.agentOs || req.body, workspaceId);
+  res.json({ ok: true, agentOs: saved });
+});
+
+router.post('/agents/:name/run', async (req, res) => {
+  try {
+    const result = await executeAgentRun({
+      agentName: req.params.name,
+      company_id: req.body?.company_id || req.body?.companyId || DEFAULT_WS,
+      query: req.body?.query || '',
+      deployment_id: req.body?.deployment_id || req.body?.deploymentId || null,
+      delivery_mode: req.body?.delivery_mode || req.body?.deliveryMode || 'draft',
+      triggered_by: req.body?.triggered_by || 'api',
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || 'Agent run failed' });
+  }
+});
+
+router.get('/automations/scheduled', (req, res) => {
+  const companyId = String(req.query?.companyId || DEFAULT_WS).trim();
+  res.json({ ok: true, automations: listScheduledAutomations(companyId) });
+});
+
 // POST decision approve/dismiss
 router.post('/approvals/decide', (req, res) => {
   const { id, decision } = req.body; // 'approved' or 'rejected'
-  const db = updateDb(state => {
+  const db = updateDb((state) => {
     const nextApproved = { ...state.approvedActions, [id]: decision };
-    return { ...state, approvedActions: nextApproved };
+    const approvals = (state.approvals || []).map((a) =>
+      a.id === id ? { ...a, status: decision, decidedAt: new Date().toISOString() } : a
+    );
+    return { ...state, approvedActions: nextApproved, approvals };
   });
   res.json({ success: true, approvedActions: db.approvedActions });
 });
@@ -726,6 +843,8 @@ const CONNECTOR_APP_MAP = {
   salesforce: 'salesforce',
   ga4: 'google_analytics',
   gsc: 'google_search_console',
+  google_sheets: 'googlesheets',
+  google_drive: 'googledrive',
   apollo: 'apollo',
   gmail: 'gmail',
   slack: 'slack',
@@ -741,6 +860,8 @@ const AUTH_CONFIG_ENV_KEYS = {
   salesforce: 'COMPOSIO_SALESFORCE_AUTH_CONFIG_ID',
   ga4: 'COMPOSIO_GOOGLE_ANALYTICS_AUTH_CONFIG_ID',
   gsc: 'COMPOSIO_GOOGLE_SEARCH_CONSOLE_AUTH_CONFIG_ID',
+  google_sheets: 'COMPOSIO_GOOGLE_SHEETS_AUTH_CONFIG_ID',
+  google_drive: 'COMPOSIO_GOOGLE_DRIVE_AUTH_CONFIG_ID',
   apollo: 'COMPOSIO_APOLLO_AUTH_CONFIG_ID',
   gmail: 'COMPOSIO_GMAIL_AUTH_CONFIG_ID',
   slack: 'COMPOSIO_SLACK_AUTH_CONFIG_ID',
@@ -810,9 +931,11 @@ router.get('/integrations', async (req, res) => {
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
     { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
+    { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
+    { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
+    { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
     { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
     { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
-    { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' }
   ];
 
   if (!apiKey) {
@@ -908,18 +1031,85 @@ router.post('/integrations/connect', async (req, res) => {
 // In-memory connector preferences store per companyId
 const preferencesStore = new Map();
 
+const NOURIVA_DEFAULT_PREFS = {
+  google_ads_customer_id: '842-192-3841',
+  meta_ads_account_id: 'act_1721558035534754',
+  linkedin_ads_account_id: '503920194',
+  ga4_property_id: 'properties/534425303',
+  gsc_site_url: 'https://nouriva.tech/',
+  google_sheets_spreadsheet_id: process.env.GOOGLE_SHEETS_SPREADSHEET_ID || '1VcoUynWArCt6RaKdSHfOfb0pPka3nPd0AzA28NeKAxk',
+  salesforce_account_id: '00D5e0000014abc',
+  hubspot_account_id: '29401928',
+};
+
+/** GET /api/analytics/dashboard — live GSC + Meta (+ GA4 status) scorecard */
+router.get('/analytics/dashboard', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.query.workspaceId || DEFAULT_WS).trim();
+    const period = String(req.query.period || '30d');
+    const prefs = preferencesStore.get(companyId) || {};
+    const data = await getAnalyticsDashboard({
+      companyId,
+      period,
+      ga4PropertyId: req.query.ga4PropertyId || null,
+      gscSiteUrl: req.query.gscSiteUrl || null,
+      metaAdsAccount: req.query.metaAdsAccount || null,
+      googleAdsCustomer: req.query.googleAdsCustomer || null,
+      preferences: { ...NOURIVA_DEFAULT_PREFS, ...prefs },
+    });
+    res.json(data);
+  } catch (err) {
+    console.error('[analytics/dashboard]', err);
+    res.json({
+      ...buildEmptyDashboard(String(req.query.period || '30d')),
+      dataNote: err?.message || 'Analytics dashboard failed',
+    });
+  }
+});
+
+/**
+ * GET/POST /api/command-center — AI insights home payload.
+ * POST body may include strategy context: northStar, loopStatus, bottleneck, highPriorityAgents, nextBestAction
+ */
+async function handleCommandCenter(req, res) {
+  try {
+    const companyId = String(
+      req.body?.companyId || req.query.companyId || req.query.workspaceId || DEFAULT_WS
+    ).trim();
+    const period = String(req.body?.period || req.query.period || '30d');
+    const prefs = preferencesStore.get(companyId) || {};
+    const withLlm = String(req.body?.withLlm ?? req.query.withLlm ?? '1') !== '0';
+    const context = {
+      northStar: req.body?.northStar || req.query.northStar || null,
+      quantifiedTarget: req.body?.quantifiedTarget || null,
+      loopStatus: req.body?.loopStatus || null,
+      bottleneck: req.body?.bottleneck || null,
+      diagnosisSummary: req.body?.diagnosisSummary || null,
+      periodLabel: req.body?.periodLabel || null,
+      highPriorityAgents: req.body?.highPriorityAgents || [],
+      nextBestAction: req.body?.nextBestAction || null,
+    };
+    const data = await getCommandCenter({
+      companyId,
+      period,
+      preferences: { ...NOURIVA_DEFAULT_PREFS, ...prefs },
+      context,
+      withLlm,
+    });
+    res.json(data);
+  } catch (err) {
+    console.error('[command-center]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Command center failed' });
+  }
+}
+
+router.get('/command-center', handleCommandCenter);
+router.post('/command-center', handleCommandCenter);
+
 // GET /api/integrations/preferences?companyId=X
 router.get('/integrations/preferences', (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
-  const prefs = preferencesStore.get(companyId) || {
-    google_ads_customer_id: '842-192-3841',
-    meta_ads_account_id: 'act_492019482',
-    linkedin_ads_account_id: '503920194',
-    ga4_property_id: 'properties/392019481',
-    gsc_site_url: 'https://theelevate.co.in',
-    salesforce_account_id: '00D5e0000014abc',
-    hubspot_account_id: '29401928'
-  };
+  const prefs = preferencesStore.get(companyId) || { ...NOURIVA_DEFAULT_PREFS };
   res.json({ preferences: prefs });
 });
 
