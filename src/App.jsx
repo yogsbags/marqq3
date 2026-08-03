@@ -299,7 +299,15 @@ export default function App() {
     );
   }
 
-  if (activeScreen === 'login' || !session) {
+  // Unauthenticated: only login / signup (signup must win over the !session catch-all)
+  if (!session) {
+    if (activeScreen === 'signup') {
+      return <SignUpView setActiveScreen={setActiveScreen} />;
+    }
+    return <SignInView setActiveScreen={setActiveScreen} />;
+  }
+
+  if (activeScreen === 'login') {
     return <SignInView setActiveScreen={setActiveScreen} />;
   }
 
@@ -307,7 +315,7 @@ export default function App() {
     return <SignUpView setActiveScreen={setActiveScreen} />;
   }
 
-  if (activeScreen === 'onboarding') {
+  if (activeScreen === 'onboarding' || !isOnboardingComplete()) {
     return <OnboardingView setActiveScreen={setActiveScreen} />;
   }
 
