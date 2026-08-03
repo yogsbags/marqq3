@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Mail, Linkedin, Phone, Send, CheckCircle, RefreshCw, Sparkles, ArrowLeft } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import { WORKSPACE_ID, loadLocalBrandContext } from '../lib/brandContext';
+import { getAudienceProfile, getCompanyName, wizardAnswerLabel } from '../lib/liveWorkspace';
+import { loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
 
 const STEPS = [
   { id: 'prospects', label: '1 · Prospects' },
@@ -9,21 +12,63 @@ const STEPS = [
   { id: 'inbox', label: '4 · Sent & replies' },
 ];
 
-const NOURIVA_DEFAULTS = {
-  companyName: 'Nouriva AI',
-  companyId: 'marqq-ws-1',
-  workspaceId: 'marqq-ws-1',
-  senderName: 'Yogesh',
-  question:
-    'B2B clinical partners for Nouriva AI — lab-personalized nutrition guidance for patients. Book a 15-min intro.',
-  titles: ['Endocrinologist', 'Dietitian', 'Medical Director', 'Head of Nutrition', 'Clinical Nutrition Manager'],
-  industries: ['hospital & health care', 'medical practice'],
-  contactChannels: ['email'],
-  country: 'India',
-  limit: 8,
-};
+/** Derive Apollo person titles from ICP / persona free text. */
+function titlesFromAudience(icp = '', persona = '') {
+  const blob = `${persona} ${icp}`.trim();
+  if (!blob) return ['Founder', 'CEO', 'Head of Marketing', 'VP Sales', 'Managing Director'];
+  const parts = blob
+    .split(/[,;/|]| and | & |\n/i)
+    .map((s) => s.replace(/^(vp|head of|chief|director of)\s+/i, (m) => m).trim())
+    .map((s) => s.replace(/^[^a-zA-Z]+/, '').trim())
+    .filter((s) => s.length >= 3 && s.length <= 60)
+    .slice(0, 6);
+  if (parts.length) return parts;
+  // Fallback: use first meaningful phrase as a single title search term
+  return [blob.slice(0, 48)];
+}
+
+function liveOutreachDefaults() {
+  const brand = loadLocalBrandContext() || {};
+  const audience = getAudienceProfile();
+  const company = getCompanyName();
+  const doc = loadStrategyDoc();
+  const ga = doc?.goalAlignment || {};
+  const icp = audience.icp || brand.icp || localStorage.getItem('marqq_ob_icp') || '';
+  const persona = audience.persona || wizardAnswerLabel('persona') || '';
+  const niche = audience.niche || brand.niche || localStorage.getItem('marqq_ob_niche') || '';
+  const outcome = ga.quantified_target || northStarLabel() || brand.outcome || localStorage.getItem('marqq_ob_outcome') || '';
+  const titles = titlesFromAudience(icp, persona);
+  const industries = niche
+    ? niche
+        .split(/[,;/]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+
+  return {
+    companyName: company,
+    companyId: WORKSPACE_ID,
+    workspaceId: WORKSPACE_ID,
+    senderName: localStorage.getItem('marqq_ob_senderName') || 'Marqq',
+    question: [
+      `Prospects for ${company}`,
+      icp ? `— ICP: ${icp}` : '',
+      outcome ? `— goal: ${outcome}` : '',
+      'Book a short intro.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    titles,
+    industries,
+    contactChannels: ['email'],
+    country: localStorage.getItem('marqq_ob_country') || 'India',
+    limit: 8,
+  };
+}
 
 export default function OutreachStudio({ setActiveScreen }) {
+  const [outreachDefaults] = useState(() => liveOutreachDefaults());
   const [step, setStep] = useState('prospects');
   const [runId, setRunId] = useState(null);
   const [prospects, setProspects] = useState([]);
@@ -31,7 +76,7 @@ export default function OutreachStudio({ setActiveScreen }) {
   const [composeChannel, setComposeChannel] = useState('email');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
-  const [testTo, setTestTo] = useState('yogsbags@gmail.com');
+  const [testTo, setTestTo] = useState('');
   const [replies, setReplies] = useState([]);
   const [sent, setSent] = useState([]);
   const [inboxTab, setInboxTab] = useState('replies');
@@ -50,6 +95,7 @@ export default function OutreachStudio({ setActiveScreen }) {
   const [waStatuses, setWaStatuses] = useState(null);
 
   const selected = prospects.find((p) => p.id === selectedId) || null;
+  const company = outreachDefaults.companyName || getCompanyName();
 
   const connectorStatus = (id) => {
     const c = connectors.find((x) => x.id === id);
@@ -59,7 +105,7 @@ export default function OutreachStudio({ setActiveScreen }) {
   };
 
   useEffect(() => {
-    fetch('/api/integrations?companyId=marqq-ws-1')
+    fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
       .then((r) => r.json())
       .then((d) => setConnectors(d.connectors || []))
       .catch(() => {});
@@ -67,7 +113,7 @@ export default function OutreachStudio({ setActiveScreen }) {
 
   const loadWaTemplates = async () => {
     try {
-      const res = await fetch('/api/outreach/whatsapp/templates?companyId=marqq-ws-1');
+      const res = await fetch(`/api/outreach/whatsapp/templates?companyId=${encodeURIComponent(WORKSPACE_ID)}`);
       const data = await res.json();
       setWaTemplates(Array.isArray(data.templates) ? data.templates : []);
     } catch {
@@ -120,7 +166,7 @@ export default function OutreachStudio({ setActiveScreen }) {
       const res = await fetch('/api/outreach/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(NOURIVA_DEFAULTS),
+        body: JSON.stringify(outreachDefaults),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -450,9 +496,12 @@ export default function OutreachStudio({ setActiveScreen }) {
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div>
-              <h3 style={{ margin: 0 }}>Nouriva B2B prospects</h3>
+              <h3 style={{ margin: 0, color: 'var(--color-text)' }}>{company} prospects</h3>
               <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                Apollo titles: Endocrinologist, Dietitian, Medical Director…
+                Apollo titles from your ICP
+                {outreachDefaults.titles?.length
+                  ? `: ${outreachDefaults.titles.slice(0, 4).join(', ')}${outreachDefaults.titles.length > 4 ? '…' : ''}`
+                  : ' (set ICP in Audience / Brand DNA)'}
               </p>
             </div>
             <button
