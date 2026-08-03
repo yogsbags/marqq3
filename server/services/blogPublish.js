@@ -481,3 +481,132 @@ export async function publishBlogPackage({
     url: formatted.canonical,
   };
 }
+
+/**
+ * Publish arbitrary HTML to GitHub (landing pages / lead magnet offers).
+ * Default: nouriva-landing/lp/{slug}.html → https://nouriva.tech/lp/{slug}.html
+ */
+export async function publishStaticHtmlPage({
+  html,
+  title,
+  slug,
+  meta_description = '',
+  companyName = 'Nouriva AI',
+  companyId = 'marqq-ws-1',
+  publish_live = false,
+  path_prefix = 'nouriva-landing/lp',
+  public_base = 'https://nouriva.tech',
+  url_prefix = '/lp',
+  overrides = {},
+} = {}) {
+  const cfg = publishConfig({
+    ...overrides,
+    path_prefix,
+    public_base,
+    path_style: 'flat_html',
+  });
+  const safeSlug = slugify(slug || title) || 'page';
+  const file_path = `${cfg.pathPrefix}/${safeSlug}.html`.replace(/\/+/g, '/');
+  // Cloudflare Assets redirect /lp/foo.html → /lp/foo (200 without extension)
+  const canonical = `${cfg.publicBase}${url_prefix}/${safeSlug}`;
+  const doc = String(html || '').trim();
+  if (!doc) return { ok: false, error: 'HTML is empty' };
+
+  const packagePayload = {
+    connector: 'github',
+    status: 'formatted',
+    publish_live: Boolean(publish_live),
+    title: String(title || safeSlug),
+    slug: safeSlug,
+    meta_description: String(meta_description || '').slice(0, 160),
+    canonical,
+    file_path,
+    html_bytes: Buffer.byteLength(doc, 'utf8'),
+    repo: { owner: cfg.owner, name: cfg.repo, branch: cfg.branch },
+    deployment: {
+      provider: cfg.deployProvider,
+      status: publish_live ? 'pending_push' : 'dry_run',
+      workflow: '.github/workflows/deploy-nouriva-landing.yml',
+      note: 'GitHub push under nouriva-landing/** triggers Cloudflare Worker deploy via Actions.',
+      public_url: canonical,
+    },
+    html: doc,
+    companyName,
+  };
+
+  if (!publish_live) {
+    return {
+      ok: true,
+      requires_approval: true,
+      note: 'Draft package only — set publish_live=true to write GitHub.',
+      publish: packagePayload,
+      url: canonical,
+    };
+  }
+
+  const entityId = String(companyId || process.env.COMPOSIO_ENTITY_ID || 'marqq-ws-1').trim();
+  const contentBase64 = Buffer.from(doc, 'utf8').toString('base64');
+  const message = `Marqq publish page: ${packagePayload.title}`;
+
+  const sha = await getGithubFileSha({
+    owner: cfg.owner,
+    repo: cfg.repo,
+    path: file_path,
+    branch: cfg.branch,
+    entityId,
+  });
+
+  const args = {
+    owner: cfg.owner,
+    repo: cfg.repo,
+    path: file_path,
+    branch: cfg.branch,
+    message,
+    content: contentBase64,
+  };
+  if (sha) args.sha = sha;
+
+  let result = await executeComposioAction(
+    'GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS',
+    args,
+    entityId,
+    'github'
+  );
+  let via = 'composio';
+
+  if (result.error) {
+    const token = await resolveGithubToken();
+    if (!token) {
+      return {
+        ok: false,
+        error: `${result.error} (and no GITHUB_TOKEN / gh auth for fallback)`,
+        publish: packagePayload,
+      };
+    }
+    const fallback = await putGithubFileViaToken({
+      owner: cfg.owner,
+      repo: cfg.repo,
+      path: file_path,
+      branch: cfg.branch,
+      message,
+      contentBase64,
+      sha,
+      token,
+    });
+    if (fallback.error) {
+      return { ok: false, error: `Composio: ${result.error}; GitHub token: ${fallback.error}`, publish: packagePayload };
+    }
+    result = fallback;
+    via = 'github_token';
+  }
+
+  packagePayload.status = 'published';
+  packagePayload.deployment.status = 'queued_by_repository_push';
+  packagePayload.github = {
+    sha: extractGithubSha(result) || result.sha || sha,
+    via,
+    connectedAccountId: result.connectedAccountId || null,
+  };
+
+  return { ok: true, publish: packagePayload, url: canonical };
+}

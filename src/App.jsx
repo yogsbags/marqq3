@@ -13,6 +13,8 @@ import AgentsHub from './views/AgentsHub.jsx';
 import OutreachStudio from './views/OutreachStudio.jsx';
 import CampaignsView from './views/CampaignsView.jsx';
 import ContentStudio from './views/ContentStudio.jsx';
+import LandingStudio from './views/LandingStudio.jsx';
+import LeadMagnetStudio from './views/LeadMagnetStudio.jsx';
 import SocialStudio from './views/SocialStudio.jsx';
 import CreativeStudio from './views/CreativeStudio.jsx';
 import PaidStudio from './views/PaidStudio.jsx';
@@ -23,7 +25,6 @@ import { IntegrationsView } from './views/IntegrationsView.jsx';
 import {
   IdeasView,
   CalendarView,
-  LeadMagnetsView,
   CrmView,
   VoicebotView,
   ExperimentsView,
@@ -40,7 +41,6 @@ import {
   AnalyticsView,
   AudiencesView,
   BrandView,
-  LandingPagesView,
   BillingView,
   WorkflowsView,
   PricingView,
@@ -236,6 +236,7 @@ export default function App() {
         if (dashRes && dashRes.changes) setChanges(dashRes.changes);
         if (dashRes && dashRes.priorities) setPriorities(dashRes.priorities);
         if (campRes && campRes.campaigns) setCampaigns(campRes.campaigns);
+        else if (Array.isArray(campRes)) setCampaigns(campRes);
         const osAgents = agentsFromOs(loadAgentOs());
         if (osAgents?.length && loadAgentOs()?.agent_roster) {
           setAgents(osAgents);
@@ -248,6 +249,7 @@ export default function App() {
         if (appRes && appRes.approvals) setApprovals(appRes.approvals);
         if (prosRes && prosRes.prospects) setProspects(prosRes.prospects);
         if (taskRes && taskRes.tasks) setTasks(taskRes.tasks);
+        else if (Array.isArray(taskRes)) setTasks(taskRes);
       } catch (err) {
         // Silent fallback
       }
@@ -258,6 +260,17 @@ export default function App() {
   // Handlers
   const handleDecideAction = (key, decision) => {
     setApprovedActions(prev => ({ ...prev, [key]: decision }));
+    fetch('/api/approvals/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: key, decision }),
+    }).catch(() => {});
+    if (decision === 'approved') {
+      const ap = (approvals || []).find((a) => a.id === key);
+      if (ap?.openScreen) {
+        setTimeout(() => setActiveScreen(ap.openScreen), 200);
+      }
+    }
   };
 
   const handleUndoAction = (key) => {
@@ -266,6 +279,11 @@ export default function App() {
       delete next[key];
       return next;
     });
+    fetch('/api/approvals/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: key, decision: 'pending' }),
+    }).catch(() => {});
   };
 
   const handleCreateCampaign = (newCamp) => {
@@ -424,17 +442,18 @@ export default function App() {
               approvedActions={approvedActions}
               onDecideAction={handleDecideAction}
               onUndoAction={handleUndoAction}
+              setActiveScreen={setActiveScreen}
             />
           )}
 
           {/* Full-featured implementations of all remaining views */}
           {activeScreen === 'ideas' && <IdeasView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'calendar' && <CalendarView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'leadmagnets' && <LeadMagnetsView setActiveScreen={setActiveScreen} />}
+          {activeScreen === 'leadmagnets' && <LeadMagnetStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'crm' && <CrmView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'paid' && <PaidStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'social' && <SocialStudio setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'voicebot' && <VoicebotView />}
+          {activeScreen === 'voicebot' && <VoicebotView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'experiments' && <ExperimentsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'reporting' && <ReportingView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'referrals' && <ReferralsView setActiveScreen={setActiveScreen} />}
@@ -443,7 +462,7 @@ export default function App() {
           {activeScreen === 'knowledge' && <KnowledgeView />}
           {activeScreen === 'files' && <FilesView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'integrations' && <IntegrationsView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'admin' && <AdminView />}
+          {activeScreen === 'admin' && <AdminView setActiveScreen={setActiveScreen} userEmail={session?.user?.email || ''} />}
           {activeScreen === 'help' && <HelpView setActiveScreen={setActiveScreen} />}
 
           {activeScreen === 'strategy' && <StrategyView setActiveModal={setActiveModal} setActiveScreen={setActiveScreen} />}
@@ -451,7 +470,7 @@ export default function App() {
           {activeScreen === 'analytics' && <AnalyticsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'audiences' && <AudiencesView setActiveModal={setActiveModal} setActiveScreen={setActiveScreen} />}
           {activeScreen === 'brand' && <BrandView setActiveScreen={setActiveScreen} />}
-          {activeScreen === 'landingpages' && <LandingPagesView setActiveScreen={setActiveScreen} />}
+          {activeScreen === 'landingpages' && <LandingStudio setActiveScreen={setActiveScreen} />}
           {activeScreen === 'billing' && <BillingView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'workflows' && <WorkflowsView setActiveScreen={setActiveScreen} />}
           {activeScreen === 'pricing' && <PricingView setActiveScreen={setActiveScreen} />}

@@ -1,17 +1,19 @@
 import React from 'react';
-import { CheckCircle2, XCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, XCircle } from 'lucide-react';
 
-export default function ApprovalsQueue({ approvals, approvedActions, onDecideAction, onUndoAction }) {
+export default function ApprovalsQueue({ approvals, approvedActions, onDecideAction, onUndoAction, setActiveScreen }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Header */}
       <div>
         <h1 style={{ marginBottom: '4px' }}>Approvals Queue</h1>
         <p className="text-muted">Human-in-the-loop decision gate for autonomous agent budget, content, and sequence executions.</p>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {approvals.map((ap) => {
+        {!approvals?.length ? (
+          <div className="card text-muted">No pending approvals. Run Orchestration / Workflows to generate drafts.</div>
+        ) : null}
+        {(approvals || []).map((ap) => {
           const decision = approvedActions[ap.id];
 
           return (
@@ -30,24 +32,29 @@ export default function ApprovalsQueue({ approvals, approvedActions, onDecideAct
                 <div>
                   {decision === 'approved' ? (
                     <span className="tag tag-accent" style={{ padding: '6px 12px', fontSize: '13px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                      <CheckCircle2 size={14} /> Approved &amp; Executing
-                      <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '11px', marginLeft: '8px' }} onClick={() => onUndoAction(ap.id)}>
+                      <CheckCircle2 size={14} /> Approved
+                      {ap.openScreen && setActiveScreen ? (
+                        <button type="button" className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '11px', marginLeft: '8px' }} onClick={() => setActiveScreen(ap.openScreen)}>
+                          Open studio
+                        </button>
+                      ) : null}
+                      <button type="button" className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '11px', marginLeft: '8px' }} onClick={() => onUndoAction(ap.id)}>
                         Undo
                       </button>
                     </span>
                   ) : decision === 'rejected' ? (
                     <span className="tag tag-neutral" style={{ padding: '6px 12px', fontSize: '13px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                       <XCircle size={14} /> Dismissed
-                      <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '11px', marginLeft: '8px' }} onClick={() => onUndoAction(ap.id)}>
+                      <button type="button" className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '11px', marginLeft: '8px' }} onClick={() => onUndoAction(ap.id)}>
                         Undo
                       </button>
                     </span>
                   ) : (
                     <div style={{ display: 'flex', gap: '10px' }}>
-                      <button className="btn btn-primary" onClick={() => onDecideAction(ap.id, 'approved')}>
+                      <button type="button" className="btn btn-primary" onClick={() => onDecideAction(ap.id, 'approved')}>
                         Approve Action
                       </button>
-                      <button className="btn btn-secondary" onClick={() => onDecideAction(ap.id, 'rejected')}>
+                      <button type="button" className="btn btn-secondary" onClick={() => onDecideAction(ap.id, 'rejected')}>
                         Dismiss
                       </button>
                     </div>

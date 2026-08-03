@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Bell, CheckCircle, ChevronDown, Shield, CreditCard, LogOut } from 'lucide-react';
 import { getCompanyName } from '../../lib/liveWorkspace';
+import NotificationsPanel from '../notifications/NotificationsPanel.jsx';
 
 export default function Header({
   activeScreen,
@@ -15,6 +16,7 @@ export default function Header({
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   const pendingApprovalsCount = Number(approvalsCount) || 0;
   const workspaceName = getCompanyName();
@@ -127,9 +129,29 @@ export default function Header({
           className="btn btn-secondary btn-icon"
           title="Notifications"
           onClick={() => setShowNotifications(!showNotifications)}
-          style={{ borderRadius: '0px' }}
+          style={{ position: 'relative', borderRadius: '0px' }}
         >
           <Bell size={16} />
+          {unreadNotifications > 0 && (
+            <span style={{
+              position: 'absolute',
+              top: '-4px',
+              right: '-4px',
+              background: 'var(--color-accent)',
+              color: 'var(--color-bg)',
+              fontSize: '9px',
+              fontWeight: 800,
+              minWidth: '15px',
+              height: '15px',
+              padding: '0 3px',
+              borderRadius: '0px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              {unreadNotifications > 99 ? '99+' : unreadNotifications}
+            </span>
+          )}
         </button>
 
         <div style={{ position: 'relative' }}>
@@ -198,6 +220,13 @@ export default function Header({
           )}
         </div>
       </div>
+
+      <NotificationsPanel
+        isOpen={showNotifications}
+        onClose={() => setShowNotifications(false)}
+        onScreenSelect={setActiveScreen}
+        onUnreadCountChange={setUnreadNotifications}
+      />
 
       {showSearchModal && (
         <div

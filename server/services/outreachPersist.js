@@ -143,3 +143,28 @@ export async function loadOutreachRun(runId) {
     return null;
   }
 }
+
+/** Load recent outreach runs + prospects for a workspace (Customer 360). */
+export async function listWorkspaceOutreachRuns(workspaceId, { limit = 20 } = {}) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !workspaceId) return [];
+  try {
+    const { data: runRows, error } = await db
+      .from('outreach_runs')
+      .select('*')
+      .or(`workspace_id.eq.${workspaceId},company_id.eq.${workspaceId}`)
+      .order('updated_at', { ascending: false })
+      .limit(Math.min(Math.max(Number(limit) || 20, 1), 50));
+    if (error || !runRows?.length) return [];
+
+    const runs = [];
+    for (const runRow of runRows) {
+      const { data: prospects } = await db.from('outreach_prospects').select('*').eq('run_id', runRow.id);
+      runs.push(runFromRows(runRow, prospects || []));
+    }
+    return runs;
+  } catch (err) {
+    console.warn('[outreach persist] list workspace:', err.message);
+    return [];
+  }
+}

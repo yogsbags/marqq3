@@ -11,6 +11,7 @@ import {
   loadAgentOsProfile,
   saveAgentOsProfile,
 } from './agentOsStore.js';
+import { notifyDeploymentResult } from './agentNotifications.js';
 
 const PORT = () => Number(process.env.PORT || 3001);
 const INTERVAL_MS = Math.max(
@@ -222,6 +223,7 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
           error: null,
         };
         result.ran.push({ id: entry.id, agentName: entry.agentName, approvalId: run.approvalId });
+        void notifyDeploymentResult(queue[i], { ok: true, approvalId: run.approvalId });
       } catch (err) {
         const recurring = entry.scheduleMode === 'recurring' || entry.scheduleMode === 'monitor';
         queue[i] = {
@@ -232,6 +234,7 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
           scheduledFor: recurring ? resolveDeploymentNextRun(entry) : entry.scheduledFor,
         };
         result.failed.push({ id: entry.id, error: err?.message || String(err) });
+        void notifyDeploymentResult(queue[i], { ok: false, error: err?.message || String(err) });
       }
 
       updateDb((state) => ({
@@ -240,15 +243,42 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
       }));
     }
 
-    // scheduled_automations: mark due rows as "checked" and bump next_run
+    // scheduled_automations: bump next_run and enqueue a real deployment when due
     updateDb((state) => {
       const next = ensureAgentCollections(state);
+      const queue = [...(next.agent_deployments || [])];
+      const enqueued = [];
       const autos = (next.scheduled_automations || []).map((row) => {
         if (!row.active) return row;
         const due = !row.next_run || Date.parse(row.next_run) <= Date.now();
         if (!due) return row;
         const mins =
           row.cron === 'every_2_days' ? 2880 : row.cron === 'twice_weekly' ? 5040 : 10080;
+        const agentName = String(row.params?.agent || 'neel').toLowerCase();
+        const sectionId = row.params?.sectionId || null;
+        const depId = `dep_auto_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        queue.unshift({
+          id: depId,
+          agentName,
+          agentDisplayName: agentName,
+          workspaceId: row.company_id || 'marqq-ws-1',
+          companyId: row.company_id || 'marqq-ws-1',
+          sectionId,
+          sectionTitle: sectionId || row.automation_id || 'Scheduled automation',
+          summary: `Automation ${row.automation_id || row.id}`,
+          bullets: [],
+          openScreen: row.params?.openScreen || null,
+          scheduleMode: 'once',
+          recurrenceMinutes: mins,
+          deliveryMode: 'draft',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          scheduledFor: new Date().toISOString(),
+          runCount: 0,
+          triggeredBy: 'automation',
+          automationId: row.automation_id || row.id,
+        });
+        enqueued.push(depId);
         return {
           ...row,
           last_run: new Date().toISOString(),
@@ -257,6 +287,16 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
         };
       });
       const runs = [
+        ...(enqueued.length
+          ? [
+              {
+                id: `ar_${randomUUID().slice(0, 8)}`,
+                at: new Date().toISOString(),
+                deployments: enqueued,
+                source: 'automations',
+              },
+            ]
+          : []),
         ...(result.ran.length
           ? [
               {
@@ -268,7 +308,12 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
           : []),
         ...(next.automation_runs || []),
       ].slice(0, 50);
-      return { ...next, scheduled_automations: autos, automation_runs: runs };
+      return {
+        ...next,
+        scheduled_automations: autos,
+        agent_deployments: queue,
+        automation_runs: runs,
+      };
     });
 
     if (result.ran.length || result.failed.length) {

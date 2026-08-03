@@ -486,3 +486,128 @@ export async function upsertProspectsToGoogleSheets(run, prospects, extras = {})
     url: `https://docs.google.com/spreadsheets/d/${resolved.spreadsheetId}`,
   };
 }
+
+function extractGridValues(result) {
+  const r = result?.result || result?.data || result || {};
+  if (Array.isArray(r.values)) return r.values;
+  if (Array.isArray(r.valueRanges?.[0]?.values)) return r.valueRanges[0].values;
+  if (Array.isArray(r.data?.values)) return r.data.values;
+  if (Array.isArray(r.data?.valueRanges?.[0]?.values)) return r.data.valueRanges[0].values;
+  // Some Composio wrappers nest under spreadsheet
+  if (Array.isArray(r.spreadsheet?.values)) return r.spreadsheet.values;
+  return [];
+}
+
+function rowsToLeadObjects(values) {
+  if (!Array.isArray(values) || values.length < 2) return [];
+  const headers = (values[0] || []).map((h) => String(h || '').trim().toLowerCase());
+  const headerIndex = (name) => headers.indexOf(String(name).toLowerCase());
+  const pick = (row, name) => {
+    const i = headerIndex(name);
+    return i >= 0 ? String(row[i] ?? '').trim() : '';
+  };
+
+  const leads = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    if (!row.some((c) => String(c || '').trim())) continue;
+    const email = pick(row, 'email');
+    const fullName = pick(row, 'full_name') || [pick(row, 'first_name'), pick(row, 'last_name')].filter(Boolean).join(' ');
+    if (!email && !fullName) continue;
+    leads.push({
+      id: pick(row, 'prospect_id') || `sheet-${i}`,
+      prospect_id: pick(row, 'prospect_id'),
+      full_name: fullName || email,
+      first_name: pick(row, 'first_name'),
+      last_name: pick(row, 'last_name'),
+      email,
+      phone: pick(row, 'phone'),
+      title: pick(row, 'title'),
+      company: pick(row, 'company'),
+      linkedin_url: pick(row, 'linkedin_url'),
+      status: pick(row, 'status') || 'fetched',
+      channel: pick(row, 'channel') || 'email',
+      subject: pick(row, 'subject'),
+      run_id: pick(row, 'run_id'),
+      workspace_id: pick(row, 'workspace_id'),
+      provider: pick(row, 'provider'),
+      campaign_id: pick(row, 'campaign_id'),
+      sent_at: pick(row, 'sent_at'),
+      replied_at: pick(row, 'replied_at'),
+      scheduled_for: pick(row, 'scheduled_for'),
+      next_action: pick(row, 'next_action'),
+      source: pick(row, 'source') || 'google_sheets',
+      updated_at: pick(row, 'updated_at'),
+      origin: 'google_sheets',
+    });
+  }
+  return leads;
+}
+
+/**
+ * Read CRM lead rows from the Outreach spreadsheet (Leads / Sheet1).
+ */
+export async function fetchLeadsFromGoogleSheets(companyId, { limit = 100 } = {}) {
+  const resolved = await resolveOutreachSpreadsheet(companyId, { createIfMissing: false });
+  if (!resolved.ok) {
+    return { ok: false, leads: [], reason: resolved.reason || resolved.error || 'sheets_unavailable' };
+  }
+
+  const worksheets = Array.from(
+    new Set([resolved.worksheet, DEFAULT_LEADS_WORKSHEET, 'Sheet1', 'Outreach Leads'].filter(Boolean))
+  );
+  let lastError = null;
+
+  for (const worksheet of worksheets) {
+    const quoted = `'${String(worksheet).replace(/'/g, "''")}'`;
+    const range = `${quoted}!A1:W${Math.min(Math.max(Number(limit) || 100, 10) + 1, 501)}`;
+
+    let read = await executeComposioAction(
+      'GOOGLESHEETS_BATCH_GET',
+      {
+        spreadsheet_id: resolved.spreadsheetId,
+        spreadsheetId: resolved.spreadsheetId,
+        ranges: [range],
+      },
+      companyId,
+      'google_sheets'
+    );
+    if (read.error) {
+      read = await executeComposioAction(
+        'GOOGLESHEETS_VALUES_GET',
+        {
+          spreadsheet_id: resolved.spreadsheetId,
+          spreadsheetId: resolved.spreadsheetId,
+          range,
+          sheet_name: worksheet,
+        },
+        companyId,
+        'google_sheets'
+      );
+    }
+    if (read.error) {
+      lastError = read.error;
+      continue;
+    }
+
+    const values = extractGridValues(read);
+    const leads = rowsToLeadObjects(values);
+    if (leads.length || values.length) {
+      return {
+        ok: true,
+        spreadsheetId: resolved.spreadsheetId,
+        worksheet,
+        url: `https://docs.google.com/spreadsheets/d/${resolved.spreadsheetId}`,
+        leads,
+        count: leads.length,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    leads: [],
+    spreadsheetId: resolved.spreadsheetId,
+    error: lastError || 'No lead rows found',
+  };
+}

@@ -15,6 +15,7 @@ import { loadStrategySectionPlaybook } from '../services/gtmStrategySkills.js';
 import { generateAutoSection } from '../services/gtmAutoSections.js';
 import { generateInterviewQuestionOptions } from '../services/gtmInterviewOptions.js';
 import { generateMarketingIdeas } from '../services/marketingIdeas.js';
+import { runMarketResearch } from '../services/marketResearch.js';
 import { defaultUiAgents, planAgentTask } from '../services/agentOs.js';
 import {
   createOutreachRun,
@@ -48,6 +49,24 @@ import {
   approveContentArticle,
   publishContentArticle,
 } from '../services/contentStudio.js';
+import {
+  createLandingRun,
+  getLandingRun,
+  generateLandingPage,
+  patchLandingPage,
+  approveLandingPage,
+  publishLandingPage,
+} from '../services/landingStudio.js';
+import {
+  createLeadMagnetRun,
+  getLeadMagnetRun,
+  designLeadMagnet,
+  generateLeadMagnetPage,
+  patchLeadMagnetPage,
+  approveLeadMagnet,
+  publishLeadMagnet,
+  captureLeadMagnetSubmission,
+} from '../services/leadMagnetStudio.js';
 import {
   createSocialRun,
   getSocialRun,
@@ -100,6 +119,8 @@ import {
 } from '../services/workspacePrefs.js';
 import { resolveCrmDestination } from '../services/crmLeads.js';
 import { resolveOutreachSpreadsheet } from '../services/googleSheetsLeads.js';
+import { buildCustomer360 } from '../services/customer360.js';
+import { collectTargetAccounts, runApolloSignals } from '../services/apolloSignals.js';
 import workspacesRouter from './workspaces.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { useSupabasePersistence } from '../lib/persistence.js';
@@ -107,6 +128,13 @@ import { upsertGtmModule, getActiveGtmModule, listGtmModules, lockGtmStrategy } 
 import { upsertCompanyFromBrand, loadCompanyBrand } from '../services/companiesStore.js';
 import { persistDeploymentToSupabase } from '../services/agentSupabase.js';
 import { generateFullStrategyDocument } from '../services/gtmFullStrategy.js';
+import {
+  listScheduledContent,
+  distributeContent,
+  rescheduleContent,
+  cancelScheduledContent,
+} from '../services/contentCalendar.js';
+import { getSupabaseWriteClient } from '../lib/supabase.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
@@ -239,6 +267,24 @@ router.post('/gtm/marketing-ideas/generate', async (req, res) => {
   }
 });
 
+/** POST /api/market/research — live competitor / category refresh (Compound Mini) */
+router.post('/market/research', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await runMarketResearch({
+      companyName: body.companyName || body.company || '',
+      website: body.website || '',
+      niche: body.niche || '',
+      icp: body.icp || '',
+      marketBrief: body.marketBrief || body.brief || '',
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[market/research]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Market research failed' });
+  }
+});
+
 
 // GET workspace & dashboard overview
 router.get('/dashboard', (req, res) => {
@@ -256,7 +302,8 @@ router.get('/dashboard', (req, res) => {
 // GET all campaigns
 router.get('/campaigns', (req, res) => {
   const db = getDb();
-  res.json(db.campaigns);
+  const campaigns = Array.isArray(db.campaigns) ? db.campaigns : [];
+  res.json({ campaigns });
 });
 
 // POST create campaign
@@ -264,7 +311,7 @@ router.post('/campaigns', (req, res) => {
   const { name, objective, channels, budget } = req.body;
   const db = updateDb(state => {
     const newCamp = {
-      id: `c${state.campaigns.length + 1}`,
+      id: `c${(state.campaigns || []).length + 1}`,
       name: name || 'New Campaign',
       objective: objective || 'Pipeline',
       channels: channels || 'Multi-channel',
@@ -279,9 +326,9 @@ router.post('/campaigns', (req, res) => {
       risk: 'No active risks.',
       channelList: [{ name: 'Paid Ads', share: '60%' }, { name: 'Email', share: '40%' }]
     };
-    return { ...state, campaigns: [newCamp, ...state.campaigns] };
+    return { ...state, campaigns: [newCamp, ...(state.campaigns || [])] };
   });
-  res.json(db.campaigns[0]);
+  res.json({ ok: true, campaign: db.campaigns[0], campaigns: db.campaigns });
 });
 
 // GET agents
@@ -337,6 +384,134 @@ router.post('/agents/deployments', (req, res) => {
   void persistDeploymentToSupabase(entry);
   processDeploymentQueueTick().catch(() => {});
   res.json({ ok: true, deployment: entry });
+});
+
+/** PATCH /api/agents/deployments/:id — pause | resume | stop | reschedule */
+router.patch('/agents/deployments/:id', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  const action = String(req.body?.action || '').toLowerCase();
+  let updated = null;
+  updateDb((state) => {
+    const queue = (state.agent_deployments || []).map((row) => {
+      if (String(row.id) !== id) return row;
+      if (action === 'pause') updated = { ...row, status: 'paused', updatedAt: new Date().toISOString() };
+      else if (action === 'resume') {
+        updated = {
+          ...row,
+          status: 'active',
+          scheduledFor: row.scheduledFor || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      } else if (action === 'stop') {
+        updated = { ...row, status: 'stopped', completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      } else if (action === 'reschedule') {
+        const scheduledFor = req.body?.scheduledFor || req.body?.publishAt;
+        if (!scheduledFor) return row;
+        updated = {
+          ...row,
+          status: ['paused', 'stopped', 'completed', 'failed'].includes(row.status) ? 'pending' : row.status || 'pending',
+          scheduledFor: new Date(scheduledFor).toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        updated = { ...row, ...req.body, id: row.id, updatedAt: new Date().toISOString() };
+      }
+      if (updated) void persistDeploymentToSupabase(updated);
+      return updated || row;
+    });
+    return { ...state, agent_deployments: queue };
+  });
+  if (!updated) return res.status(404).json({ ok: false, error: 'Deployment not found' });
+  res.json({ ok: true, deployment: updated });
+});
+
+/** Content calendar (Marqq2 content-studio scheduled posts) */
+router.get('/content-studio/scheduled', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.query.workspaceId || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'companyId is required' });
+    const result = await listScheduledContent(companyId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to list scheduled content' });
+  }
+});
+
+router.post('/content-studio/distribute', async (req, res) => {
+  try {
+    const result = await distributeContent({
+      companyId: req.body?.companyId || req.body?.workspaceId,
+      action: req.body?.action || req.body?.mode,
+      live: req.body?.live,
+      platform: req.body?.platform,
+      publishAt: req.body?.publishAt,
+      payload: req.body?.payload || {},
+      connector: req.body?.connector || null,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Distribute failed' });
+  }
+});
+
+router.patch('/content-studio/scheduled/:id', async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.query?.companyId || '').trim();
+    const item = await rescheduleContent(req.params.id, companyId, req.body?.publishAt);
+    res.json({ ok: true, item });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Reschedule failed' });
+  }
+});
+
+router.delete('/content-studio/scheduled/:id', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.body?.companyId || '').trim();
+    const item = await cancelScheduledContent(req.params.id, companyId);
+    res.json({ ok: true, item });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Cancel failed' });
+  }
+});
+
+/** Competitor alerts webhook (n8n / monitoring) — Marqq2 parity */
+router.post('/competitor-alerts/webhook', async (req, res) => {
+  try {
+    const sb = getSupabaseWriteClient();
+    if (!sb) return res.status(503).json({ error: 'Database not available' });
+    const body = req.body || {};
+    const userId = body.user_id || body.userId;
+    if (!userId) return res.status(400).json({ error: 'user_id required' });
+    const row = {
+      user_id: userId,
+      workspace_id: body.workspace_id || body.workspaceId || null,
+      competitor_name: body.competitor_name || body.competitorName || 'Competitor',
+      alert_type: body.alert_type || body.alertType || 'news',
+      title: body.title || 'Competitor update',
+      summary: body.summary || '',
+      full_content: body.full_content || body.fullContent || null,
+      source_url: body.source_url || body.sourceUrl || '',
+      source_domain: body.source_domain || body.sourceDomain || null,
+      published_at: body.published_at || body.publishedAt || null,
+      detected_at: body.detected_at || body.detectedAt || new Date().toISOString(),
+      sentiment: body.sentiment || 'neutral',
+      priority: body.priority || 'medium',
+      read: false,
+      dismissed: false,
+      archived: false,
+      content_hash: body.content_hash || body.contentHash || null,
+    };
+    const { data, error } = await sb.from('competitor_alerts').insert(row).select().single();
+    if (error) {
+      if (error.code === '42P01') {
+        return res.status(503).json({ error: 'competitor_alerts table missing — run Marqq2 migrations' });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+    res.json({ ok: true, alert: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Webhook failed' });
+  }
 });
 
 router.post('/agents/scheduler/tick', async (req, res) => {
@@ -416,6 +591,56 @@ router.post('/agents/:name/run', async (req, res) => {
 router.get('/automations/scheduled', (req, res) => {
   const companyId = String(req.query?.companyId || DEFAULT_WS).trim();
   res.json({ ok: true, automations: listScheduledAutomations(companyId) });
+});
+
+/** PATCH /api/automations/scheduled/:id — pause / resume */
+router.patch('/automations/scheduled/:id', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  const companyId = String(req.body?.companyId || req.query?.companyId || DEFAULT_WS).trim();
+  let updated = null;
+  updateDb((state) => {
+    const autos = (state.scheduled_automations || []).map((row) => {
+      if (String(row.automation_id || row.id) !== id) return row;
+      if (companyId && row.company_id && row.company_id !== companyId) return row;
+      updated = {
+        ...row,
+        active: req.body?.active != null ? Boolean(req.body.active) : !row.active,
+        updated_at: new Date().toISOString(),
+      };
+      return updated;
+    });
+    return { ...state, scheduled_automations: autos };
+  });
+  if (!updated) return res.status(404).json({ ok: false, error: 'Automation not found' });
+  res.json({ ok: true, automation: updated });
+});
+
+/** POST /api/automations/scheduled/:id/run — force-due + tick (enqueue deployment) */
+router.post('/automations/scheduled/:id/run', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const companyId = String(req.body?.companyId || req.query?.companyId || DEFAULT_WS).trim();
+    let found = false;
+    updateDb((state) => {
+      const autos = (state.scheduled_automations || []).map((row) => {
+        if (String(row.automation_id || row.id) !== id) return row;
+        if (companyId && row.company_id && row.company_id !== companyId) return row;
+        found = true;
+        return {
+          ...row,
+          active: true,
+          next_run: new Date(Date.now() - 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+      });
+      return { ...state, scheduled_automations: autos };
+    });
+    if (!found) return res.status(404).json({ ok: false, error: 'Automation not found' });
+    const result = await processDeploymentQueueTick({ force: true, workspaceId: companyId });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || 'Run failed' });
+  }
 });
 
 // POST decision approve/dismiss
@@ -775,6 +1000,144 @@ router.post('/content/runs/:runId/publish', async (req, res) => {
   }
 });
 
+// ── Landing Pages (Tara + Sam · page-cro / copywriting / form-cro) ───────────
+
+router.post('/landing/runs', (req, res) => {
+  try {
+    const run = createLandingRun(req.body || {});
+    res.json({ ok: true, runId: run.id, run });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/landing/runs/:runId', (req, res) => {
+  const run = getLandingRun(req.params.runId);
+  if (!run) return res.status(404).json({ ok: false, error: 'Not found' });
+  res.json({ ok: true, run });
+});
+
+router.post('/landing/runs/:runId/generate', async (req, res) => {
+  try {
+    const run = await generateLandingPage(req.params.runId, req.body || {});
+    res.json({ ok: true, run });
+  } catch (err) {
+    console.error('[landing/generate]', err);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.patch('/landing/runs/:runId/page', (req, res) => {
+  try {
+    const run = patchLandingPage(req.params.runId, req.body || {});
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/landing/runs/:runId/approve', (req, res) => {
+  try {
+    const run = approveLandingPage(req.params.runId);
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/landing/runs/:runId/publish', async (req, res) => {
+  try {
+    const result = await publishLandingPage(req.params.runId, {
+      publish_live: req.body?.publish_live === true,
+      ...req.body,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[landing/publish]', err);
+    res.status(400).json({ ok: false, error: err.message, publish: err.publish || null });
+  }
+});
+
+// ── Lead Magnets (Riya concept · Tara/Sam gated LP) ─────────────────────────
+
+router.post('/lead-magnets/runs', (req, res) => {
+  try {
+    const run = createLeadMagnetRun(req.body || {});
+    res.json({ ok: true, runId: run.id, run });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/lead-magnets/runs/:runId', (req, res) => {
+  const run = getLeadMagnetRun(req.params.runId);
+  if (!run) return res.status(404).json({ ok: false, error: 'Not found' });
+  res.json({ ok: true, run });
+});
+
+router.post('/lead-magnets/runs/:runId/design', async (req, res) => {
+  try {
+    const run = await designLeadMagnet(req.params.runId, req.body || {});
+    res.json({ ok: true, run });
+  } catch (err) {
+    console.error('[lead-magnets/design]', err);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/lead-magnets/runs/:runId/generate', async (req, res) => {
+  try {
+    const run = await generateLeadMagnetPage(req.params.runId, req.body || {});
+    res.json({ ok: true, run });
+  } catch (err) {
+    console.error('[lead-magnets/generate]', err);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.patch('/lead-magnets/runs/:runId/page', (req, res) => {
+  try {
+    const run = patchLeadMagnetPage(req.params.runId, req.body || {});
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/lead-magnets/runs/:runId/approve', (req, res) => {
+  try {
+    const run = approveLeadMagnet(req.params.runId);
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/lead-magnets/runs/:runId/publish', async (req, res) => {
+  try {
+    const result = await publishLeadMagnet(req.params.runId, {
+      publish_live: req.body?.publish_live === true,
+      ...req.body,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[lead-magnets/publish]', err);
+    res.status(400).json({ ok: false, error: err.message, publish: err.publish || null });
+  }
+});
+
+/** Public lead magnet form capture → Sheets/CRM */
+router.post('/leads/capture', async (req, res) => {
+  try {
+    const result = await captureLeadMagnetSubmission(req.body || {});
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('[leads/capture]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Capture failed' });
+  }
+});
+
 // ── Social Studio (Kiran text) ──────────────────────────────────────────────
 
 router.post('/social/runs', async (req, res) => {
@@ -1048,7 +1411,23 @@ router.post('/ai/ask', (req, res) => {
 // GET tasks & update tasks
 router.get('/tasks', (req, res) => {
   const db = getDb();
-  res.json(db.tasks);
+  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
+  res.json({ tasks });
+});
+
+router.patch('/tasks/:id', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  let updated = null;
+  const db = updateDb((state) => {
+    const tasks = (state.tasks || []).map((t) => {
+      if (String(t.id) !== id) return t;
+      updated = { ...t, ...req.body, id: t.id, updatedAt: new Date().toISOString() };
+      return updated;
+    });
+    return { ...state, tasks };
+  });
+  if (!updated) return res.status(404).json({ ok: false, error: 'Task not found' });
+  res.json({ ok: true, task: updated, tasks: db.tasks });
 });
 
 // ── Composio Integration Endpoints ──────────────────────────────
@@ -1376,6 +1755,49 @@ router.get('/crm/destination', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'CRM destination failed' });
+  }
+});
+
+/** Customer 360 — Sheets CRM leads + outreach prospects unified */
+router.get('/customer360', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.query.workspaceId || 'marqq-ws-1').trim();
+    const limit = Number(req.query.limit) || 75;
+    const payload = await buildCustomer360(companyId, { limit });
+    res.json(payload);
+  } catch (err) {
+    console.error('[customer360]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Customer 360 failed' });
+  }
+});
+
+/** Apollo Signals — ICP account watchlist for news / jobs / org enrich */
+router.get('/apollo/signals/accounts', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.query.workspaceId || DEFAULT_WS).trim();
+    const limit = Number(req.query.limit) || 15;
+    const accounts = await collectTargetAccounts(companyId, { limit });
+    res.json({ ok: true, companyId, accounts, count: accounts.length });
+  } catch (err) {
+    console.error('[apollo/signals/accounts]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Failed to list signal accounts' });
+  }
+});
+
+router.post('/apollo/signals', async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.body?.workspaceId || DEFAULT_WS).trim();
+    const payload = await runApolloSignals({
+      companyId,
+      accounts: req.body?.accounts || null,
+      limit: req.body?.limit,
+      refresh: Boolean(req.body?.refresh),
+      signalTypes: req.body?.signalTypes,
+    });
+    res.json(payload);
+  } catch (err) {
+    console.error('[apollo/signals]', err);
+    res.status(err.status || 500).json({ ok: false, error: err.message || 'Apollo signals failed' });
   }
 });
 
