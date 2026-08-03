@@ -112,7 +112,7 @@ export function SignInView({ setActiveScreen }) {
 }
 
 export function SignUpView({ setActiveScreen }) {
-  const [name, setName] = useState('Sarah Cole');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -178,7 +178,7 @@ export function SignUpView({ setActiveScreen }) {
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '14px', marginBottom: '16px' }}>
           <div className="field">
             <label htmlFor="su-name">Full name</label>
-            <input className="input" id="su-name" placeholder="Sarah Cole" value={name} onChange={e => setName(e.target.value)} required />
+            <input className="input" id="su-name" placeholder="Arjun Mehta" value={name} onChange={e => setName(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="su-email">Work email</label>
