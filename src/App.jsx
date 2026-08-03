@@ -3,6 +3,7 @@ import Header from './components/common/Header.jsx';
 import Sidebar from './components/common/Sidebar.jsx';
 import ModalContainer from './components/common/ModalContainer.jsx';
 import { ensureElevateWorkspace, isOnboardingComplete } from './lib/workspaceBootstrap.js';
+import { supabase } from './lib/supabase.js';
 
 import CommandCenter from './views/CommandCenter.jsx';
 import AskMarqq from './views/AskMarqq.jsx';
@@ -48,22 +49,101 @@ import {
 } from './views/OtherViews.jsx';
 import { agentsFromOs, defaultUiAgents, loadAgentOs } from './lib/agents';
 
+const AUTH_SCREENS = new Set(['login', 'signup']);
+const PRE_APP_SCREENS = new Set(['login', 'signup', 'onboarding']);
+
+function resolveAuthedScreen() {
+  if (!isOnboardingComplete()) return 'onboarding';
+  const saved = localStorage.getItem('marqq_active_screen');
+  if (saved && !PRE_APP_SCREENS.has(saved)) return saved;
+  return 'command';
+}
+
 export default function App() {
-  const [activeScreen, setActiveScreenState] = useState(() => {
-    const { startOnboarding } = ensureElevateWorkspace();
-    if (startOnboarding || !isOnboardingComplete()) return 'onboarding';
-    return localStorage.getItem('marqq_active_screen') || 'command';
-  });
+  const [authReady, setAuthReady] = useState(false);
+  const [session, setSession] = useState(null);
+  // Default to login so Railway / fresh browsers never open the app shell first
+  const [activeScreen, setActiveScreenState] = useState('login');
+
+  useEffect(() => {
+    ensureElevateWorkspace();
+
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      const next = data?.session || null;
+      setSession(next);
+      if (!next) {
+        setActiveScreenState('login');
+        localStorage.setItem('marqq_active_screen', 'login');
+      } else {
+        const screen = resolveAuthedScreen();
+        setActiveScreenState(screen);
+        localStorage.setItem('marqq_active_screen', screen);
+      }
+      setAuthReady(true);
+    }).catch(() => {
+      if (!mounted) return;
+      setSession(null);
+      setActiveScreenState('login');
+      setAuthReady(true);
+    });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) {
+        setActiveScreenState('login');
+        localStorage.setItem('marqq_active_screen', 'login');
+        return;
+      }
+      // After successful sign-in / sign-up, leave auth screens
+      if (event === 'SIGNED_IN') {
+        const screen = resolveAuthedScreen();
+        setActiveScreenState(screen);
+        localStorage.setItem('marqq_active_screen', screen);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, []);
 
   const setActiveScreen = (screen) => {
-    // First-time users must finish onboarding before entering the app
-    if (!isOnboardingComplete() && screen !== 'onboarding' && screen !== 'login' && screen !== 'signup') {
+    const target = String(screen || 'login');
+
+    // Unauthenticated: only login / signup
+    if (!session && !AUTH_SCREENS.has(target)) {
+      setActiveScreenState('login');
+      localStorage.setItem('marqq_active_screen', 'login');
+      return;
+    }
+
+    // Authenticated but onboarding incomplete: stay in onboarding (or allow login/signup)
+    if (
+      session &&
+      !isOnboardingComplete() &&
+      !PRE_APP_SCREENS.has(target)
+    ) {
       setActiveScreenState('onboarding');
       localStorage.setItem('marqq_active_screen', 'onboarding');
       return;
     }
-    setActiveScreenState(screen);
-    localStorage.setItem('marqq_active_screen', screen);
+
+    setActiveScreenState(target);
+    localStorage.setItem('marqq_active_screen', target);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      /* ignore */
+    }
+    setSession(null);
+    setActiveScreenState('login');
+    localStorage.setItem('marqq_active_screen', 'login');
   };
 
   const [activeModal, setActiveModal] = useState(null);
@@ -199,7 +279,27 @@ export default function App() {
   };
 
   // Full-screen Auth & Onboarding Views
-  if (activeScreen === 'login') {
+  if (!authReady) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--color-bg)',
+          color: 'var(--color-text)',
+          fontFamily: 'var(--font-body)',
+        }}
+      >
+        <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 800, fontSize: 22 }}>
+          MARQQ<span style={{ color: 'var(--color-accent)' }}>.</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (activeScreen === 'login' || !session) {
     return <SignInView setActiveScreen={setActiveScreen} />;
   }
 
@@ -228,7 +328,7 @@ export default function App() {
           creditBalance="1,790"
           pendingApprovalsCount={3 - Object.keys(approvedActions).length}
           onOpenModal={(modal) => setActiveModal(modal)}
-          onLogout={() => setActiveScreen('login')}
+          onLogout={handleLogout}
         />
 
         <main style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 60px' }}>

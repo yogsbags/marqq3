@@ -8,6 +8,10 @@ export function IntegrationsView({ setActiveScreen }) {
     { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
     { id: 'linkedin', name: 'LinkedIn', connected: false, status: 'not_connected' },
     { id: 'linkedin_ads', name: 'LinkedIn Ads', connected: false, status: 'not_connected' },
+    { id: 'facebook', name: 'Facebook', connected: false, status: 'not_connected' },
+    { id: 'instagram', name: 'Instagram', connected: false, status: 'not_connected' },
+    { id: 'twitter', name: 'X (Twitter)', connected: false, status: 'not_connected' },
+    { id: 'youtube', name: 'YouTube', connected: false, status: 'not_connected' },
     { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
@@ -15,6 +19,11 @@ export function IntegrationsView({ setActiveScreen }) {
     { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
     { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
     { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
+    { id: 'instantly', name: 'Instantly', connected: false, status: 'not_connected' },
+    { id: 'heyreach', name: 'HeyReach', connected: false, status: 'not_connected' },
+    { id: 'whatsapp', name: 'WhatsApp', connected: false, status: 'not_connected' },
+    { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
+    { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
   ]);
   const [preferences, setPreferences] = useState({});
   const [connectingId, setConnectingId] = useState(null);

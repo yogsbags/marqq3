@@ -27,7 +27,12 @@ const TARGET_SKILLS = {
   company_intel_channel_strategy: { agentName: 'zara', marketingSkills: ['paid-ads', 'marketing-ideas'], requiredConnectors: [], optionalConnectors: [] },
   company_intel_content_strategy: { agentName: 'riya', marketingSkills: ['content-strategy', 'copywriting', 'ai-seo'], requiredConnectors: [], optionalConnectors: [] },
   company_intel_seo: { agentName: 'maya', marketingSkills: ['ai-seo', 'seo-audit', 'content-strategy'], requiredConnectors: [], optionalConnectors: ['gsc'] },
-  company_intel_social_calendar: { agentName: 'kiran', marketingSkills: ['social-content'], requiredConnectors: [], optionalConnectors: [] },
+  company_intel_social_calendar: {
+    agentName: 'kiran',
+    marketingSkills: ['social-content'],
+    requiredConnectors: [],
+    optionalConnectors: ['linkedin', 'instagram', 'facebook', 'twitter', 'youtube'],
+  },
   company_intel_pricing: { agentName: 'tara', marketingSkills: ['pricing-strategy', 'offer-definer'], requiredConnectors: [], optionalConnectors: [] },
   company_intel_sales_enablement: { agentName: 'sam', marketingSkills: ['copywriting', 'cold-email'], requiredConnectors: [], optionalConnectors: [] },
   company_intel_lead_magnets: { agentName: 'riya', marketingSkills: ['lead-magnets'], requiredConnectors: [], optionalConnectors: [] },

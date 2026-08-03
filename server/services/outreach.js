@@ -7,8 +7,22 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executeComposioAction, executeComposioProxy } from './composio.js';
+import { executeComposioAction, executeComposioProxy, resolveConnectedAccountId } from './composio.js';
 import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
+import {
+  launchInstantlyCampaign,
+  launchHeyReachCampaign,
+  launchWhatsAppSend,
+  listWhatsAppTemplates,
+  OUTREACH_CHANNEL_CONNECTORS,
+} from './outreachProviders.js';
+import {
+  registerWhatsAppSend,
+  handleWhatsAppWebhookPayload,
+  listWhatsAppStatusesForRun,
+  pollWhatsAppMessageStatusTrigger,
+  listRecentInboundReplies,
+} from './whatsappTracking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -1106,4 +1120,242 @@ export function getWorkspaceSummary(workspaceId) {
     replies,
     sent,
   };
+}
+
+async function connectorActive(companyId, connectorId) {
+  try {
+    await resolveConnectedAccountId(connectorId, companyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Channel-aware go-live (Marqq2 pattern).
+ * email → Instantly (preferred) or Gmail; linkedin → HeyReach; whatsapp → WhatsApp.
+ */
+export async function goLiveProspect(runId, prospectId, opts = {}) {
+  const run = runsById.get(runId);
+  if (!run) throw new Error('Outreach run not found');
+  const prospect = run.prospects.find((p) => p.id === prospectId);
+  if (!prospect) throw new Error('Prospect not found');
+
+  const channel = String(opts.channel || 'email').toLowerCase();
+  const delivery = String(opts.delivery || 'draft').toLowerCase() === 'live' ? 'live' : 'draft';
+  const activate = delivery === 'live' || opts.activate === true;
+  const companyId = run.companyId || 'marqq-ws-1';
+
+  if (opts.subject != null) prospect.subject = String(opts.subject);
+  if (opts.body != null) prospect.body = String(opts.body);
+
+  const copies = prospect.channel_copies || {};
+  let subject = prospect.subject;
+  let body = prospect.body;
+  const templateName =
+    String(opts.template_name || opts.templateName || copies.whatsapp_dm?.template_name || '').trim() ||
+    null;
+  const languageCode =
+    String(opts.language_code || opts.languageCode || copies.whatsapp_dm?.language_code || 'en_US').trim() ||
+    'en_US';
+
+  if (channel === 'linkedin') {
+    body = copies.linkedin_dm?.body || body;
+    subject = '';
+  } else if (channel === 'whatsapp') {
+    body = copies.whatsapp_dm?.body || body;
+    subject = '';
+  } else {
+    subject = copies.email?.subject || subject;
+    body = copies.email?.body || body;
+    body = finalizeEmailBody(body, resolveSenderName(run.senderName), run.companyName);
+  }
+  if (channel === 'whatsapp') {
+    if (!templateName && !body) throw new Error('WhatsApp text or approved template_name required');
+  } else if (!body) {
+    throw new Error('Message body required — generate copy first');
+  }
+
+  const lead = {
+    email: prospect.email,
+    first_name: prospect.first_name || String(prospect.full_name || '').split(' ')[0] || '',
+    last_name: prospect.last_name || String(prospect.full_name || '').split(' ').slice(1).join(' ') || '',
+    full_name: prospect.full_name,
+    company: prospect.company,
+    company_name: prospect.company,
+    title: prospect.title,
+    linkedin_url: prospect.linkedin_url,
+    phone_e164: prospect.phone_e164,
+    phone: prospect.phone_e164,
+  };
+
+  let result;
+  if (channel === 'email') {
+    const prefer = String(opts.provider || '').toLowerCase();
+    const instantlyOk = await connectorActive(companyId, 'instantly');
+    const gmailOk = await connectorActive(companyId, 'gmail');
+    const useInstantly = prefer === 'instantly' || (prefer !== 'gmail' && instantlyOk);
+    if (useInstantly && instantlyOk) {
+      result = await launchInstantlyCampaign(companyId, {
+        name: `Marqq · ${prospect.full_name || prospect.email || 'lead'}`.slice(0, 80),
+        subject: subject || 'Quick question',
+        body,
+        leads: [lead],
+        activate,
+      });
+    } else if (gmailOk) {
+      if (activate) {
+        const sent = await sendProspectEmail(runId, prospectId, {
+          subject,
+          body,
+          testTo: opts.testTo || null,
+        });
+        result = { provider: 'gmail', status: 'live', ...sent };
+      } else {
+        const draft = await saveGmailDraft(runId, prospectId, { subject, body });
+        result = { provider: 'gmail', status: 'draft', draftId: draft.draftId };
+      }
+    } else {
+      throw new Error('Connect Instantly or Gmail under Integrations for email outreach');
+    }
+  } else if (channel === 'linkedin') {
+    if (!(await connectorActive(companyId, 'heyreach'))) {
+      throw new Error('Connect HeyReach under Integrations for LinkedIn outreach');
+    }
+    if (!lead.linkedin_url) throw new Error('Prospect needs a LinkedIn URL');
+    result = await launchHeyReachCampaign(companyId, {
+      campaign_name: `Marqq · ${prospect.full_name || 'LI'}`.slice(0, 50),
+      leads: [lead],
+      message: body,
+      activate,
+    });
+  } else if (channel === 'whatsapp') {
+    if (!(await connectorActive(companyId, 'whatsapp'))) {
+      throw new Error('Connect WhatsApp under Integrations');
+    }
+    if (templateName) {
+      prospect.channel_copies = {
+        ...(prospect.channel_copies || {}),
+        whatsapp_dm: {
+          ...(prospect.channel_copies?.whatsapp_dm || {}),
+          body: body || prospect.channel_copies?.whatsapp_dm?.body || '',
+          template_name: templateName,
+          language_code: languageCode,
+          skills: ['copywriting'],
+        },
+      };
+    }
+    result = await launchWhatsAppSend(companyId, {
+      text: body,
+      template_name: templateName,
+      language_code: languageCode,
+      leads: [lead],
+      activate,
+    });
+    if (activate && Array.isArray(result.results)) {
+      for (const row of result.results) {
+        if (row.message_id) {
+          registerWhatsAppSend({
+            runId,
+            prospectId,
+            companyId,
+            messageId: row.message_id,
+            toNumber: row.to_number,
+            templateName: templateName || row.template_name,
+            phoneNumberId: result.phone_number_id,
+          });
+        }
+      }
+    }
+  } else {
+    throw new Error(`Unknown channel: ${channel}`);
+  }
+
+  prospect.go_live = {
+    ...(prospect.go_live || {}),
+    channel,
+    delivery,
+    at: new Date().toISOString(),
+    result,
+  };
+  if (result.status === 'live' || result.activated) {
+    prospect.status = 'sent';
+    prospect.sent_at = new Date().toISOString();
+  } else if (prospect.status !== 'sent') {
+    prospect.status = 'drafted';
+  }
+
+  return {
+    prospect,
+    channel,
+    delivery,
+    result,
+    channelPlan: OUTREACH_CHANNEL_CONNECTORS[channel] || null,
+  };
+}
+
+export function getWhatsAppTemplatesForCompany(companyId) {
+  return listWhatsAppTemplates(companyId);
+}
+
+export function getWhatsAppDeliveryForRun(runId) {
+  const run = runsById.get(runId);
+  if (!run) throw new Error('Outreach run not found');
+  const tracked = listWhatsAppStatusesForRun(runId);
+  // Merge latest delivery_status onto prospect go_live results
+  for (const prospect of run.prospects || []) {
+    const rows = prospect.go_live?.result?.results;
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row.message_id) continue;
+      const st = tracked.statuses.find((s) => s.message_id === row.message_id);
+      if (st?.delivery_status) row.delivery_status = st.delivery_status;
+    }
+  }
+  return {
+    runId,
+    ...tracked,
+    prospects: (run.prospects || [])
+      .filter((p) => p.go_live?.channel === 'whatsapp')
+      .map((p) => ({
+        id: p.id,
+        full_name: p.full_name,
+        phone_e164: p.phone_e164,
+        status: p.status,
+        go_live: p.go_live,
+      })),
+  };
+}
+
+export function resolveOutreachProspectByPhone(phone) {
+  const digits = String(phone || '').replace(/[^\d]/g, '');
+  if (!digits) return null;
+  for (const run of runsById.values()) {
+    for (const p of run.prospects || []) {
+      const pDigits = String(p.phone_e164 || '').replace(/[^\d]/g, '');
+      if (pDigits && (pDigits === digits || pDigits.endsWith(digits) || digits.endsWith(pDigits))) {
+        return {
+          runId: run.id,
+          prospectId: p.id,
+          prospectName: p.full_name || null,
+          companyId: run.companyId,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+export function ingestWhatsAppWebhook(payload) {
+  return handleWhatsAppWebhookPayload(payload, {
+    resolveProspectByPhone: resolveOutreachProspectByPhone,
+  });
+}
+
+export async function pollWhatsAppStatuses(companyId) {
+  return pollWhatsAppMessageStatusTrigger(companyId);
+}
+
+export function getWhatsAppInbound(runId) {
+  return listRecentInboundReplies({ runId });
 }

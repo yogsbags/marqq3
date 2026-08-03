@@ -1,12 +1,13 @@
 /**
- * Social Studio — Kiran text posts (slice 2)
- * Brief → Generate multi-channel captions → Approve (no live publish)
+ * Social Studio — Kiran text posts + Composio go-live (Marqq2 parity)
+ * Brief → Generate multi-channel captions → Approve → Post Now (user click)
  * Skills: social-content, copywriting, humanizer, community-marketing
  */
 
 import { randomUUID } from 'node:crypto';
 import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
+import { executeSocialGoLive, getSocialPublishReadiness } from './socialGoLive.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 /** @type {Map<string, object>} */
@@ -17,9 +18,15 @@ const PACK_PACK = {
   secondary: ['humanizer', 'community-marketing'],
 };
 
-const DEFAULT_CHANNELS = ['linkedin', 'instagram', 'twitter'];
+const DEFAULT_CHANNELS = ['linkedin', 'instagram', 'twitter', 'facebook'];
 const DEFAULT_ANGLES = ['benefit', 'proof', 'curiosity'];
+const ALLOWED_CHANNELS = ['linkedin', 'instagram', 'twitter', 'facebook', 'youtube', 'x'];
 
+function channelKind(channel) {
+  const c = String(channel || '').toLowerCase();
+  if (c === 'x') return 'twitter';
+  return c;
+}
 function groqKey() {
   return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
 }
@@ -93,7 +100,8 @@ export function getSocialRun(runId) {
 export async function createSocialRun(input = {}) {
   const channels = (Array.isArray(input.channels) ? input.channels : DEFAULT_CHANNELS)
     .map((c) => String(c).toLowerCase())
-    .filter((c) => ['linkedin', 'instagram', 'twitter', 'facebook', 'reddit'].includes(c));
+    .map((c) => (c === 'x' ? 'twitter' : c))
+    .filter((c) => ALLOWED_CHANNELS.includes(c));
   const run = {
     id: randomUUID(),
     workspaceId: String(input.workspaceId || input.companyId || 'marqq-ws-1').trim(),
@@ -176,7 +184,7 @@ export async function runSocialCompose(runId) {
       'You are Kiran + Sam writing organic social posts.',
       'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
       `Create one post per channel×angle. Channels: ${run.channels.join(', ')}. Angles: ${DEFAULT_ANGLES.join(', ')}.`,
-      'LinkedIn: professional, 80–150 words. Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars.',
+      'LinkedIn: professional, 80–150 words. Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars. Facebook: conversational. YouTube: title-friendly caption + description tone.',
       'No placeholders. Hashtags: 3–6 relevant. Peer tone, not salesy.',
       playbook.playbook || '',
     ].join(' '),
@@ -192,14 +200,18 @@ export async function runSocialCompose(runId) {
   const posts = (Array.isArray(parsed.posts) ? parsed.posts : [])
     .map((p, i) => ({
       id: `sp-${i + 1}`,
-      channel: String(p.channel || 'linkedin').toLowerCase(),
+      channel: channelKind(p.channel || 'linkedin'),
       angle: String(p.angle || 'benefit').toLowerCase(),
       hook: String(p.hook || '').trim(),
       caption: String(p.caption || '').trim(),
       hashtags: Array.isArray(p.hashtags) ? p.hashtags.map(String) : [],
       cta: String(p.cta || run.brief.cta || '').trim(),
       visual_brief: String(p.visual_brief || run.brief.visual_direction || '').trim(),
+      title: String(p.title || '').trim(),
+      image_url: '',
+      video_url: '',
       status: 'draft',
+      go_live: null,
     }))
     .filter((p) => p.caption);
 
@@ -217,10 +229,21 @@ export function patchSocialPost(runId, postId, patch = {}) {
   if (!run) throw new Error('Social run not found');
   const post = run.posts.find((p) => p.id === postId);
   if (!post) throw new Error('Post not found');
-  for (const key of ['caption', 'hook', 'cta', 'channel', 'angle', 'visual_brief']) {
+  for (const key of [
+    'caption',
+    'hook',
+    'cta',
+    'channel',
+    'angle',
+    'visual_brief',
+    'title',
+    'image_url',
+    'video_url',
+  ]) {
     if (patch[key] !== undefined) post[key] = String(patch[key]);
   }
   if (Array.isArray(patch.hashtags)) post.hashtags = patch.hashtags.map(String);
+  if (patch.channel) post.channel = channelKind(patch.channel);
   run.updatedAt = new Date().toISOString();
   return { run: publicRun(run), post };
 }
@@ -229,9 +252,69 @@ export function approveSocialRun(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Social run not found');
   if (!run.posts?.length) throw new Error('No posts to approve');
-  run.posts = run.posts.map((p) => ({ ...p, status: 'approved' }));
+  run.posts = run.posts.map((p) => ({ ...p, status: p.status === 'live' ? 'live' : 'approved' }));
   run.status = 'approved';
   run.step = 'approve';
   run.updatedAt = new Date().toISOString();
   return { run: publicRun(run), status: 'approved', postCount: run.posts.length };
 }
+
+/**
+ * Publish one approved post via Composio (draft|live).
+ */
+export async function goLiveSocialPost(runId, postId, opts = {}) {
+  const run = runsById.get(runId);
+  if (!run) throw new Error('Social run not found');
+  const post = run.posts.find((p) => p.id === postId);
+  if (!post) throw new Error('Post not found');
+
+  // Persist optional media/title from request onto the post
+  if (opts.image_url != null) post.image_url = String(opts.image_url);
+  if (opts.video_url != null) post.video_url = String(opts.video_url);
+  if (opts.title != null) post.title = String(opts.title);
+  if (opts.caption != null) post.caption = String(opts.caption);
+
+  const kind = channelKind(opts.kind || post.channel);
+  const delivery = String(opts.delivery || 'live').toLowerCase() === 'draft' ? 'draft' : 'live';
+  const payload = {
+    post: post.caption,
+    caption: post.caption,
+    body: post.caption,
+    text: post.caption,
+    hook: post.hook,
+    hashtags: post.hashtags,
+    cta: post.cta,
+    title: post.title || post.hook || `${run.companyName} · ${run.topic}`.slice(0, 90),
+    image_url: post.image_url || opts.image_url || null,
+    video_url: post.video_url || opts.video_url || null,
+    media_url: post.image_url || opts.image_url || null,
+    privacy_status: opts.privacy_status || 'private',
+  };
+
+  const result = await executeSocialGoLive({
+    kind,
+    companyId: run.companyId,
+    workspaceId: run.workspaceId,
+    preferredConnector: opts.preferredConnector || kind,
+    delivery,
+    payload,
+  });
+
+  post.go_live = {
+    at: new Date().toISOString(),
+    delivery,
+    kind,
+    result,
+  };
+  if (result.ok && delivery === 'live') {
+    post.status = 'live';
+    run.status = 'publishing';
+  } else if (result.ok && delivery === 'draft') {
+    if (post.status !== 'live') post.status = 'approved';
+  }
+  run.updatedAt = new Date().toISOString();
+
+  return { run: publicRun(run), post, result, delivery, kind };
+}
+
+export { getSocialPublishReadiness, executeSocialGoLive };

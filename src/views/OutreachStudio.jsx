@@ -42,7 +42,21 @@ export default function OutreachStudio({ setActiveScreen }) {
   const [notice, setNotice] = useState(null);
   const [connectors, setConnectors] = useState([]);
 
+  const [deliveryMode, setDeliveryMode] = useState('draft'); // draft | live
+  const [emailProvider, setEmailProvider] = useState('auto'); // auto | instantly | gmail
+  const [waTemplates, setWaTemplates] = useState([]);
+  const [waTemplateName, setWaTemplateName] = useState('');
+  const [waLanguage, setWaLanguage] = useState('en_US');
+  const [waStatuses, setWaStatuses] = useState(null);
+
   const selected = prospects.find((p) => p.id === selectedId) || null;
+
+  const connectorStatus = (id) => {
+    const c = connectors.find((x) => x.id === id);
+    if (!c) return 'missing';
+    if (c.connected || c.status === 'active') return 'active';
+    return c.status || 'not_connected';
+  };
 
   useEffect(() => {
     fetch('/api/integrations?companyId=marqq-ws-1')
@@ -51,11 +65,40 @@ export default function OutreachStudio({ setActiveScreen }) {
       .catch(() => {});
   }, []);
 
-  const connectorStatus = (id) => {
-    const c = connectors.find((x) => x.id === id);
-    if (!c) return 'missing';
-    if (c.connected || c.status === 'active') return 'active';
-    return c.status || 'not_connected';
+  const loadWaTemplates = async () => {
+    try {
+      const res = await fetch('/api/outreach/whatsapp/templates?companyId=marqq-ws-1');
+      const data = await res.json();
+      setWaTemplates(Array.isArray(data.templates) ? data.templates : []);
+    } catch {
+      setWaTemplates([]);
+    }
+  };
+
+  useEffect(() => {
+    if (composeChannel !== 'whatsapp') return;
+    const wa = connectors.find((x) => x.id === 'whatsapp');
+    if (wa?.connected || wa?.status === 'active') void loadWaTemplates();
+  }, [composeChannel, connectors]);
+
+  const refreshWaStatuses = async () => {
+    if (!runId) return;
+    setBusy('wa-status');
+    try {
+      const res = await fetch(`/api/outreach/runs/${runId}/whatsapp/statuses`);
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setWaStatuses(data);
+      setNotice(
+        data.statuses?.length
+          ? `WhatsApp delivery: ${data.statuses.map((s) => s.delivery_status).join(', ')}`
+          : 'No WhatsApp delivery events yet — webhook updates appear after live sends'
+      );
+    } catch (err) {
+      setError(err.message || 'Status refresh failed');
+    } finally {
+      setBusy(null);
+    }
   };
 
   const selectProspect = (p) => {
@@ -130,16 +173,21 @@ export default function OutreachStudio({ setActiveScreen }) {
 
   const saveEdits = async () => {
     if (!runId || !selected) return;
+    const channel_copies = { ...(selected.channel_copies || {}) };
+    if (composeChannel === 'linkedin') {
+      channel_copies.linkedin_dm = { ...(channel_copies.linkedin_dm || {}), body, skills: ['copywriting'] };
+    } else if (composeChannel === 'whatsapp') {
+      channel_copies.whatsapp_dm = { ...(channel_copies.whatsapp_dm || {}), body, skills: ['copywriting'] };
+    } else {
+      channel_copies.email = { subject, body, skills: ['cold-email'] };
+    }
     await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        subject,
-        body,
-        channel_copies: {
-          ...(selected.channel_copies || {}),
-          email: { subject, body, skills: ['cold-email'] },
-        },
+        subject: composeChannel === 'email' ? subject : selected.subject,
+        body: composeChannel === 'email' ? body : selected.body,
+        channel_copies,
       }),
     });
   };
@@ -155,51 +203,40 @@ export default function OutreachStudio({ setActiveScreen }) {
     setError(null);
     try {
       await saveEdits();
-      if (composeChannel === 'email') {
-        await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/gmail-draft`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject, body }),
-        }).catch(() => null);
-
-        const res = await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/send-now`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject, body, testTo: testTo || undefined }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        setProspects((prev) =>
-          prev.map((x) => (x.id === selected.id ? { ...x, ...data.prospect } : x))
-        );
-        if (Array.isArray(data.sent)) setSent(data.sent);
-        else {
-          setSent((prev) => {
-            const next = {
-              id: `sent-${selected.id}-${data.prospect?.sent_at || Date.now()}`,
-              prospectId: selected.id,
-              prospectName: selected.full_name,
-              to: data.to || testTo || selected.email,
-              subject,
-              body,
-              sentAt: data.prospect?.sent_at || new Date().toISOString(),
-              test: Boolean(testTo),
-            };
-            return [next, ...prev.filter((s) => s.prospectId !== selected.id)];
-          });
-        }
-        setNotice(`Sent via Gmail → ${data.to || testTo || selected.email}`);
+      const res = await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/go-live`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: composeChannel,
+          delivery: deliveryMode,
+          subject,
+          body,
+          testTo: composeChannel === 'email' ? testTo || undefined : undefined,
+          provider: composeChannel === 'email' && emailProvider !== 'auto' ? emailProvider : undefined,
+          template_name: composeChannel === 'whatsapp' ? waTemplateName || undefined : undefined,
+          language_code: composeChannel === 'whatsapp' && waTemplateName ? waLanguage : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setProspects((prev) =>
+        prev.map((x) => (x.id === selected.id ? { ...x, ...data.prospect } : x))
+      );
+      const provider = data.result?.provider || composeChannel;
+      const status = data.result?.status || data.delivery;
+      setNotice(
+        data.delivery === 'live'
+          ? `Live via ${provider} · ${status}${data.result?.template_name ? ` · template ${data.result.template_name}` : ''}`
+          : `Prepared via ${provider} (draft — not activated). Flip to Live to send.`
+      );
+      if (data.delivery === 'live' || data.result?.activated) {
         setInboxTab('sent');
         setStep('inbox');
-        await refreshInbox();
-        return;
-      } else if (composeChannel === 'linkedin') {
-        throw new Error('LinkedIn send needs HeyReach connected — copy is ready to paste for now.');
-      } else {
-        throw new Error('WhatsApp send needs WhatsApp connector — copy is ready to paste for now.');
+        if (composeChannel === 'email') await refreshInbox();
+        if (composeChannel === 'whatsapp') await refreshWaStatuses();
       }
     } catch (err) {
-      setError(err.message || 'Send failed');
+      setError(err.message || 'Go-live failed');
     } finally {
       setBusy(null);
     }
@@ -342,6 +379,30 @@ export default function OutreachStudio({ setActiveScreen }) {
 
   const apolloOk = connectorStatus('apollo') === 'active';
   const gmailOk = connectorStatus('gmail') === 'active';
+  const instantlyOk = connectorStatus('instantly') === 'active';
+  const heyreachOk = connectorStatus('heyreach') === 'active';
+  const whatsappOk = connectorStatus('whatsapp') === 'active';
+  const emailReady = instantlyOk || gmailOk;
+  const channelReady =
+    composeChannel === 'email'
+      ? emailReady
+      : composeChannel === 'linkedin'
+        ? heyreachOk
+        : whatsappOk;
+  const channelHint =
+    composeChannel === 'email'
+      ? instantlyOk
+        ? 'Instantly (preferred) · Gmail fallback'
+        : gmailOk
+          ? 'Gmail only — connect Instantly for sequences'
+          : 'Connect Instantly or Gmail'
+      : composeChannel === 'linkedin'
+        ? heyreachOk
+          ? 'HeyReach LinkedIn campaigns'
+          : 'Connect HeyReach'
+        : whatsappOk
+          ? 'WhatsApp · text (24h) or approved template'
+          : 'Connect WhatsApp';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -365,7 +426,12 @@ export default function OutreachStudio({ setActiveScreen }) {
           </button>
         ))}
         <span className="tag tag-outline" style={{ marginLeft: 'auto' }}>
-          Apollo {apolloOk ? '●' : '○'} · Gmail {gmailOk ? '●' : '○'}
+          Apollo {apolloOk ? '●' : '○'} · Instantly {instantlyOk ? '●' : '○'} · Gmail {gmailOk ? '●' : '○'} ·
+          HeyReach {heyreachOk ? '●' : '○'} · WhatsApp {whatsappOk ? '●' : '○'}
+          {' · '}
+          <button type="button" className="btn btn-ghost" style={{ padding: 0, fontSize: 12 }} onClick={() => setActiveScreen && setActiveScreen('integrations')}>
+            Integrations
+          </button>
         </span>
       </div>
 
@@ -503,14 +569,56 @@ export default function OutreachStudio({ setActiveScreen }) {
             </div>
 
             {step === 'compose' ? (
-              <button type="button" className="btn btn-primary" disabled={!body} onClick={() => void goApprove()}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={composeChannel === 'whatsapp' ? !(body || waTemplateName) : !body}
+                onClick={() => void goApprove()}
+              >
                 Continue to approve <Send size={14} />
               </button>
             ) : (
               <>
+                <div className="card" style={{ padding: 12, marginBottom: 4, background: 'var(--color-bg)' }}>
+                  <div className="card-kicker">Channel readiness</div>
+                  <p className="card-body" style={{ margin: '4px 0 0', fontSize: 13 }}>{channelHint}</p>
+                  {!channelReady ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ marginTop: 8 }}
+                      onClick={() => setActiveScreen && setActiveScreen('integrations')}
+                    >
+                      Connect required connector
+                    </button>
+                  ) : null}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {['draft', 'live'].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={deliveryMode === m ? 'btn btn-primary' : 'btn btn-secondary'}
+                      style={{ textTransform: 'capitalize', fontSize: 12 }}
+                      onClick={() => setDeliveryMode(m)}
+                    >
+                      {m === 'draft' ? 'Draft (safe)' : 'Live send'}
+                    </button>
+                  ))}
+                </div>
+                {composeChannel === 'email' && instantlyOk && gmailOk ? (
+                  <div className="field">
+                    <label>Email provider</label>
+                    <select className="input" value={emailProvider} onChange={(e) => setEmailProvider(e.target.value)}>
+                      <option value="auto">Auto (Instantly preferred)</option>
+                      <option value="instantly">Instantly</option>
+                      <option value="gmail">Gmail</option>
+                    </select>
+                  </div>
+                ) : null}
                 {composeChannel === 'email' ? (
                   <div className="field">
-                    <label>Send test To (smoke)</label>
+                    <label>Send test To (Gmail smoke only)</label>
                     <input
                       className="input"
                       value={testTo}
@@ -518,19 +626,84 @@ export default function OutreachStudio({ setActiveScreen }) {
                       placeholder="yogsbags@gmail.com"
                     />
                     <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
-                      From connected Gmail · real prospect email stays on the card; smoke redirects To here.
+                      Used when provider is Gmail. Instantly / HeyReach / WhatsApp use the prospect contact.
                     </p>
                   </div>
                 ) : null}
+                {composeChannel === 'whatsapp' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div className="field">
+                      <label>Template (cold outreach / outside 24h window)</label>
+                      <select
+                        className="input"
+                        value={waTemplateName}
+                        onChange={(e) => {
+                          const name = e.target.value;
+                          setWaTemplateName(name);
+                          const match = waTemplates.find((t) => t.name === name);
+                          if (match?.language) setWaLanguage(String(match.language));
+                        }}
+                      >
+                        <option value="">Free-form text (session only)</option>
+                        {waTemplates.map((t) => (
+                          <option key={`${t.name}-${t.language}`} value={t.name}>
+                            {t.name} · {t.language || 'en_US'} · {t.status || 'unknown'}
+                          </option>
+                        ))}
+                      </select>
+                      {!waTemplates.length ? (
+                        <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                          No approved templates on this WABA yet — paste a Meta-approved name below, or use free-form text inside the 24h window.
+                        </p>
+                      ) : null}
+                    </div>
+                    {!waTemplates.length || waTemplateName ? (
+                      <div className="field">
+                        <label>Template name (manual override)</label>
+                        <input
+                          className="input"
+                          value={waTemplateName}
+                          onChange={(e) => setWaTemplateName(e.target.value)}
+                          placeholder="hello_world"
+                        />
+                      </div>
+                    ) : null}
+                    {waTemplateName ? (
+                      <div className="field">
+                        <label>Language code</label>
+                        <input
+                          className="input"
+                          value={waLanguage}
+                          onChange={(e) => setWaLanguage(e.target.value)}
+                          placeholder="en_US"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {deliveryMode === 'live' ? (
+                  <p className="text-muted" style={{ fontSize: 12, color: 'var(--color-accent-2)' }}>
+                    Live will activate Instantly campaigns, start HeyReach sequences, or send WhatsApp
+                    {composeChannel === 'whatsapp' && waTemplateName ? ` template “${waTemplateName}”` : ' messages'}.
+                  </p>
+                ) : (
+                  <p className="text-muted" style={{ fontSize: 12 }}>
+                    Draft prepares Instantly campaigns / HeyReach plans without activating. WhatsApp stays unsent.
+                  </p>
+                )}
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={busy === 'send' || (composeChannel === 'email' && !gmailOk)}
+                  disabled={
+                    busy === 'send' ||
+                    !channelReady ||
+                    (composeChannel === 'whatsapp' ? !(body || waTemplateName) : !body)
+                  }
                   onClick={() => void sendNow()}
                 >
-                  {busy === 'send' ? 'Sending…' : (
+                  {busy === 'send' ? 'Working…' : (
                     <>
-                      <CheckCircle size={14} /> Approve &amp; send {composeChannel}
+                      <CheckCircle size={14} /> {deliveryMode === 'live' ? 'Approve & go live' : 'Prepare draft'} · {composeChannel}
                     </>
                   )}
                 </button>
@@ -564,12 +737,49 @@ export default function OutreachStudio({ setActiveScreen }) {
               <button type="button" className="btn btn-secondary" disabled={busy === 'inbox' || !runId} onClick={() => void refreshInbox()}>
                 <RefreshCw size={14} /> {busy === 'inbox' ? 'Polling…' : 'Refresh Gmail'}
               </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy === 'wa-status' || !runId || !whatsappOk}
+                onClick={() => void refreshWaStatuses()}
+              >
+                <Phone size={14} /> {busy === 'wa-status' ? 'Statuses…' : 'WhatsApp status'}
+              </button>
             </div>
           </div>
           <p className="text-muted" style={{ fontSize: 13, margin: 0 }}>
             On refresh, Sam auto-drafts a response (never auto-sends). You edit → Approve &amp; send, or dismiss.
+            WhatsApp delivery uses Meta webhook <code>/api/webhooks/whatsapp</code> (sent → delivered → read).
           </p>
 
+          {waStatuses?.statuses?.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 13 }}>WhatsApp delivery</h4>
+              {waStatuses.statuses.map((s) => (
+                <div key={s.message_id} style={{ padding: 10, border: '1px solid var(--color-divider)', borderRadius: 8, fontSize: 12 }}>
+                  <strong>{s.delivery_status}</strong>
+                  {' · '}
+                  {s.to_number || '—'}
+                  {s.template_name ? ` · ${s.template_name}` : ''}
+                  <div className="text-muted" style={{ fontSize: 11, marginTop: 2 }}>
+                    {s.message_id} · {s.updated_at}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {waStatuses?.inbound?.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 13 }}>WhatsApp inbound</h4>
+              {waStatuses.inbound.map((r) => (
+                <div key={r.id} style={{ padding: 10, border: '1px solid var(--color-divider)', borderRadius: 8, fontSize: 12 }}>
+                  From {r.from} · {r.prospect_name || 'unmatched'} · {r.received_at}
+                  <p style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>{r.body}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {inboxTab === 'sent' ? (
             sent.length === 0 ? (
               <p className="text-muted" style={{ fontSize: 13 }}>No sent emails yet.</p>

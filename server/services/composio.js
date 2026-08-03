@@ -1,5 +1,5 @@
 /**
- * Minimal Composio helpers for Marqq-test outreach (Apollo + Gmail).
+ * Minimal Composio helpers for Marqq-test outreach (Apollo + Gmail + Instantly/HeyReach/WhatsApp).
  */
 
 const COMPOSIO_V3 = 'https://backend.composio.dev/api/v3';
@@ -10,6 +10,11 @@ const TOOLKIT = {
   whatsapp: 'whatsapp',
   linkedin: 'linkedin',
   heyreach: 'heyreach',
+  instantly: 'instantly',
+  facebook: 'facebook',
+  instagram: 'instagram',
+  twitter: 'twitter',
+  youtube: 'youtube',
 };
 
 function apiKey() {
@@ -46,6 +51,18 @@ function errText(value) {
   return String(value);
 }
 
+function readGenericApiKey(detail) {
+  return (
+    detail?.data?.generic_api_key ||
+    detail?.state?.val?.generic_api_key ||
+    detail?.params?.generic_api_key ||
+    detail?.data?.api_key ||
+    detail?.state?.val?.api_key ||
+    detail?.params?.api_key ||
+    null
+  );
+}
+
 export async function resolveConnectedAccountId(toolkit, userId) {
   const key = apiKey();
   if (!key) throw new Error('COMPOSIO_API_KEY not configured');
@@ -79,6 +96,31 @@ export async function resolveConnectedAccountId(toolkit, userId) {
   return items[0].id;
 }
 
+/** Resolve API key from Composio connected account (HeyReach etc.). */
+export async function getConnectedAccountApiKey(connectorId, userId) {
+  const key = apiKey();
+  if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
+  const toolkit = TOOLKIT[connectorId] || connectorId;
+  try {
+    const accountId = await resolveConnectedAccountId(toolkit, userId);
+    const detailRes = await fetch(`${COMPOSIO_V3}/connected_accounts/${accountId}`, {
+      headers: { 'x-api-key': key },
+    });
+    if (!detailRes.ok) return { error: `Failed to fetch account details: ${detailRes.status}` };
+    const detail = await detailRes.json();
+    const genericApiKey = readGenericApiKey(detail);
+    if (!genericApiKey) {
+      return {
+        error: `No API key found for ${connectorId} — reconnect under Integrations`,
+        account_id: accountId,
+      };
+    }
+    return { api_key: genericApiKey, account_id: accountId };
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
+}
+
 export async function executeComposioAction(actionSlug, args, userId, toolkitHint = null) {
   const key = apiKey();
   if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
@@ -90,11 +132,25 @@ export async function executeComposioAction(actionSlug, args, userId, toolkitHin
         ? 'apollo'
         : actionSlug.startsWith('WHATSAPP_')
           ? 'whatsapp'
-          : actionSlug.startsWith('GITHUB_')
-            ? 'github'
-            : actionSlug.startsWith('RAILWAY_')
-              ? 'railway'
-              : null);
+          : actionSlug.startsWith('INSTANTLY_')
+            ? 'instantly'
+            : actionSlug.startsWith('HEYREACH_')
+              ? 'heyreach'
+              : actionSlug.startsWith('LINKEDIN_')
+                ? 'linkedin'
+                : actionSlug.startsWith('FACEBOOK_')
+                  ? 'facebook'
+                  : actionSlug.startsWith('INSTAGRAM_')
+                    ? 'instagram'
+                    : actionSlug.startsWith('TWITTER_') || actionSlug.startsWith('X_')
+                      ? 'twitter'
+                      : actionSlug.startsWith('YOUTUBE_')
+                        ? 'youtube'
+                        : actionSlug.startsWith('GITHUB_')
+                          ? 'github'
+                          : actionSlug.startsWith('RAILWAY_')
+                            ? 'railway'
+                            : null);
   try {
     const connectedAccountId = await resolveConnectedAccountId(toolkit || 'gmail', userId);
     const res = await fetch(`${COMPOSIO_V3}/tools/execute/${actionSlug}`, {

@@ -18,8 +18,8 @@ import { isOnboardingComplete } from '../lib/workspaceBootstrap';
 const ONBOARDING_TOTAL_STEPS = 8;
 
 export function SignInView({ setActiveScreen }) {
-  const [email, setEmail] = useState('hello@theelevate.co.in');
-  const [password, setPassword] = useState('••••••••••');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -30,17 +30,21 @@ export function SignInView({ setActiveScreen }) {
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password
+        email: String(email || '').trim(),
+        password,
       });
 
       if (error) {
-        console.warn('Supabase sign-in notice:', error.message);
+        setErrorMsg(error.message || 'Sign in failed');
+        return;
       }
-      setActiveScreen(isOnboardingComplete() ? 'command' : 'onboarding');
+      if (!data?.session) {
+        setErrorMsg('Sign in failed — no session returned. Check Supabase env on Railway.');
+        return;
+      }
+      // App listens for SIGNED_IN and routes to onboarding or command
     } catch (err) {
-      console.warn('Auth exception fallback:', err);
-      setActiveScreen(isOnboardingComplete() ? 'command' : 'onboarding');
+      setErrorMsg(err?.message || 'Sign in failed');
     } finally {
       setLoading(false);
     }
@@ -81,14 +85,16 @@ export function SignInView({ setActiveScreen }) {
           <button
             type="button"
             className="btn btn-secondary btn-block"
-            onClick={() => setActiveScreen(isOnboardingComplete() ? 'command' : 'onboarding')}
+            disabled
+            title="Google OAuth not configured yet"
           >
             Continue with Google
           </button>
           <button
             type="button"
             className="btn btn-secondary btn-block"
-            onClick={() => setActiveScreen(isOnboardingComplete() ? 'command' : 'onboarding')}
+            disabled
+            title="SSO not configured yet"
           >
             Continue with SSO
           </button>
@@ -132,12 +138,25 @@ export function SignUpView({ setActiveScreen }) {
           data: { full_name: name }
         }
       });
-      if (error) console.warn('Supabase sign-up notice:', error.message);
+      if (error) {
+        setErrorMsg(error.message || 'Sign up failed');
+        return;
+      }
+      if (!data?.session && !data?.user) {
+        setErrorMsg('Sign up failed — check Supabase env on Railway.');
+        return;
+      }
+      // Email confirmation may leave session null; still send to onboarding only if signed in
+      if (data?.session) {
+        // App SIGNED_IN handler routes to onboarding
+      } else {
+        setErrorMsg('Check your email to confirm, then sign in.');
+        setActiveScreen('login');
+      }
     } catch (err) {
-      console.warn('Sign up fallback:', err);
+      setErrorMsg(err?.message || 'Sign up failed');
     } finally {
       setLoading(false);
-      setActiveScreen('onboarding');
     }
   };
 

@@ -29,6 +29,11 @@ import {
   updateReplyDraft,
   rejectReplyDraft,
   approveReplyDraft,
+  goLiveProspect,
+  getWhatsAppTemplatesForCompany,
+  getWhatsAppDeliveryForRun,
+  ingestWhatsAppWebhook,
+  pollWhatsAppStatuses,
 } from '../services/outreach.js';
 import {
   createContentRun,
@@ -47,6 +52,9 @@ import {
   runSocialCompose,
   patchSocialPost,
   approveSocialRun,
+  goLiveSocialPost,
+  getSocialPublishReadiness,
+  executeSocialGoLive,
 } from '../services/socialStudio.js';
 import {
   createCreativeRun,
@@ -441,6 +449,47 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', async (req, 
   }
 });
 
+/** Instantly / HeyReach / WhatsApp go-live (delivery: draft|live) */
+router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', async (req, res) => {
+  try {
+    const result = await goLiveProspect(req.params.runId, req.params.prospectId, req.body || {});
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[outreach/go-live]', err);
+    res.status(400).json({ ok: false, error: err.message || 'Go-live failed' });
+  }
+});
+
+/** Approved WhatsApp message templates for the connected WABA */
+router.get('/outreach/whatsapp/templates', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || 'marqq-ws-1').trim();
+    const data = await getWhatsAppTemplatesForCompany(companyId);
+    res.json({ ok: !data.error, ...data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || 'Template list failed', templates: [] });
+  }
+});
+
+/** Delivery statuses + inbound for a run (Meta webhook + in-memory index) */
+router.get('/outreach/runs/:runId/whatsapp/statuses', (req, res) => {
+  try {
+    res.json({ ok: true, ...getWhatsAppDeliveryForRun(req.params.runId) });
+  } catch (err) {
+    res.status(404).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/outreach/whatsapp/poll-statuses', async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.query.companyId || 'marqq-ws-1').trim();
+    const result = await pollWhatsAppStatuses(companyId);
+    res.json({ ok: Boolean(result.ok), ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || 'Poll failed' });
+  }
+});
+
 router.post('/outreach/runs/:runId/poll-gmail-replies', async (req, res) => {
   try {
     const result = await pollGmailReplies(req.params.runId);
@@ -659,6 +708,54 @@ router.post('/social/runs/:runId/approve', (req, res) => {
   }
 });
 
+/** Per-post Composio publish (LinkedIn / IG / FB / X / YouTube) */
+router.post('/social/runs/:runId/posts/:postId/go-live', async (req, res) => {
+  try {
+    const result = await goLiveSocialPost(req.params.runId, req.params.postId, req.body || {});
+    res.json({ ok: Boolean(result.result?.ok), ...result });
+  } catch (err) {
+    console.error('[social/go-live]', err);
+    res.status(400).json({ ok: false, error: err.message || 'Social go-live failed' });
+  }
+});
+
+router.get('/social/publish-readiness', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || 'marqq-ws-1').trim();
+    const data = await getSocialPublishReadiness(companyId);
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** Agent / generic outcome go-live for organic social kinds */
+router.post('/outcomes/go-live', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const kind = String(body.kind || '').toLowerCase();
+    const socialKinds = new Set(['linkedin', 'instagram', 'facebook', 'twitter', 'x', 'youtube', 'social']);
+    if (!socialKinds.has(kind)) {
+      return res.status(400).json({
+        ok: false,
+        error: `This endpoint publishes organic social only (${[...socialKinds].join(', ')}). Got: ${kind || '(empty)'}`,
+      });
+    }
+    const result = await executeSocialGoLive({
+      kind,
+      workspaceId: body.workspaceId || body.companyId || 'marqq-ws-1',
+      companyId: body.companyId || body.workspaceId || 'marqq-ws-1',
+      preferredConnector: body.preferredConnector,
+      delivery: body.delivery || 'live',
+      payload: body.payload || body,
+    });
+    res.json({ ok: Boolean(result.ok), ...result });
+  } catch (err) {
+    console.error('[outcomes/go-live]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Go-live failed' });
+  }
+});
+
 // ── Creative Studio (image + video) ─────────────────────────────────────────
 
 router.post('/creative/runs', async (req, res) => {
@@ -839,12 +936,19 @@ const CONNECTOR_APP_MAP = {
   meta_ads: 'metaads',
   linkedin_ads: 'linkedinads',
   linkedin: 'linkedin',
+  facebook: 'facebook',
+  instagram: 'instagram',
+  twitter: 'twitter',
+  youtube: 'youtube',
   hubspot: 'hubspot',
   salesforce: 'salesforce',
   ga4: 'google_analytics',
   gsc: 'google_search_console',
   google_sheets: 'googlesheets',
   google_drive: 'googledrive',
+  instantly: 'instantly',
+  heyreach: 'heyreach',
+  whatsapp: 'whatsapp',
   apollo: 'apollo',
   gmail: 'gmail',
   slack: 'slack',
@@ -856,12 +960,19 @@ const AUTH_CONFIG_ENV_KEYS = {
   meta_ads: 'COMPOSIO_META_ADS_AUTH_CONFIG_ID',
   linkedin_ads: 'COMPOSIO_LINKEDIN_ADS_AUTH_CONFIG_ID',
   linkedin: 'COMPOSIO_LINKEDIN_AUTH_CONFIG_ID',
+  facebook: 'COMPOSIO_FACEBOOK_AUTH_CONFIG_ID',
+  instagram: 'COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID',
+  twitter: 'COMPOSIO_TWITTER_AUTH_CONFIG_ID',
+  youtube: 'COMPOSIO_YOUTUBE_AUTH_CONFIG_ID',
   hubspot: 'COMPOSIO_HUBSPOT_AUTH_CONFIG_ID',
   salesforce: 'COMPOSIO_SALESFORCE_AUTH_CONFIG_ID',
   ga4: 'COMPOSIO_GOOGLE_ANALYTICS_AUTH_CONFIG_ID',
   gsc: 'COMPOSIO_GOOGLE_SEARCH_CONSOLE_AUTH_CONFIG_ID',
   google_sheets: 'COMPOSIO_GOOGLE_SHEETS_AUTH_CONFIG_ID',
   google_drive: 'COMPOSIO_GOOGLE_DRIVE_AUTH_CONFIG_ID',
+  instantly: 'COMPOSIO_INSTANTLY_AUTH_CONFIG_ID',
+  heyreach: 'COMPOSIO_HEYREACH_AUTH_CONFIG_ID',
+  whatsapp: 'COMPOSIO_WHATSAPP_AUTH_CONFIG_ID',
   apollo: 'COMPOSIO_APOLLO_AUTH_CONFIG_ID',
   gmail: 'COMPOSIO_GMAIL_AUTH_CONFIG_ID',
   slack: 'COMPOSIO_SLACK_AUTH_CONFIG_ID',
@@ -927,6 +1038,10 @@ router.get('/integrations', async (req, res) => {
     { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
     { id: 'linkedin', name: 'LinkedIn', connected: false, status: 'not_connected' },
     { id: 'linkedin_ads', name: 'LinkedIn Ads', connected: false, status: 'not_connected' },
+    { id: 'facebook', name: 'Facebook', connected: false, status: 'not_connected' },
+    { id: 'instagram', name: 'Instagram', connected: false, status: 'not_connected' },
+    { id: 'twitter', name: 'X (Twitter)', connected: false, status: 'not_connected' },
+    { id: 'youtube', name: 'YouTube', connected: false, status: 'not_connected' },
     { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
@@ -934,6 +1049,9 @@ router.get('/integrations', async (req, res) => {
     { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
     { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
     { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
+    { id: 'instantly', name: 'Instantly', connected: false, status: 'not_connected' },
+    { id: 'heyreach', name: 'HeyReach', connected: false, status: 'not_connected' },
+    { id: 'whatsapp', name: 'WhatsApp', connected: false, status: 'not_connected' },
     { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
     { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
   ];
@@ -1314,6 +1432,48 @@ router.post('/voicebot/stt', async (req, res) => {
   } catch (err) {
     console.error('[voicebot/stt]', err);
     res.status(400).json({ ok: false, error: err.message || 'Transcription failed', transcript: '' });
+  }
+});
+
+// ── Outreach provider webhooks (MVP stubs — reply ingest later) ─────────────
+router.post('/webhooks/instantly', (req, res) => {
+  console.log('[webhook/instantly]', Object.keys(req.body || {}));
+  res.json({ ok: true, received: true });
+});
+
+router.post('/webhooks/heyreach', (req, res) => {
+  const secret = process.env.HEYREACH_WEBHOOK_SECRET || process.env.OUTREACH_WEBHOOK_SECRET;
+  if (secret) {
+    const got = req.get('x-heyreach-secret') || req.query.secret;
+    if (got !== secret) return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+  console.log('[webhook/heyreach]', Object.keys(req.body || {}));
+  res.json({ ok: true, received: true });
+});
+
+router.get('/webhooks/whatsapp', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const expected = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.OUTREACH_WEBHOOK_SECRET;
+  if (mode === 'subscribe' && expected && token === expected) {
+    return res.status(200).send(String(challenge || ''));
+  }
+  if (mode === 'subscribe' && !expected) {
+    return res.status(200).send(String(challenge || ''));
+  }
+  res.status(403).send('Forbidden');
+});
+
+router.post('/webhooks/whatsapp', (req, res) => {
+  try {
+    const result = ingestWhatsAppWebhook(req.body || {});
+    console.log('[webhook/whatsapp]', result.status, result.results?.length || 0);
+    // Always 200 so Meta / Composio keep the subscription
+    res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[webhook/whatsapp]', err);
+    res.status(200).json({ ok: false, error: err.message || 'WhatsApp webhook failed' });
   }
 });
 

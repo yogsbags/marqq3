@@ -121,7 +121,8 @@ export function ensureElevateWorkspace() {
   localStorage.setItem("marqq_ob_baseline", ELEVATE_DEFAULTS.baseline);
   localStorage.setItem("marqq_ob_tagline", ELEVATE_DEFAULTS.tagline);
   localStorage.setItem("marqq_ob_tone", ELEVATE_DEFAULTS.tone);
-  localStorage.setItem("marqq_active_screen", "onboarding");
+  // Do not force onboarding screen — App auth gate lands on login first
+  localStorage.setItem("marqq_active_screen", "login");
 
   return { resetApplied: true, startOnboarding: true };
 }
