@@ -1,0 +1,691 @@
+import React, { useEffect, useState } from 'react';
+import { Mail, Linkedin, Phone, Send, CheckCircle, RefreshCw, Sparkles, ArrowLeft } from 'lucide-react';
+import JourneyBar from '../components/JourneyBar.jsx';
+
+const STEPS = [
+  { id: 'prospects', label: '1 · Prospects' },
+  { id: 'compose', label: '2 · Compose' },
+  { id: 'approve', label: '3 · Approve & send' },
+  { id: 'inbox', label: '4 · Sent & replies' },
+];
+
+const NOURIVA_DEFAULTS = {
+  companyName: 'Nouriva AI',
+  companyId: 'marqq-ws-1',
+  workspaceId: 'marqq-ws-1',
+  senderName: 'Yogesh',
+  question:
+    'B2B clinical partners for Nouriva AI — lab-personalized nutrition guidance for patients. Book a 15-min intro.',
+  titles: ['Endocrinologist', 'Dietitian', 'Medical Director', 'Head of Nutrition', 'Clinical Nutrition Manager'],
+  industries: ['hospital & health care', 'medical practice'],
+  contactChannels: ['email'],
+  country: 'India',
+  limit: 8,
+};
+
+export default function OutreachStudio({ setActiveScreen }) {
+  const [step, setStep] = useState('prospects');
+  const [runId, setRunId] = useState(null);
+  const [prospects, setProspects] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [composeChannel, setComposeChannel] = useState('email');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [testTo, setTestTo] = useState('yogsbags@gmail.com');
+  const [replies, setReplies] = useState([]);
+  const [sent, setSent] = useState([]);
+  const [inboxTab, setInboxTab] = useState('replies');
+  const [draftEdits, setDraftEdits] = useState({});
+  const [busy, setBusy] = useState(null);
+  const [busyReplyId, setBusyReplyId] = useState(null);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [connectors, setConnectors] = useState([]);
+
+  const selected = prospects.find((p) => p.id === selectedId) || null;
+
+  useEffect(() => {
+    fetch('/api/integrations?companyId=marqq-ws-1')
+      .then((r) => r.json())
+      .then((d) => setConnectors(d.connectors || []))
+      .catch(() => {});
+  }, []);
+
+  const connectorStatus = (id) => {
+    const c = connectors.find((x) => x.id === id);
+    if (!c) return 'missing';
+    if (c.connected || c.status === 'active') return 'active';
+    return c.status || 'not_connected';
+  };
+
+  const selectProspect = (p) => {
+    setSelectedId(p.id);
+    const copies = p.channel_copies || {};
+    const email = copies.email || {};
+    setSubject(email.subject || p.subject || '');
+    setBody(email.body || p.body || '');
+    setComposeChannel('email');
+    setStep('compose');
+    setError(null);
+  };
+
+  const fetchProspects = async () => {
+    setBusy('fetch');
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/outreach/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(NOURIVA_DEFAULTS),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setRunId(data.runId);
+      setProspects(data.prospects || []);
+      setSelectedId(null);
+      setReplies([]);
+      setSent([]);
+      setNotice(`Loaded ${(data.prospects || []).length} Apollo prospects · ${data.run?.source || 'apollo'}`);
+      setStep('prospects');
+    } catch (err) {
+      setError(err.message || 'Fetch failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const generateCopy = async () => {
+    if (!runId || !selected) return;
+    setBusy('copy');
+    setError(null);
+    try {
+      const channels = ['email'];
+      if (selected.linkedin_url) channels.push('linkedin');
+      if (selected.phone_e164) channels.push('whatsapp');
+      const res = await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channels }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const p = data.prospect;
+      setProspects((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...p } : x)));
+      const copy =
+        composeChannel === 'linkedin'
+          ? p.channel_copies?.linkedin_dm
+          : composeChannel === 'whatsapp'
+            ? p.channel_copies?.whatsapp_dm
+            : p.channel_copies?.email || { subject: p.subject, body: p.body };
+      setSubject(copy?.subject || '');
+      setBody(copy?.body || '');
+      setNotice('Sam drafted copy with cold-email skill');
+    } catch (err) {
+      setError(err.message || 'Copy failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveEdits = async () => {
+    if (!runId || !selected) return;
+    await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subject,
+        body,
+        channel_copies: {
+          ...(selected.channel_copies || {}),
+          email: { subject, body, skills: ['cold-email'] },
+        },
+      }),
+    });
+  };
+
+  const goApprove = async () => {
+    await saveEdits();
+    setStep('approve');
+  };
+
+  const sendNow = async () => {
+    if (!runId || !selected) return;
+    setBusy('send');
+    setError(null);
+    try {
+      await saveEdits();
+      if (composeChannel === 'email') {
+        await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/gmail-draft`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject, body }),
+        }).catch(() => null);
+
+        const res = await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/send-now`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject, body, testTo: testTo || undefined }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        setProspects((prev) =>
+          prev.map((x) => (x.id === selected.id ? { ...x, ...data.prospect } : x))
+        );
+        if (Array.isArray(data.sent)) setSent(data.sent);
+        else {
+          setSent((prev) => {
+            const next = {
+              id: `sent-${selected.id}-${data.prospect?.sent_at || Date.now()}`,
+              prospectId: selected.id,
+              prospectName: selected.full_name,
+              to: data.to || testTo || selected.email,
+              subject,
+              body,
+              sentAt: data.prospect?.sent_at || new Date().toISOString(),
+              test: Boolean(testTo),
+            };
+            return [next, ...prev.filter((s) => s.prospectId !== selected.id)];
+          });
+        }
+        setNotice(`Sent via Gmail → ${data.to || testTo || selected.email}`);
+        setInboxTab('sent');
+        setStep('inbox');
+        await refreshInbox();
+        return;
+      } else if (composeChannel === 'linkedin') {
+        throw new Error('LinkedIn send needs HeyReach connected — copy is ready to paste for now.');
+      } else {
+        throw new Error('WhatsApp send needs WhatsApp connector — copy is ready to paste for now.');
+      }
+    } catch (err) {
+      setError(err.message || 'Send failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshInbox = async () => {
+    if (!runId) return;
+    setBusy('inbox');
+    setError(null);
+    try {
+      const res = await fetch(`/api/outreach/runs/${runId}/poll-gmail-replies`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setReplies(data.replies || []);
+      if (Array.isArray(data.sent)) setSent(data.sent);
+      const drafted = (data.fresh || []).filter((r) => r.auto_reply_draft?.status === 'draft').length;
+      setNotice(
+        data.fresh?.length
+          ? `${data.fresh.length} new reply(ies)${drafted ? ` · Sam drafted ${drafted} response(s) (not sent)` : ''}`
+          : data.note || 'Inbox refreshed — only replies to emails you sent appear here'
+      );
+      if ((data.fresh || []).length) setInboxTab('replies');
+    } catch (err) {
+      setError(err.message || 'Inbox poll failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const draftFields = (r) => {
+    const edit = draftEdits[r.id];
+    const d = r.auto_reply_draft || {};
+    return {
+      subject: edit?.subject ?? d.subject ?? r.draft_subject ?? '',
+      body: edit?.body ?? d.body ?? r.draft_body ?? '',
+    };
+  };
+
+  const setDraftField = (replyId, key, value) => {
+    setDraftEdits((prev) => {
+      const r = replies.find((x) => x.id === replyId);
+      const base = prev[replyId] || {
+        subject: r?.auto_reply_draft?.subject ?? r?.draft_subject ?? '',
+        body: r?.auto_reply_draft?.body ?? r?.draft_body ?? '',
+      };
+      return { ...prev, [replyId]: { ...base, [key]: value } };
+    });
+  };
+
+  const regenerateDraft = async (replyId) => {
+    if (!runId) return;
+    setBusyReplyId(replyId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/outreach/runs/${runId}/replies/${replyId}/regenerate-draft`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const updated = data.reply || data.draft;
+      setReplies((prev) =>
+        prev.map((r) =>
+          r.id === replyId
+            ? {
+                ...r,
+                ...(data.reply || {}),
+                auto_reply_draft: data.draft || data.reply?.auto_reply_draft || r.auto_reply_draft,
+              }
+            : r
+        )
+      );
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[replyId];
+        return next;
+      });
+      setNotice(`Sam redrafted reply (${data.classification || updated?.classification || 'draft'})`);
+    } catch (err) {
+      setError(err.message || 'Regenerate failed');
+    } finally {
+      setBusyReplyId(null);
+    }
+  };
+
+  const saveDraftEdits = async (replyId) => {
+    if (!runId) return;
+    const fields = draftFields(replies.find((r) => r.id === replyId) || { id: replyId });
+    const res = await fetch(`/api/outreach/runs/${runId}/replies/${replyId}/draft`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    setReplies((prev) => prev.map((r) => (r.id === replyId ? { ...r, ...data.reply } : r)));
+    return data.reply;
+  };
+
+  const approveDraft = async (replyId) => {
+    if (!runId) return;
+    setBusyReplyId(replyId);
+    setError(null);
+    try {
+      await saveDraftEdits(replyId);
+      const res = await fetch(`/api/outreach/runs/${runId}/replies/${replyId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testTo: testTo || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setReplies((prev) => prev.map((r) => (r.id === replyId ? { ...r, ...data.reply } : r)));
+      setNotice(
+        data.status === 'sent'
+          ? `Reply sent → ${data.to} (${data.method})`
+          : `Approved without send (${data.status})`
+      );
+    } catch (err) {
+      setError(err.message || 'Approve failed');
+    } finally {
+      setBusyReplyId(null);
+    }
+  };
+
+  const rejectDraft = async (replyId) => {
+    if (!runId) return;
+    setBusyReplyId(replyId);
+    try {
+      const res = await fetch(`/api/outreach/runs/${runId}/replies/${replyId}/reject`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setReplies((prev) => prev.map((r) => (r.id === replyId ? { ...r, ...data.reply } : r)));
+      setNotice('Draft dismissed');
+    } catch (err) {
+      setError(err.message || 'Dismiss failed');
+    } finally {
+      setBusyReplyId(null);
+    }
+  };
+
+  const apolloOk = connectorStatus('apollo') === 'active';
+  const gmailOk = connectorStatus('gmail') === 'active';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <JourneyBar screenId="outreach" setActiveScreen={setActiveScreen} title="Outreach Studio" />
+      <div>
+        <p className="text-muted" style={{ margin: 0 }}>
+          Arjun fetches Apollo prospects · Sam writes cold email · you approve · Gmail sends · replies stay here.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        {STEPS.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className={step === s.id ? 'btn btn-primary' : 'btn btn-secondary'}
+            onClick={() => setStep(s.id)}
+            style={{ fontSize: 12 }}
+          >
+            {s.label}
+          </button>
+        ))}
+        <span className="tag tag-outline" style={{ marginLeft: 'auto' }}>
+          Apollo {apolloOk ? '●' : '○'} · Gmail {gmailOk ? '●' : '○'}
+        </span>
+      </div>
+
+      {error ? (
+        <div className="card" style={{ borderLeft: '3px solid #c44' }}>
+          <div style={{ fontSize: 13 }}>{error}</div>
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="card" style={{ borderLeft: '3px solid var(--color-accent)' }}>
+          <div style={{ fontSize: 13 }}>{notice}</div>
+        </div>
+      ) : null}
+
+      {step === 'prospects' && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ margin: 0 }}>Nouriva B2B prospects</h3>
+              <p className="text-muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                Apollo titles: Endocrinologist, Dietitian, Medical Director…
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy === 'fetch' || !apolloOk}
+              onClick={() => void fetchProspects()}
+            >
+              {busy === 'fetch' ? 'Searching Apollo…' : runId ? 'Refresh prospects' : 'Fetch prospects'}
+            </button>
+          </div>
+          {!apolloOk ? (
+            <p className="text-muted" style={{ fontSize: 13 }}>
+              Connect Apollo under Integrations first.
+            </p>
+          ) : null}
+          {prospects.length === 0 ? (
+            <p className="text-muted" style={{ fontSize: 13 }}>
+              No prospects yet. Fetch from Apollo to begin.
+            </p>
+          ) : (
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Title</th>
+                    <th>Company</th>
+                    <th>Email</th>
+                    <th>LI / Phone</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {prospects.map((p) => (
+                    <tr key={p.id} style={{ background: selectedId === p.id ? 'var(--color-surface)' : undefined }}>
+                      <td style={{ fontWeight: 700 }}>{p.full_name}</td>
+                      <td>{p.title}</td>
+                      <td>{p.company}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{p.email || '—'}</td>
+                      <td style={{ fontSize: 11 }}>
+                        {p.linkedin_url ? 'LI ' : ''}
+                        {p.phone_e164 ? 'Phone' : ''}
+                        {!p.linkedin_url && !p.phone_e164 ? '—' : ''}
+                      </td>
+                      <td>
+                        <button type="button" className="btn btn-secondary" onClick={() => selectProspect(p)}>
+                          Select
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(step === 'compose' || step === 'approve') && selected && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 20 }}>
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <button type="button" className="btn btn-ghost" style={{ alignSelf: 'flex-start', paddingInline: 0 }} onClick={() => setStep('prospects')}>
+              <ArrowLeft size={14} /> Back to prospects
+            </button>
+            <h3 style={{ margin: 0 }}>{selected.full_name}</h3>
+            <p className="text-muted" style={{ margin: 0, fontSize: 13 }}>
+              {selected.title} · {selected.company}
+            </p>
+            <div style={{ fontSize: 12, fontFamily: 'monospace' }}>{selected.email || 'No email'}</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['email', 'linkedin', 'whatsapp'].map((ch) => (
+                <button
+                  key={ch}
+                  type="button"
+                  className={composeChannel === ch ? 'btn btn-primary' : 'btn btn-secondary'}
+                  style={{ textTransform: 'capitalize', fontSize: 12 }}
+                  onClick={() => {
+                    setComposeChannel(ch);
+                    const copies = selected.channel_copies || {};
+                    if (ch === 'linkedin') {
+                      setSubject('');
+                      setBody(copies.linkedin_dm?.body || '');
+                    } else if (ch === 'whatsapp') {
+                      setSubject('');
+                      setBody(copies.whatsapp_dm?.body || '');
+                    } else {
+                      setSubject(copies.email?.subject || selected.subject || '');
+                      setBody(copies.email?.body || selected.body || '');
+                    }
+                  }}
+                >
+                  {ch === 'email' ? <Mail size={12} /> : ch === 'linkedin' ? <Linkedin size={12} /> : <Phone size={12} />}
+                  {ch}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="btn btn-secondary" disabled={busy === 'copy'} onClick={() => void generateCopy()}>
+              <Sparkles size={14} /> {busy === 'copy' ? 'Sam writing…' : 'Generate copy (cold-email)'}
+            </button>
+          </div>
+
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <h3 style={{ margin: 0 }}>{step === 'approve' ? 'Approve & send' : 'Sequence composer'}</h3>
+            {composeChannel === 'email' ? (
+              <div className="field">
+                <label>Subject</label>
+                <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
+              </div>
+            ) : null}
+            <div className="field">
+              <label>Body</label>
+              <textarea className="input" rows={10} value={body} onChange={(e) => setBody(e.target.value)} />
+            </div>
+
+            {step === 'compose' ? (
+              <button type="button" className="btn btn-primary" disabled={!body} onClick={() => void goApprove()}>
+                Continue to approve <Send size={14} />
+              </button>
+            ) : (
+              <>
+                {composeChannel === 'email' ? (
+                  <div className="field">
+                    <label>Send test To (smoke)</label>
+                    <input
+                      className="input"
+                      value={testTo}
+                      onChange={(e) => setTestTo(e.target.value)}
+                      placeholder="yogsbags@gmail.com"
+                    />
+                    <p className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      From connected Gmail · real prospect email stays on the card; smoke redirects To here.
+                    </p>
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy === 'send' || (composeChannel === 'email' && !gmailOk)}
+                  onClick={() => void sendNow()}
+                >
+                  {busy === 'send' ? 'Sending…' : (
+                    <>
+                      <CheckCircle size={14} /> Approve &amp; send {composeChannel}
+                    </>
+                  )}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {step === 'inbox' && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0 }}>Sent & replies</h3>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className={inboxTab === 'sent' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 12 }}
+                onClick={() => setInboxTab('sent')}
+              >
+                Sent ({sent.length})
+              </button>
+              <button
+                type="button"
+                className={inboxTab === 'replies' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 12 }}
+                onClick={() => setInboxTab('replies')}
+              >
+                Replies ({replies.length})
+              </button>
+              <button type="button" className="btn btn-secondary" disabled={busy === 'inbox' || !runId} onClick={() => void refreshInbox()}>
+                <RefreshCw size={14} /> {busy === 'inbox' ? 'Polling…' : 'Refresh Gmail'}
+              </button>
+            </div>
+          </div>
+          <p className="text-muted" style={{ fontSize: 13, margin: 0 }}>
+            On refresh, Sam auto-drafts a response (never auto-sends). You edit → Approve &amp; send, or dismiss.
+          </p>
+
+          {inboxTab === 'sent' ? (
+            sent.length === 0 ? (
+              <p className="text-muted" style={{ fontSize: 13 }}>No sent emails yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {sent.map((s) => (
+                  <div key={s.id} style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{s.subject || '(no subject)'}</div>
+                    <div className="text-muted" style={{ fontSize: 11, marginTop: 2 }}>
+                      To {s.to} · {s.prospectName} · {s.sentAt}
+                      {s.test ? ' · test redirect' : ''}
+                    </div>
+                    <p style={{ fontSize: 13, margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{s.body}</p>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : replies.length === 0 ? (
+            <p className="text-muted" style={{ fontSize: 13 }}>
+              No matched replies yet — open the smoke email in Gmail, reply (e.g. “Ok”), then hit Refresh Gmail.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {replies.map((r) => {
+                const d = r.auto_reply_draft;
+                const fields = draftFields(r);
+                const sentReply = d?.status === 'sent';
+                const rejected = d?.status === 'rejected';
+                const drafting = busyReplyId === r.id;
+                return (
+                  <div key={r.id} style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{r.subject || '(no subject)'}</div>
+                      <div className="text-muted" style={{ fontSize: 11, marginTop: 2 }}>
+                        From {r.from} · {r.prospectName || 'matched send'} · {r.receivedAt}
+                        {r.classification || d?.classification ? ` · ${r.classification || d.classification}` : ''}
+                      </div>
+                      <p style={{ fontSize: 13, margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{r.body}</p>
+                    </div>
+
+                    {d?.status === 'draft_failed' ? (
+                      <div className="text-muted" style={{ fontSize: 12 }}>
+                        Draft failed: {d.error}{' '}
+                        <button type="button" className="btn btn-secondary" style={{ fontSize: 11 }} disabled={drafting} onClick={() => void regenerateDraft(r.id)}>
+                          Retry Sam draft
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {d && d.status !== 'draft_failed' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid var(--color-divider)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <strong style={{ fontSize: 12 }}>Sam draft {sentReply ? '(sent)' : rejected ? '(dismissed)' : '(not sent)'}</strong>
+                          {d.should_reply === false ? (
+                            <span className="tag tag-outline" style={{ fontSize: 11 }}>no reply suggested</span>
+                          ) : null}
+                        </div>
+                        {d.rationale ? (
+                          <p className="text-muted" style={{ fontSize: 11, margin: 0 }}>{d.rationale}</p>
+                        ) : null}
+                        {!sentReply && !rejected ? (
+                          <>
+                            <div className="field">
+                              <label>Reply subject</label>
+                              <input
+                                className="input"
+                                value={fields.subject}
+                                onChange={(e) => setDraftField(r.id, 'subject', e.target.value)}
+                              />
+                            </div>
+                            <div className="field">
+                              <label>Reply body</label>
+                              <textarea
+                                className="input"
+                                rows={5}
+                                value={fields.body}
+                                onChange={(e) => setDraftField(r.id, 'body', e.target.value)}
+                              />
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                disabled={drafting || !fields.body}
+                                onClick={() => void approveDraft(r.id)}
+                              >
+                                <CheckCircle size={14} /> {drafting ? 'Working…' : 'Approve & send reply'}
+                              </button>
+                              <button type="button" className="btn btn-secondary" disabled={drafting} onClick={() => void regenerateDraft(r.id)}>
+                                <Sparkles size={14} /> Redraft
+                              </button>
+                              <button type="button" className="btn btn-ghost" disabled={drafting} onClick={() => void rejectDraft(r.id)}>
+                                Dismiss
+                              </button>
+                            </div>
+                          </>
+                        ) : sentReply ? (
+                          <p style={{ fontSize: 13, margin: 0, whiteSpace: 'pre-wrap' }}>
+                            Sent to {d.send_meta?.to || '—'} · {d.sent_at}
+                            {'\n\n'}
+                            {d.body}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : !d ? (
+                      <button type="button" className="btn btn-secondary" disabled={drafting} onClick={() => void regenerateDraft(r.id)}>
+                        <Sparkles size={14} /> Draft reply with Sam
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

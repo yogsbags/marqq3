@@ -1,0 +1,238 @@
+import type { CatalogAgent } from "./types";
+
+export const AGENT_ROSTER_PRINCIPLES = `Marqq agents are an adaptive operating team, not a fixed chatbot grid.
+
+Stable core agents exist for every client. Specialist missions activate, elevate, or retire based on:
+business model, industry, customer type, North Star, GTM motion, current bottleneck, compliance risk, available data, and strategy phase.
+
+Agents move: dormant → activated → high_priority → deprioritized/retired.
+
+Auto-adjust allowed: roster priorities, owned metrics, experiment backlog, review frequency, instructions, dependencies.
+Human approval required: North Star Metric, strategic goal, deadline, new market, pricing, high-cost campaigns, compliance/safety rules, uncertain external intel.`;
+
+export const AGENT_STATUSES = [
+  "dormant",
+  "activated",
+  "high_priority",
+  "deprioritized",
+  "retired",
+] as const;
+
+export const HUMAN_APPROVAL_REQUIRED = [
+  "Changing the North Star Metric",
+  "Changing the strategic goal",
+  "Changing the deadline",
+  "Entering a new market",
+  "Changing pricing",
+  "Launching high-cost campaigns",
+  "Altering compliance or safety rules",
+  "Acting on uncertain external intelligence",
+];
+
+export const AUTO_ADJUST_ALLOWED = [
+  "Agent roster priorities",
+  "Owned metrics",
+  "Data connector emphasis",
+  "Monitoring sources",
+  "Review frequency",
+  "Agent instructions / missions",
+  "Dependencies",
+  "Experiment backlog",
+  "Budget allocation recommendations (below high-cost threshold)",
+];
+
+/** Canonical 12-agent catalog (Marqq2 ids). */
+export const AGENT_CATALOG: CatalogAgent[] = [
+  {
+    id: "veena",
+    name: "Veena",
+    role: "Company Intel",
+    type: "Account research",
+    tier: "core",
+    capabilities: ["context", "account_intelligence", "firmographics", "icp_accounts"],
+    avatarColor: "#3d8bff",
+    purpose: "Builds company profiles from market, competitor, and category signals.",
+    tools: ["Web crawler", "Knowledge graph"],
+    dataAccess: ["Public web", "Competitor list"],
+    openScreen: "market",
+  },
+  {
+    id: "isha",
+    name: "Isha",
+    role: "Market Research",
+    type: "ICP & audience",
+    tier: "core",
+    capabilities: ["icp", "audience", "industry_intelligence", "market_analysis", "segments"],
+    avatarColor: "#e0b13a",
+    purpose: "Maps ICP and audience segments from market and intent signals.",
+    tools: ["Segmentation model", "Intent data feed"],
+    dataAccess: ["Market data", "Intent data"],
+    openScreen: "audiences",
+  },
+  {
+    id: "neel",
+    name: "Neel",
+    role: "Strategy",
+    type: "Positioning & GTM",
+    tier: "core",
+    capabilities: [
+      "gtm_orchestrator",
+      "north_star",
+      "positioning",
+      "course_correction",
+      "offer_packaging",
+      "roi_business_case",
+    ],
+    avatarColor: "#5a6ee0",
+    purpose: "Orchestrates GTM toward the North Star; drafts positioning and strategy.",
+    tools: ["Strategy composer", "Knowledge graph"],
+    dataAccess: ["GTM workspace", "Brand center"],
+    openScreen: "strategy",
+  },
+  {
+    id: "zara",
+    name: "Zara",
+    role: "Channels",
+    type: "Campaign strategy",
+    tier: "core",
+    capabilities: ["channel_strategy", "campaign_orchestration", "course_correction", "budget_allocation"],
+    avatarColor: "#4aa8a3",
+    purpose: "Allocates channel effort and monitors campaign pacing against goals.",
+    tools: ["Pacing model", "Ad platform connectors"],
+    dataAccess: ["Ad accounts", "Budget ledger"],
+    openScreen: "paid",
+  },
+  {
+    id: "dev",
+    name: "Dev",
+    role: "Performance",
+    type: "Paid media ROI",
+    tier: "core",
+    capabilities: ["analytics", "attribution", "paid_media", "measurement", "north_star_metrics"],
+    avatarColor: "#ff6a00",
+    purpose: "Measures North Star and metric-tree leading indicators; optimizes spend.",
+    tools: ["Budget planner", "Ad platform connectors"],
+    dataAccess: ["Campaign data", "Budget ledger"],
+    openScreen: "analytics",
+  },
+  {
+    id: "priya",
+    name: "Priya",
+    role: "Intel",
+    type: "Competitive watch",
+    tier: "core",
+    capabilities: ["external_intelligence", "competitive_watch", "trust_safety", "compliance_signals"],
+    avatarColor: "#e0575a",
+    purpose: "Tracks competitor moves and trust/compliance signals.",
+    tools: ["Web crawler", "Change detection"],
+    dataAccess: ["Public web", "Competitor list"],
+    openScreen: "market",
+  },
+  {
+    id: "tara",
+    name: "Tara",
+    role: "CRO & Offers",
+    type: "Conversion design",
+    tier: "specialist",
+    capabilities: [
+      "conversion",
+      "onboarding",
+      "activation",
+      "offers",
+      "pricing",
+      "subscription",
+      "pilot_design",
+      "merchandising",
+    ],
+    avatarColor: "#c74d8f",
+    purpose: "Audits offer and page friction; designs conversion and pricing motions.",
+    tools: ["Funnel analyzer", "Heatmap feed"],
+    dataAccess: ["Analytics", "Landing pages"],
+    openScreen: "pricing",
+  },
+  {
+    id: "sam",
+    name: "Sam",
+    role: "Copy",
+    type: "Messaging & voice",
+    tier: "specialist",
+    capabilities: [
+      "messaging",
+      "executive_outreach",
+      "proposals",
+      "sales_enablement",
+      "case_studies",
+      "trust_claims",
+    ],
+    avatarColor: "#39a6a3",
+    purpose: "Owns messaging, outreach copy, and sales enablement voice.",
+    tools: ["Brand voice model", "Style guide"],
+    dataAccess: ["Brand center", "Content calendar"],
+    openScreen: "brand",
+  },
+  {
+    id: "kiran",
+    name: "Kiran",
+    role: "Social",
+    type: "Content calendar",
+    tier: "specialist",
+    capabilities: ["social", "content_calendar", "community", "demand_acquisition", "lifecycle"],
+    avatarColor: "#8a5ce0",
+    purpose: "Builds social calendars and demand/lifecycle motions.",
+    tools: ["Calendar planner", "Social scheduler"],
+    dataAccess: ["Social accounts", "Content calendar"],
+    openScreen: "social",
+  },
+  {
+    id: "maya",
+    name: "Maya",
+    role: "SEO",
+    type: "Search intelligence",
+    tier: "specialist",
+    capabilities: ["seo", "aso", "search_intelligence", "programmatic_content"],
+    avatarColor: "#c74dd1",
+    purpose: "Tracks search rankings and AI-answer visibility; recommends SEO fixes.",
+    tools: ["Rank tracker", "GEO citation scanner"],
+    dataAccess: ["Search console", "Public web"],
+    openScreen: "seo",
+  },
+  {
+    id: "riya",
+    name: "Riya",
+    role: "Content",
+    type: "Editorial pipeline",
+    tier: "specialist",
+    capabilities: ["editorial", "content_pipeline", "thought_leadership", "proof_assets"],
+    avatarColor: "#38b06b",
+    purpose: "Runs the editorial pipeline across blog, social, and email.",
+    tools: ["Brand voice model", "SEO optimizer"],
+    dataAccess: ["Brand center", "Content calendar"],
+    openScreen: "content",
+  },
+  {
+    id: "arjun",
+    name: "Arjun",
+    role: "Leads",
+    type: "B2B prospecting",
+    tier: "specialist",
+    capabilities: [
+      "prospecting",
+      "abm",
+      "outbound",
+      "supply_acquisition",
+      "demand_acquisition",
+      "stakeholder_mapping",
+    ],
+    avatarColor: "#d13a5c",
+    purpose: "Prospects ICP accounts and drafts outbound sequences.",
+    tools: ["Sequencer", "CRM sync"],
+    dataAccess: ["CRM", "Intent data"],
+    openScreen: "outreach",
+  },
+];
+
+export const AGENT_CATALOG_BY_ID = new Map(AGENT_CATALOG.map((a) => [a.id, a]));
+
+export const CORE_AGENT_IDS = new Set(
+  AGENT_CATALOG.filter((a) => a.tier === "core").map((a) => a.id)
+);

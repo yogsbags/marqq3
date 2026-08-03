@@ -1,0 +1,178 @@
+import React, { useState, useEffect } from 'react';
+import { connectComposioConnector, formatConnectorError } from '../lib/composio';
+import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel } from '../lib/connectormeta';
+import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
+
+export function IntegrationsView() {
+  const [connectors, setConnectors] = useState([
+    { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
+    { id: 'linkedin', name: 'LinkedIn', connected: false, status: 'not_connected' },
+    { id: 'linkedin_ads', name: 'LinkedIn Ads', connected: false, status: 'not_connected' },
+    { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
+    { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
+    { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
+    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' }
+  ]);
+  const [preferences, setPreferences] = useState({});
+  const [connectingId, setConnectingId] = useState(null);
+  const [pickerConnectorId, setPickerConnectorId] = useState(null);
+
+  const fetchPreferences = () => {
+    fetch('/api/integrations/preferences?companyId=marqq-ws-1')
+      .then(r => r.json())
+      .then(data => {
+        if (data?.preferences) {
+          setPreferences(data.preferences);
+        }
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetch('/api/integrations?companyId=marqq-ws-1')
+      .then(r => r.json())
+      .then(data => {
+        if (data?.connectors && data.connectors.length > 0) {
+          setConnectors(data.connectors);
+        }
+      })
+      .catch(() => {});
+
+    fetchPreferences();
+  }, []);
+
+  const handleConnect = async (connectorId) => {
+    setConnectingId(connectorId);
+    try {
+      const res = await connectComposioConnector({
+        companyId: 'marqq-ws-1',
+        connectorId,
+        onConnected: (id) => {
+          setConnectors(prev => prev.map(c => c.id === id ? { ...c, connected: true, status: 'active' } : c));
+          setPickerConnectorId(id);
+        }
+      });
+      if (res?.status === 'connected') {
+        setConnectors(prev => prev.map(c => c.id === connectorId ? { ...c, connected: true, status: 'active' } : c));
+        setPickerConnectorId(connectorId);
+      }
+    } catch (err) {
+      console.warn('Connect notice:', formatConnectorError(err));
+    } finally {
+      setConnectingId(null);
+    }
+  };
+
+  const getAccountValueForConnector = (id) => {
+    const fieldMap = {
+      google_ads: 'google_ads_customer_id',
+      meta_ads: 'meta_ads_account_id',
+      linkedin_ads: 'linkedin_ads_account_id',
+      ga4: 'ga4_property_id',
+      gsc: 'gsc_site_url',
+      salesforce: 'salesforce_account_id',
+      hubspot: 'hubspot_account_id'
+    };
+    const field = fieldMap[id] || `${id}_account_id`;
+    return preferences[field] || null;
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1>Integrations &amp; Connectors</h1>
+          <p className="text-muted" style={{ marginTop: '4px' }}>Manage ad platform OAuth tokens, CRM syncs, and web analytics connectors.</p>
+        </div>
+      </div>
+      <div className="card">
+        <div className="table-container">
+          <table className="data-table">
+            <thead>
+              <tr><th>Platform</th><th>Active Account / ID</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              {connectors.map((ing) => {
+                const active = isConnectorActive(ing);
+                const isConnecting = connectingId === ing.id;
+                const meta = CONNECTOR_DISPLAY[ing.id] || { bg: 'var(--color-accent)' };
+                const accountVal = getAccountValueForConnector(ing.id);
+
+                return (
+                  <tr key={ing.id}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span className="tag" style={{ background: meta.bg, color: '#fff', fontWeight: 700, border: 'none' }}>
+                          {ing.id.toUpperCase()}
+                        </span>
+                        <span style={{ fontWeight: 700 }}>{ing.name || connectorLabel(ing.id)}</span>
+                      </div>
+                    </td>
+                    <td>
+                      {active ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text)' }}>
+                            {accountVal || 'No account selected'}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setPickerConnectorId(ing.id)}
+                            style={{ padding: '2px 6px', fontSize: '10px', textDecoration: 'underline' }}
+                          >
+                            Configure
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-muted" style={{ fontSize: '11px' }}>—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={active ? 'tag tag-accent' : 'tag tag-neutral'}>
+                        {active ? 'Active' : 'Not Connected'}
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                          className={active ? 'btn btn-secondary' : 'btn btn-primary'}
+                          onClick={() => handleConnect(ing.id)}
+                          disabled={isConnecting}
+                          style={{ padding: '6px 12px', fontSize: '11px' }}
+                        >
+                          {isConnecting ? 'Connecting...' : active ? 'Reconnect' : 'Connect'}
+                        </button>
+                        {active && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setPickerConnectorId(ing.id)}
+                            style={{ padding: '6px 10px', fontSize: '11px' }}
+                          >
+                            Select Account
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {pickerConnectorId && (
+        <ResourcePickerModal
+          connectorId={pickerConnectorId}
+          companyId="marqq-ws-1"
+          onClose={() => setPickerConnectorId(null)}
+          onSaved={() => {
+            fetchPreferences();
+            setPickerConnectorId(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}

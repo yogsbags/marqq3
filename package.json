@@ -1,0 +1,31 @@
+{
+  "name": "marqq-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev:frontend": "vite",
+    "dev:backend": "node server/index.js",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.111.0",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "lucide-react": "^0.380.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^8.2.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.2.11"
+  }
+}
