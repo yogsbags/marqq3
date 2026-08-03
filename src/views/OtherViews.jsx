@@ -1,19 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Layers, Shield, Sparkles, Plus, Play, CheckCircle, Database, FileCode, Sliders, Lock, ArrowRight, UserPlus, FileText, Calendar, Zap, MessageSquare, Video, HelpCircle, Upload, CheckCircle2, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
-import { connectComposioConnector, formatConnectorError } from '../lib/composio';
-import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel } from '../lib/connectormeta';
-import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
-import {
-  fetchBrandContext,
-  fetchKnowledgeFiles,
-  persistBrandContext,
-  loadLocalBrandContext,
-  WORKSPACE_ID,
-} from '../lib/brandContext';
+import {  Layers, Shield, Sparkles, Plus, Play, CheckCircle, Database, FileCode, Sliders, Lock, ArrowRight, UserPlus, FileText, Calendar, Zap, MessageSquare, Video, HelpCircle, Upload, CheckCircle2, AlertTriangle, RefreshCw, Trash2  } from 'lucide-react';
+import {  connectComposioConnector, formatConnectorError  } from '../lib/composio';
+import {  CONNECTOR_DISPLAY, isConnectorActive, connectorLabel  } from '../lib/connectormeta';
+import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal';
+import {  fetchBrandContext, fetchKnowledgeFiles, persistBrandContext, loadLocalBrandContext, getActiveWorkspaceId  } from '../lib/brandContext';
 import JourneyBar from '../components/JourneyBar.jsx';
-import { openSectionScreen, loadStrategyDoc, northStarLabel, stashJourneyHandoff } from '../lib/journeyHandoff';
-import { formatStrategySectionForChat } from '../lib/askMarqqContext';
-import {
+import {  openSectionScreen, loadStrategyDoc, northStarLabel, stashJourneyHandoff  } from '../lib/journeyHandoff';
+import {  formatStrategySectionForChat  } from '../lib/askMarqqContext';
+import { 
   getAudienceProfile,
   getCompanyName,
   getMarketIntel,
@@ -21,10 +15,10 @@ import {
   playsFromSection,
   sectionPlainText,
   wizardAnswerLabel,
-} from '../lib/liveWorkspace';
-import { loadAgentOs } from '../lib/agents/persist';
-import { planAgentTask } from '../lib/agents/planTask';
-import { sectionBriefForScreen } from '../lib/journeyHandoff';
+ } from '../lib/liveWorkspace';
+import {  loadAgentOs  } from '../lib/agents/persist';
+import {  planAgentTask  } from '../lib/agents/planTask';
+import {  sectionBriefForScreen  } from '../lib/journeyHandoff';
 
 function strategySectionPreview(s) {
   const text =
@@ -597,7 +591,7 @@ export function BillingView({ setActiveScreen }) {
         const [dep, files, intRes] = await Promise.all([
           fetch('/api/agents/deployments').then((r) => r.json()).catch(() => ({})),
           fetchKnowledgeFiles().catch(() => []),
-          fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
         ]);
         if (cancelled) return;
         const connectors = Array.isArray(intRes?.connectors) ? intRes.connectors : Array.isArray(intRes) ? intRes : [];
@@ -1503,7 +1497,7 @@ export function PaidView({ setActiveScreen }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
+    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then((r) => r.json())
       .then((intRes) => {
         if (cancelled) return;
@@ -1885,7 +1879,7 @@ export function KnowledgeView() {
       const res = await fetch('/api/brand-dna/knowledge-base', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: WORKSPACE_ID, files: payload }),
+        body: JSON.stringify({ workspaceId: getActiveWorkspaceId(), files: payload }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || 'Upload failed');
@@ -1913,7 +1907,7 @@ export function KnowledgeView() {
     setVoiceNotes((list) => list.filter((f) => f.id !== fileId));
     try {
       const res = await fetch(
-        `/api/brand-dna/knowledge-base/${encodeURIComponent(fileId)}?workspaceId=${encodeURIComponent(WORKSPACE_ID)}`,
+        `/api/brand-dna/knowledge-base/${encodeURIComponent(fileId)}?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`,
         { method: 'DELETE' }
       );
       const json = await res.json().catch(() => ({}));

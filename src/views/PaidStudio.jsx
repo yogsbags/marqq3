@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, Target } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
 import { stashJourneyHandoff, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
-import { loadLocalBrandContext, WORKSPACE_ID } from '../lib/brandContext';
+import { loadLocalBrandContext, getActiveWorkspaceId } from '../lib/brandContext';
 import { getAudienceProfile, getCompanyName, getWebsite, wizardAnswerLabel } from '../lib/liveWorkspace';
 
 const STEPS = [
@@ -22,8 +22,8 @@ function livePaidDefaults() {
   const channel = wizardAnswerLabel('channel_bet') || ga.channel_bet || '';
   return {
     companyName: company,
-    companyId: WORKSPACE_ID,
-    workspaceId: WORKSPACE_ID,
+    companyId: getActiveWorkspaceId(),
+    workspaceId: getActiveWorkspaceId(),
     deliveryMode: 'draft',
     northStarMetric: ga.north_star_metric || northStarLabel() || 'Primary outcome',
     northStarDefinition: ga.metric_definition || brand.outcome || '',

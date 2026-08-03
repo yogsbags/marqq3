@@ -4,6 +4,7 @@ import Sidebar from './components/common/Sidebar.jsx';
 import ModalContainer from './components/common/ModalContainer.jsx';
 import { ensureElevateWorkspace, isOnboardingComplete } from './lib/workspaceBootstrap.js';
 import { supabase } from './lib/supabase.js';
+import { ensureUserWorkspace, getActiveWorkspaceId } from './lib/workspace.js';
 
 import CommandCenter from './views/CommandCenter.jsx';
 import AskMarqq from './views/AskMarqq.jsx';
@@ -68,8 +69,31 @@ export default function App() {
   useEffect(() => {
     ensureElevateWorkspace();
 
+    // Marqq2 pattern: attach Bearer to same-origin /api fetches
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+      try {
+        const requestUrl =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const parsedUrl = new URL(requestUrl, window.location.origin);
+        const isApiRequest =
+          parsedUrl.pathname.startsWith('/api/') &&
+          (parsedUrl.origin === window.location.origin ||
+            ['localhost', '127.0.0.1'].includes(parsedUrl.hostname));
+        if (!isApiRequest) return originalFetch(input, init);
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) return originalFetch(input, init);
+        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+        if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+        return originalFetch(input, { ...init, headers });
+      } catch {
+        return originalFetch(input, init);
+      }
+    };
+
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(async ({ data }) => {
       if (!mounted) return;
       const next = data?.session || null;
       setSession(next);
@@ -77,6 +101,7 @@ export default function App() {
         setActiveScreenState('login');
         localStorage.setItem('marqq_active_screen', 'login');
       } else {
+        await ensureUserWorkspace();
         const screen = resolveAuthedScreen();
         setActiveScreenState(screen);
         localStorage.setItem('marqq_active_screen', screen);
@@ -89,15 +114,15 @@ export default function App() {
       setAuthReady(true);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
       setSession(nextSession);
       if (!nextSession) {
         setActiveScreenState('login');
         localStorage.setItem('marqq_active_screen', 'login');
         return;
       }
-      // After successful sign-in / sign-up, leave auth screens
       if (event === 'SIGNED_IN') {
+        await ensureUserWorkspace();
         const screen = resolveAuthedScreen();
         setActiveScreenState(screen);
         localStorage.setItem('marqq_active_screen', screen);
@@ -106,6 +131,7 @@ export default function App() {
 
     return () => {
       mounted = false;
+      window.fetch = originalFetch;
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
@@ -194,7 +220,7 @@ export default function App() {
       try {
         const [dashRes, analyticsRes, campRes, agRes, appRes, prosRes, taskRes] = await Promise.all([
           safeFetchJson('/api/dashboard'),
-          safeFetchJson('/api/analytics/dashboard?period=30d&companyId=marqq-ws-1'),
+          safeFetchJson(`/api/analytics/dashboard?period=30d&companyId=${encodeURIComponent(getActiveWorkspaceId())}`),
           safeFetchJson('/api/campaigns'),
           safeFetchJson('/api/agents'),
           safeFetchJson('/api/approvals'),

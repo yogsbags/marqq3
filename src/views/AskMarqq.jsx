@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { Send, Mic, Square, Paperclip, Loader2, X } from 'lucide-react';
-import {
+import {  useEffect, useRef, useState  } from 'react';
+import {  Send, Mic, Square, Paperclip, Loader2, X  } from 'lucide-react';
+import { 
   consumeAskMarqqContext,
   loadStrategySectionsForAskMarqq,
-} from '../lib/askMarqqContext';
+ } from '../lib/askMarqqContext';
 import ChatMarkdown from '../components/ChatMarkdown.jsx';
-import { askMarqqCompound } from '../services/groqService';
-import { WORKSPACE_ID } from '../lib/brandContext';
+import {  askMarqqCompound  } from '../services/groqService';
+import {   getActiveWorkspaceId  } from '../lib/brandContext';
 
 const gtmChannels = [
   'executive-summary',
@@ -260,7 +260,7 @@ export default function AskMarqq({ setActiveScreen }) {
     (async () => {
       try {
         const [intRes, taskRes] = await Promise.all([
-          fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
           fetch('/api/tasks').then((r) => r.json()).catch(() => ({})),
         ]);
         if (cancelled) return;
@@ -372,7 +372,7 @@ export default function AskMarqq({ setActiveScreen }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          workspaceId: WORKSPACE_ID,
+          workspaceId: getActiveWorkspaceId(),
           audioBase64: base64,
           mimeType: blob.type || 'audio/webm',
           language: 'en',
@@ -417,7 +417,7 @@ export default function AskMarqq({ setActiveScreen }) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              workspaceId: WORKSPACE_ID,
+              workspaceId: getActiveWorkspaceId(),
               files: [
                 {
                   name: file.name,

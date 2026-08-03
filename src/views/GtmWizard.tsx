@@ -43,7 +43,7 @@ import {
   clearAgentOs,
   saveAgentOs,
 } from "../lib/agents";
-import { WORKSPACE_ID, loadLocalBrandContext } from "../lib/brandContext";
+import { getActiveWorkspaceId, loadLocalBrandContext } from "../lib/brandContext";
 import { formatStrategySectionForChat, stashAskMarqqContext } from "../lib/askMarqqContext";
 
 const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
@@ -135,7 +135,7 @@ interface GtmWizardProps {
 
 function getCtx(): OnboardingCtx {
   const brand = loadLocalBrandContext() as Record<string, unknown> | null;
-  const auto = loadGtmAutoSections(WORKSPACE_ID);
+  const auto = loadGtmAutoSections(getActiveWorkspaceId());
   const market = auto.find((s) => s.id === "market_analysis");
   return {
     companyName: localStorage.getItem("marqq_ob_companyName") || String(brand?.companyName || "Your company"),
@@ -685,7 +685,7 @@ async function generateGtmStrategy(
   answers: GtmAnswers,
   approvedDrafts: GtmStrategySectionDraft[] = []
 ): Promise<StrategyDoc> {
-  const auto = loadGtmAutoSections(WORKSPACE_ID);
+  const auto = loadGtmAutoSections(getActiveWorkspaceId());
   const assembled = assembleStrategyFromBriefs(ctx, answers, approvedDrafts, auto);
   const covered = assembled.sections.filter(
     (s) => auto.some((a) => a.id === s.id) || approvedDrafts.some((d) => d.id === s.id)
@@ -771,7 +771,7 @@ function fallbackStrategy(
     ctx,
     answers,
     approvedDrafts,
-    loadGtmAutoSections(WORKSPACE_ID)
+    loadGtmAutoSections(getActiveWorkspaceId())
   );
 }
 
@@ -1919,6 +1919,52 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
   const autoAdvancedStage = useRef<string | null>(null);
   const activatedStrategyKey = useRef<string | null>(null);
 
+  // Dual-read: hydrate from gtm_modules when session cache is empty
+  useEffect(() => {
+    const workspaceId = getActiveWorkspaceId();
+    if (!workspaceId || workspaceId === "marqq-ws-1") return;
+    if (sessionStorage.getItem(GTM_WIZARD_SESSION_KEY) || sessionStorage.getItem("marqq_gtm_strategy")) return;
+    let cancelled = false;
+    void fetch(`/api/gtm/modules/active?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled || !json?.module) return;
+        const mod = json.module;
+        const strategy = mod.section_state?.strategy || null;
+        const answers = mod.profile?.answers || {};
+        if (strategy) {
+          sessionStorage.setItem("marqq_gtm_strategy", JSON.stringify(strategy));
+          sessionStorage.setItem(
+            GTM_WIZARD_SESSION_KEY,
+            JSON.stringify({
+              stage: "document",
+              answers,
+              strategy,
+              briefsComplete: true,
+              drafts: mod.section_state?.drafts || {},
+            })
+          );
+          setState(normalizeWizardState({ stage: "document", answers, strategy, briefsComplete: true }, ctx));
+        } else if (answers && Object.keys(answers).length) {
+          setState(
+            normalizeWizardState(
+              {
+                stage: mod.section_state?.phase || "goals",
+                answers,
+                drafts: mod.section_state?.drafts || {},
+                briefsComplete: Boolean(mod.section_state?.autoSections?.length),
+              },
+              ctx
+            )
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [ctx]);
+
   const navigateToSection = (target: {
     kind: "interview" | "auto" | "end";
     interviewId?: GtmInterviewSectionId;
@@ -1931,7 +1977,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
       autoAdvancedStage.current = id;
       setFocusStrategySectionId(null);
       try {
-        saveGtmAutoSections(WORKSPACE_ID, []);
+        saveGtmAutoSections(getActiveWorkspaceId(), []);
       } catch {
         /* ignore */
       }
@@ -1992,18 +2038,56 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
         const strategyKey = `${normalized.strategy.title || ""}::${normalized.strategy.generatedAt || ""}`;
         if (activatedStrategyKey.current !== strategyKey) {
           activatedStrategyKey.current = strategyKey;
+          const workspaceId = getActiveWorkspaceId();
           void fetch("/api/strategy/activate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              workspaceId: WORKSPACE_ID,
+              workspaceId,
               strategy: normalized.strategy,
               agentOs: os,
             }),
           }).catch((err) => console.warn("[gtm] strategy activate failed:", err));
+          void fetch("/api/gtm/modules/lock", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              workspaceId,
+              wizardState: {
+                ...normalized,
+                companyName: ctx.companyName,
+                website: ctx.website,
+              },
+            }),
+          }).catch((err) => console.warn("[gtm] module lock failed:", err));
         }
       } catch (err) {
-        console.warn("[gtm] agent OS bootstrap failed:", err);
+        console.warn("[gtm] agent OS build failed:", err);
+      }
+    } else {
+      // Optimistic draft sync to gtm_modules (sessionStorage remains primary cache)
+      const workspaceId = getActiveWorkspaceId();
+      if (workspaceId && workspaceId !== "marqq-ws-1") {
+        void fetch("/api/gtm/modules", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspaceId,
+            status: "in_progress",
+            active: true,
+            profile: {
+              answers: normalized.answers || {},
+              companyName: ctx.companyName,
+              phase: normalized.stage || normalized.phase,
+            },
+            sectionState: {
+              phase: normalized.stage || normalized.phase,
+              drafts: normalized.drafts || {},
+              autoSections: loadGtmAutoSections(workspaceId),
+            },
+            sourceContext: { website: ctx.website || "" },
+          }),
+        }).catch(() => {});
       }
     }
   }, [state, ctx]);
@@ -2317,7 +2401,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
     clearAgentOs();
     sessionStorage.setItem(GTM_WIZARD_VERSION_KEY, GTM_WIZARD_SESSION_VERSION);
     try {
-      saveGtmAutoSections(WORKSPACE_ID, []);
+      saveGtmAutoSections(getActiveWorkspaceId(), []);
     } catch {
       /* ignore */
     }

@@ -5,6 +5,13 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, updateDb } from '../db.js';
 import { AGENT_CATALOG, planAgentTask } from './agentOs.js';
+import {
+  persistAgentOsToSupabase,
+  loadAgentOsFromSupabase,
+  persistDeploymentToSupabase,
+  listDeploymentsFromSupabase,
+} from './agentSupabase.js';
+import { isUuidWorkspace } from '../lib/persistence.js';
 
 const DEFAULT_WS = 'marqq-ws-1';
 
@@ -54,17 +61,29 @@ export function saveAgentOsProfile(profile, workspaceId = DEFAULT_WS) {
     const next = ensureAgentCollections(state);
     return { ...next, agent_os: saved };
   });
+  void persistAgentOsToSupabase(saved, workspaceId);
   return saved;
 }
 
 export function loadAgentOsProfile(workspaceId = DEFAULT_WS) {
+  // Sync path keeps JSON DB; async hydrate happens via loadAgentOsProfileAsync
   const db = ensureAgentCollections(getDb());
   const os = db.agent_os;
-  if (!os) return null;
-  if (os.workspaceId && os.workspaceId !== workspaceId && workspaceId !== DEFAULT_WS) {
-    return os.workspaceId === workspaceId ? os : null;
+  if (os && (!os.workspaceId || os.workspaceId === workspaceId || workspaceId === DEFAULT_WS)) {
+    return os;
   }
-  return os;
+  return os?.workspaceId === workspaceId ? os : null;
+}
+
+export async function loadAgentOsProfileAsync(workspaceId = DEFAULT_WS) {
+  if (isUuidWorkspace(workspaceId)) {
+    const fromSb = await loadAgentOsFromSupabase(workspaceId);
+    if (fromSb) {
+      updateDb((state) => ({ ...ensureAgentCollections(state), agent_os: { ...fromSb, workspaceId } }));
+      return { ...fromSb, workspaceId };
+    }
+  }
+  return loadAgentOsProfile(workspaceId);
 }
 
 function sectionBlob(section) {
@@ -172,6 +191,10 @@ export function seedDeploymentsFromStrategy({
     return { ...next, agent_deployments: queue, tasks: tasks.slice(0, 80) };
   });
 
+  for (const entry of created) {
+    void persistDeploymentToSupabase(entry);
+  }
+
   return { created, count: created.length };
 }
 
@@ -267,6 +290,14 @@ export function listDeployments({ workspaceId = DEFAULT_WS, status } = {}) {
   );
   if (status) items = items.filter((d) => d.status === status);
   return items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+export async function listDeploymentsAsync({ workspaceId = DEFAULT_WS, status } = {}) {
+  if (isUuidWorkspace(workspaceId)) {
+    const fromSb = await listDeploymentsFromSupabase(workspaceId, status);
+    if (Array.isArray(fromSb) && fromSb.length) return fromSb;
+  }
+  return listDeployments({ workspaceId, status });
 }
 
 export function listScheduledAutomations(companyId = DEFAULT_WS) {

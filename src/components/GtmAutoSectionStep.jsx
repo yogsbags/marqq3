@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { Pencil, Plus, X } from "lucide-react";
-import { BrandStyleLoader } from "./BrandStyleLoader";
-import {
+import {  useEffect, useRef, useState  } from "react";
+import {  Pencil, Plus, X  } from "lucide-react";
+import {  BrandStyleLoader  } from "./BrandStyleLoader";
+import { 
   GTM_AUTO_STRATEGY_SECTIONS,
   saveGtmAutoSections,
-} from "../lib/gtmAutoSections";
-import { WORKSPACE_ID } from "../lib/brandContext";
+ } from "../lib/gtmAutoSections";
+import {   getActiveWorkspaceId  } from "../lib/brandContext";
 
 async function generateSection(input) {
   const res = await fetch("/api/gtm/auto-sections/generate", {
@@ -160,7 +160,7 @@ export function GtmAutoSectionStep({
     ).filter(Boolean);
     onApprovedChange(ordered);
     try {
-      saveGtmAutoSections(WORKSPACE_ID, ordered);
+      saveGtmAutoSections(getActiveWorkspaceId(), ordered);
     } catch {
       /* ignore */
     }

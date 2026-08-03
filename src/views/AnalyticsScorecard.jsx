@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, PlugZap, RefreshCw, TrendingDown, TrendingUp, Minus } from 'lucide-react';
+import {  ArrowRight, PlugZap, RefreshCw, TrendingDown, TrendingUp, Minus  } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
-import { loadStrategyDoc, northStarLabel, stashJourneyHandoff } from '../lib/journeyHandoff';
-import { WORKSPACE_ID } from '../lib/brandContext';
+import {  loadStrategyDoc, northStarLabel, stashJourneyHandoff  } from '../lib/journeyHandoff';
+import {   getActiveWorkspaceId  } from '../lib/brandContext';
 
 function TrendIcon({ trend }) {
   if (trend === 'up') return <TrendingUp size={14} style={{ color: 'var(--color-accent)' }} />;
@@ -49,7 +49,7 @@ export function AnalyticsView({ setActiveScreen }) {
     setError(null);
     try {
       const res = await fetch(
-        `/api/analytics/dashboard?period=${encodeURIComponent(period)}&companyId=${encodeURIComponent(WORKSPACE_ID)}`
+        `/api/analytics/dashboard?period=${encodeURIComponent(period)}&companyId=${encodeURIComponent(getActiveWorkspaceId())}`
       );
       const json = await res.json();
       setData(json);

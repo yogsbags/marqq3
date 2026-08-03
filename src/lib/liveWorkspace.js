@@ -3,7 +3,7 @@
  * Prefer these over hardcoded demo clinics / Elevate competitors.
  */
 
-import { loadLocalBrandContext, WORKSPACE_ID } from "./brandContext";
+import { loadLocalBrandContext, getActiveWorkspaceId } from "./brandContext";
 import { formatStrategySectionForChat } from "./askMarqqContext";
 import { loadStrategyDoc, northStarLabel } from "./journeyHandoff";
 
@@ -194,8 +194,8 @@ export function studioSeed() {
 
   return {
     companyName: company,
-    companyId: WORKSPACE_ID,
-    workspaceId: WORKSPACE_ID,
+    companyId: getActiveWorkspaceId(),
+    workspaceId: getActiveWorkspaceId(),
     website,
     domain: domain || "example.com",
     marketType: "b2b",

@@ -76,8 +76,10 @@ import {
 import {
   activateStrategyExecution,
   listDeployments,
+  listDeploymentsAsync,
   listScheduledAutomations,
   loadAgentOsProfile,
+  loadAgentOsProfileAsync,
   saveAgentOsProfile,
 } from '../services/agentOsStore.js';
 import {
@@ -87,12 +89,72 @@ import {
 } from '../services/agentScheduler.js';
 import { getAnalyticsDashboard, buildEmptyDashboard } from '../services/analyticsDashboard.js';
 import { getCommandCenter } from '../services/commandCenterInsights.js';
+import workspacesRouter from './workspaces.js';
+import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { useSupabasePersistence } from '../lib/persistence.js';
+import { upsertGtmModule, getActiveGtmModule, listGtmModules, lockGtmStrategy } from '../services/gtmModules.js';
+import { upsertCompanyFromBrand, loadCompanyBrand } from '../services/companiesStore.js';
+import { persistDeploymentToSupabase } from '../services/agentSupabase.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
 
+// Attach user when Bearer present (non-blocking for legacy routes)
+router.use(optionalAuth);
+
+// Marqq2-parity workspace membership API
+router.use('/workspaces', workspacesRouter);
+
 // Ensure scheduler is up even when API is imported by tests/smokes
 startDeploymentScheduler();
+
+/** GET /api/gtm/modules — list modules for workspace */
+router.get('/gtm/modules', requireAuth, async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  const modules = await listGtmModules(workspaceId);
+  res.json({ ok: true, modules, persistence: useSupabasePersistence() });
+});
+
+/** GET /api/gtm/modules/active — active module (wizard hydrate) */
+router.get('/gtm/modules/active', requireAuth, async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  const module = await getActiveGtmModule(workspaceId);
+  res.json({ ok: true, module });
+});
+
+/** PUT /api/gtm/modules — upsert wizard draft */
+router.put('/gtm/modules', requireAuth, async (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  const result = await upsertGtmModule({
+    workspaceId,
+    userId: req.authUserId,
+    moduleId: req.body?.moduleId || null,
+    name: req.body?.name,
+    status: req.body?.status || 'in_progress',
+    profile: req.body?.profile || {},
+    sectionState: req.body?.sectionState || req.body?.section_state || {},
+    sourceContext: req.body?.sourceContext || req.body?.source_context || {},
+    active: req.body?.active !== false,
+  });
+  if (!result.ok) return res.status(503).json(result);
+  res.json(result);
+});
+
+/** POST /api/gtm/modules/lock — lock strategy as ready+active */
+router.post('/gtm/modules/lock', requireAuth, async (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  const result = await lockGtmStrategy({
+    workspaceId,
+    userId: req.authUserId,
+    wizardState: req.body?.wizardState || req.body,
+  });
+  if (!result.ok) return res.status(503).json(result);
+  res.json(result);
+});
 
 /** GET /api/gtm/strategy-section-skills/:sectionId — Marqq2 skill playbook for Goals drafts */
 router.get('/gtm/strategy-section-skills/:sectionId', async (req, res) => {
@@ -213,10 +275,11 @@ router.get('/agents', (req, res) => {
 });
 
 // Static agent paths MUST be registered before /agents/:id
-router.get('/agents/deployments', (req, res) => {
+router.get('/agents/deployments', async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   const status = req.query?.status ? String(req.query.status) : null;
-  res.json({ ok: true, deployments: listDeployments({ workspaceId, status }) });
+  const deployments = await listDeploymentsAsync({ workspaceId, status });
+  res.json({ ok: true, deployments });
 });
 
 router.post('/agents/deployments', (req, res) => {
@@ -248,6 +311,7 @@ router.post('/agents/deployments', (req, res) => {
     ...state,
     agent_deployments: [entry, ...(state.agent_deployments || [])],
   }));
+  void persistDeploymentToSupabase(entry);
   processDeploymentQueueTick().catch(() => {});
   res.json({ ok: true, deployment: entry });
 });
@@ -296,9 +360,9 @@ router.post('/strategy/activate', (req, res) => {
   }
 });
 
-router.get('/agent-os', (req, res) => {
+router.get('/agent-os', async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
-  const os = loadAgentOsProfile(workspaceId);
+  const os = await loadAgentOsProfileAsync(workspaceId);
   res.json({ ok: true, agentOs: os });
 });
 
@@ -379,8 +443,8 @@ router.post('/outreach/runs', async (req, res) => {
   }
 });
 
-router.get('/outreach/runs/:runId', (req, res) => {
-  const run = getOutreachRun(req.params.runId);
+router.get('/outreach/runs/:runId', async (req, res) => {
+  const run = await getOutreachRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   const sent = (run.prospects || [])
     .filter((p) => p.sent_at || p.status === 'sent' || p.status === 'replied')
@@ -1261,18 +1325,21 @@ router.post('/brand-dna', async (req, res) => {
       signals
     });
     try {
-      await writeBrandContext(workspaceId, {
-        companyName,
-        website: websiteUrl,
-        niche: industry,
-        icp,
-        brandSummary: brandDna?.businessSummary || brandDna?.brandSummary || '',
-        positioningTags: brandDna?.positioningTags || [],
-        colors: brandDna?.colors || signals?.colors || [],
-        fonts: brandDna?.fonts || signals?.fonts || '',
-        brandTagline: brandDna?.brandTagline || '',
-        toneOfVoice: brandDna?.toneOfVoice || '',
-        logoUrl: signals?.logoUrl || signals?.faviconUrl || '',
+      await upsertCompanyFromBrand({
+        workspaceId,
+        context: {
+          companyName,
+          website: websiteUrl,
+          niche: industry,
+          icp,
+          brandSummary: brandDna?.businessSummary || brandDna?.brandSummary || '',
+          positioningTags: brandDna?.positioningTags || [],
+          colors: brandDna?.colors || signals?.colors || [],
+          fonts: brandDna?.fonts || signals?.fonts || '',
+          brandTagline: brandDna?.brandTagline || '',
+          toneOfVoice: brandDna?.toneOfVoice || '',
+          logoUrl: signals?.logoUrl || signals?.faviconUrl || '',
+        },
       });
     } catch (persistErr) {
       console.warn('[brand-dna] context persist skipped:', persistErr.message);
@@ -1296,7 +1363,7 @@ router.post('/brand-dna', async (req, res) => {
 // GET /api/brand-dna/context
 router.get('/brand-dna/context', async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
-  const context = await readBrandContext(workspaceId);
+  const context = await loadCompanyBrand(workspaceId);
   res.json({ ok: true, context: context || null });
 });
 
@@ -1305,8 +1372,8 @@ router.post('/brand-dna/context', async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
     const { workspaceId: _ws, ...patch } = req.body || {};
-    const context = await writeBrandContext(workspaceId, patch);
-    res.json({ ok: true, context });
+    const result = await upsertCompanyFromBrand({ workspaceId, context: patch });
+    res.json({ ok: true, context: result.context, supabase: result.supabase });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'Failed to save brand context' });
   }

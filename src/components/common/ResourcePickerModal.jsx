@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, Loader2, Database, Sliders, CheckCircle2 } from 'lucide-react';
 import { CONNECTOR_DISPLAY, connectorLabel } from '../../lib/connectormeta';
+import { getActiveWorkspaceId } from '../../lib/workspace.js';
 
 const CONNECTOR_ACCOUNT_CONFIGS = {
   google_ads: {
@@ -68,7 +69,7 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
   }
 };
 
-export function ResourcePickerModal({ connectorId, companyId = 'marqq-ws-1', onClose, onSaved }) {
+export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspaceId(), onClose, onSaved }) {
   const config = CONNECTOR_ACCOUNT_CONFIGS[connectorId] || {
     title: `Configure ${connectorLabel(connectorId)} Account`,
     field: `${connectorId}_account_id`,

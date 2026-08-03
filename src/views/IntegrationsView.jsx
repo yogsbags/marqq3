@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { connectComposioConnector, formatConnectorError } from '../lib/composio';
 import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel } from '../lib/connectormeta';
 import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
+import { getActiveWorkspaceId } from '../lib/workspace.js';
 
 export function IntegrationsView({ setActiveScreen }) {
   const [connectors, setConnectors] = useState([
@@ -30,7 +31,7 @@ export function IntegrationsView({ setActiveScreen }) {
   const [pickerConnectorId, setPickerConnectorId] = useState(null);
 
   const fetchPreferences = () => {
-    fetch('/api/integrations/preferences?companyId=marqq-ws-1')
+    fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then(r => r.json())
       .then(data => {
         if (data?.preferences) {
@@ -41,7 +42,7 @@ export function IntegrationsView({ setActiveScreen }) {
   };
 
   useEffect(() => {
-    fetch('/api/integrations?companyId=marqq-ws-1')
+    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then(r => r.json())
       .then(data => {
         if (data?.connectors && data.connectors.length > 0) {
@@ -57,7 +58,7 @@ export function IntegrationsView({ setActiveScreen }) {
     setConnectingId(connectorId);
     try {
       const res = await connectComposioConnector({
-        companyId: 'marqq-ws-1',
+        companyId: getActiveWorkspaceId(),
         connectorId,
         onConnected: (id) => {
           setConnectors(prev => prev.map(c => c.id === id ? { ...c, connected: true, status: 'active' } : c));
@@ -204,7 +205,7 @@ export function IntegrationsView({ setActiveScreen }) {
       {pickerConnectorId && (
         <ResourcePickerModal
           connectorId={pickerConnectorId}
-          companyId="marqq-ws-1"
+          companyId={getActiveWorkspaceId()}
           onClose={() => setPickerConnectorId(null)}
           onSaved={() => {
             fetchPreferences();

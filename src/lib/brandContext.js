@@ -1,7 +1,19 @@
 /** Client helpers for persisted brand / company context. */
+import { getActiveWorkspaceId } from './workspace.js';
+import { apiFetch } from './apiFetch.js';
 
 export const BRAND_CONTEXT_KEY = "marqq_brand_context";
-export const WORKSPACE_ID = "marqq-ws-1";
+
+export { getActiveWorkspaceId, LEGACY_WORKSPACE_ID } from './workspace.js';
+
+/**
+ * @deprecated Call getActiveWorkspaceId() — kept so older imports that
+ * accidentally treat WORKSPACE_ID as a value still resolve at access time via getter.
+ * Prefer: import { getActiveWorkspaceId } from '../lib/workspace'
+ */
+export function WORKSPACE_ID() {
+  return getActiveWorkspaceId();
+}
 
 export function loadLocalBrandContext() {
   try {
@@ -40,7 +52,7 @@ export function buildBrandContextFromOnboarding({
   groqData,
 }) {
   return {
-    workspaceId: WORKSPACE_ID,
+    workspaceId: getActiveWorkspaceId(),
     companyName,
     website,
     niche,
@@ -62,12 +74,12 @@ export function buildBrandContextFromOnboarding({
 }
 
 export async function persistBrandContext(context) {
-  const local = saveLocalBrandContext(context);
+  const withWs = { ...context, workspaceId: context.workspaceId || getActiveWorkspaceId() };
+  const local = saveLocalBrandContext(withWs);
   try {
-    const res = await fetch("/api/brand-dna/context", {
+    const res = await apiFetch("/api/brand-dna/context", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(context),
+      body: JSON.stringify(withWs),
     });
     const json = await res.json().catch(() => ({}));
     if (json?.context) {
@@ -81,8 +93,9 @@ export async function persistBrandContext(context) {
 }
 
 export async function fetchBrandContext() {
+  const workspaceId = getActiveWorkspaceId();
   try {
-    const res = await fetch(`/api/brand-dna/context?workspaceId=${encodeURIComponent(WORKSPACE_ID)}`);
+    const res = await apiFetch(`/api/brand-dna/context?workspaceId=${encodeURIComponent(workspaceId)}`);
     const json = await res.json().catch(() => ({}));
     if (json?.context) {
       saveLocalBrandContext(json.context);
@@ -95,9 +108,10 @@ export async function fetchBrandContext() {
 }
 
 export async function fetchKnowledgeFiles() {
+  const workspaceId = getActiveWorkspaceId();
   try {
-    const res = await fetch(
-      `/api/brand-dna/knowledge-base?workspaceId=${encodeURIComponent(WORKSPACE_ID)}`
+    const res = await apiFetch(
+      `/api/brand-dna/knowledge-base?workspaceId=${encodeURIComponent(workspaceId)}`
     );
     const json = await res.json().catch(() => ({}));
     if (Array.isArray(json?.files)) return json.files;

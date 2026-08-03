@@ -23,6 +23,7 @@ import {
   pollWhatsAppMessageStatusTrigger,
   listRecentInboundReplies,
 } from './whatsappTracking.js';
+import { persistOutreachRun, loadOutreachRun } from './outreachPersist.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -31,6 +32,13 @@ const APOLLO_PEOPLE_API = 'https://api.apollo.io/api/v1/mixed_people/api_search'
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
+
+function cacheRun(run) {
+  if (!run?.id) return run;
+  runsById.set(run.id, run);
+  void persistOutreachRun(run);
+  return run;
+}
 
 function groqKey() {
   return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
@@ -312,12 +320,24 @@ export async function createOutreachRun(input = {}) {
     replies: [],
     campaigns: [],
   };
-  runsById.set(run.id, run);
+  cacheRun(run);
   return run;
 }
 
-export function getOutreachRun(runId) {
-  return runsById.get(runId) || null;
+export async function getOutreachRun(runId) {
+  const cached = runsById.get(runId);
+  if (cached) return cached;
+  const loaded = await loadOutreachRun(runId);
+  if (loaded) {
+    runsById.set(loaded.id, loaded);
+    return loaded;
+  }
+  return null;
+}
+
+async function touchRun(run) {
+  if (!run?.id) return;
+  cacheRun(run);
 }
 
 export function listOutreachRuns(workspaceId) {
@@ -356,6 +376,7 @@ export function patchProspect(runId, prospectId, patch = {}) {
       );
     }
   }
+  void persistOutreachRun(run);
   return prospect;
 }
 

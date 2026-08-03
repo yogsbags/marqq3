@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Sparkles, CheckCircle, ArrowRight, Send } from 'lucide-react';
+import {  Sparkles, CheckCircle, ArrowRight, Send  } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
-import { studioSeed, getCompanyName } from '../lib/liveWorkspace';
-import { WORKSPACE_ID } from '../lib/brandContext';
+import {  studioSeed, getCompanyName  } from '../lib/liveWorkspace';
+import {   getActiveWorkspaceId  } from '../lib/brandContext';
 
 const STEPS = [
   { id: 'brief', label: '1 · Brief' },
@@ -36,7 +36,7 @@ export default function SocialStudio({ setActiveScreen }) {
   };
 
   const loadReadiness = () => {
-    fetch(`/api/social/publish-readiness?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
+    fetch(`/api/social/publish-readiness?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then((r) => r.json())
       .then((d) => setReadiness(d.platforms || []))
       .catch(() => {});

@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, FileText, RefreshCw, Sparkles, AlertTriangle, TrendingUp, Info } from 'lucide-react';
-import { loadAgentOs } from '../lib/agents/persist';
-import { getNextBestAction, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
-import { WORKSPACE_ID } from '../lib/brandContext';
+import {  ArrowRight, FileText, RefreshCw, Sparkles, AlertTriangle, TrendingUp, Info  } from 'lucide-react';
+import {  loadAgentOs  } from '../lib/agents/persist';
+import {  getNextBestAction, loadStrategyDoc, northStarLabel  } from '../lib/journeyHandoff';
+import {   getActiveWorkspaceId  } from '../lib/brandContext';
 
 function SeverityIcon({ severity }) {
   if (severity === 'critical' || severity === 'warn') {
@@ -43,7 +43,7 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          companyId: WORKSPACE_ID,
+          companyId: getActiveWorkspaceId(),
           period,
           withLlm: true,
           northStar: northStarLabel(),

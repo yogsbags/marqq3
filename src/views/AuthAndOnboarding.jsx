@@ -1,19 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, CheckCircle2, Shield, Sparkles, RefreshCw, AlertCircle, Mic, Square, Upload, FileText, Trash2, Pencil, Link2, Loader2, Eraser } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { completeOnboardingWithGroq } from '../services/groqService';
-import { connectComposioConnector, formatConnectorError } from '../lib/composio';
-import { CONNECTOR_DISPLAY, isConnectorActive } from '../lib/connectormeta';
-import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
-import { BrandStyleLoader } from '../components/BrandStyleLoader';
-import {
-  buildBrandContextFromOnboarding,
-  persistBrandContext,
-  fetchBrandContext,
-  fetchKnowledgeFiles,
-  WORKSPACE_ID,
-} from '../lib/brandContext';
-import { isOnboardingComplete, resetOnboardingDraft } from '../lib/workspaceBootstrap';
+import {  ArrowRight, CheckCircle2, Shield, Sparkles, RefreshCw, AlertCircle, Mic, Square, Upload, FileText, Trash2, Pencil, Link2, Loader2, Eraser  } from 'lucide-react';
+import {  supabase  } from '../lib/supabase';
+import {  completeOnboardingWithGroq  } from '../services/groqService';
+import {  connectComposioConnector, formatConnectorError  } from '../lib/composio';
+import {  CONNECTOR_DISPLAY, isConnectorActive  } from '../lib/connectormeta';
+import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal';
+import {  BrandStyleLoader  } from '../components/BrandStyleLoader';
+import {  buildBrandContextFromOnboarding, persistBrandContext, fetchBrandContext, fetchKnowledgeFiles, getActiveWorkspaceId  } from '../lib/brandContext';
+import {  isOnboardingComplete, resetOnboardingDraft  } from '../lib/workspaceBootstrap';
 
 const ONBOARDING_TOTAL_STEPS = 8;
 
@@ -336,7 +330,7 @@ export function OnboardingView({ setActiveScreen }) {
       const res = await fetch('/api/brand-dna/logo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: WORKSPACE_ID, name: file.name, mime: file.type || 'image/png', size: file.size, base64 }),
+        body: JSON.stringify({ workspaceId: getActiveWorkspaceId(), name: file.name, mime: file.type || 'image/png', size: file.size, base64 }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.logoUrl) throw new Error(json.error || 'Logo upload failed');
@@ -358,7 +352,7 @@ export function OnboardingView({ setActiveScreen }) {
     setKbError('');
     try {
       const res = await fetch(
-        `/api/brand-dna/knowledge-base/${encodeURIComponent(fileId)}?workspaceId=${encodeURIComponent(WORKSPACE_ID)}`,
+        `/api/brand-dna/knowledge-base/${encodeURIComponent(fileId)}?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`,
         { method: 'DELETE' }
       );
       const json = await res.json().catch(() => ({}));
@@ -381,7 +375,7 @@ export function OnboardingView({ setActiveScreen }) {
       const res = await fetch('/api/brand-dna/knowledge-base', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: WORKSPACE_ID, files: payload }),
+        body: JSON.stringify({ workspaceId: getActiveWorkspaceId(), files: payload }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || 'Knowledge upload failed');
@@ -423,7 +417,7 @@ export function OnboardingView({ setActiveScreen }) {
       const base64 = await fileToBase64(blob);
       const res = await fetch('/api/voicebot/stt', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: WORKSPACE_ID, audioBase64: base64, mimeType: blob.type, language: 'en' }),
+        body: JSON.stringify({ workspaceId: getActiveWorkspaceId(), audioBase64: base64, mimeType: blob.type, language: 'en' }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || 'Transcription failed');
@@ -477,7 +471,7 @@ export function OnboardingView({ setActiveScreen }) {
   const [connectingConnectorId, setConnectingConnectorId] = useState(null);
 
   useEffect(() => {
-    fetch('/api/integrations?companyId=marqq-ws-1')
+    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then(r => r.json())
       .then(data => {
         if (data?.connectors && data.connectors.length > 0) {
@@ -493,7 +487,7 @@ export function OnboardingView({ setActiveScreen }) {
     setConnectingConnectorId(connectorId);
     try {
       const res = await connectComposioConnector({
-        companyId: 'marqq-ws-1',
+        companyId: getActiveWorkspaceId(),
         connectorId,
         onConnected: (id) => {
           // Mark the connector as connected in local state after a successful OAuth flow.
@@ -763,7 +757,7 @@ export function OnboardingView({ setActiveScreen }) {
               {onboardingPickerId && (
                 <ResourcePickerModal
                   connectorId={onboardingPickerId}
-                  companyId="marqq-ws-1"
+                  companyId={getActiveWorkspaceId()}
                   onClose={() => setOnboardingPickerId(null)}
                   onSaved={() => {
                     setIntegrationsState(prev => prev.map(c => c.id === onboardingPickerId ? { ...c, connected: true, status: 'active' } : c));

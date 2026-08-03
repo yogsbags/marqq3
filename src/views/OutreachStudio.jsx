@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Mail, Linkedin, Phone, Send, CheckCircle, RefreshCw, Sparkles, ArrowLeft } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
-import { WORKSPACE_ID, loadLocalBrandContext } from '../lib/brandContext';
+import { getActiveWorkspaceId, loadLocalBrandContext } from '../lib/brandContext';
 import { getAudienceProfile, getCompanyName, wizardAnswerLabel } from '../lib/liveWorkspace';
 import { loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
 
@@ -48,8 +48,8 @@ function liveOutreachDefaults() {
 
   return {
     companyName: company,
-    companyId: WORKSPACE_ID,
-    workspaceId: WORKSPACE_ID,
+    companyId: getActiveWorkspaceId(),
+    workspaceId: getActiveWorkspaceId(),
     senderName: localStorage.getItem('marqq_ob_senderName') || 'Marqq',
     question: [
       `Prospects for ${company}`,
@@ -105,7 +105,7 @@ export default function OutreachStudio({ setActiveScreen }) {
   };
 
   useEffect(() => {
-    fetch(`/api/integrations?companyId=${encodeURIComponent(WORKSPACE_ID)}`)
+    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
       .then((r) => r.json())
       .then((d) => setConnectors(d.connectors || []))
       .catch(() => {});
@@ -113,7 +113,7 @@ export default function OutreachStudio({ setActiveScreen }) {
 
   const loadWaTemplates = async () => {
     try {
-      const res = await fetch(`/api/outreach/whatsapp/templates?companyId=${encodeURIComponent(WORKSPACE_ID)}`);
+      const res = await fetch(`/api/outreach/whatsapp/templates?companyId=${encodeURIComponent(getActiveWorkspaceId())}`);
       const data = await res.json();
       setWaTemplates(Array.isArray(data.templates) ? data.templates : []);
     } catch {
