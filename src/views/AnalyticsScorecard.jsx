@@ -198,7 +198,7 @@ export function AnalyticsView({ setActiveScreen }) {
           </div>
           <Sparkline points={traffic} />
           <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
-            Google Search Console daily impressions for nouriva.tech
+            Google Search Console daily impressions for the connected property
           </p>
         </div>
         <div className="card">
