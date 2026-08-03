@@ -13,7 +13,7 @@ import {
   fetchKnowledgeFiles,
   WORKSPACE_ID,
 } from '../lib/brandContext';
-import { isOnboardingComplete } from '../lib/workspaceBootstrap';
+import { isOnboardingComplete, resetOnboardingDraft } from '../lib/workspaceBootstrap';
 
 const ONBOARDING_TOTAL_STEPS = 8;
 
@@ -57,7 +57,7 @@ export function SignInView({ setActiveScreen }) {
           MARQQ<span style={{ color: 'var(--color-accent)' }}>.</span>
         </div>
         <h2 style={{ marginBottom: '6px' }}>Sign in</h2>
-        <p className="text-muted" style={{ marginBottom: '24px' }}>Welcome back to Elevate's workspace.</p>
+        <p className="text-muted" style={{ marginBottom: '24px' }}>Welcome back to your Marqq workspace.</p>
 
         {errorMsg && (
           <div style={{ padding: '10px 12px', background: 'rgba(242,121,10,0.15)', border: '1px solid var(--color-accent-2)', fontSize: '12px', marginBottom: '14px', borderRadius: '0px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -131,6 +131,9 @@ export function SignUpView({ setActiveScreen }) {
     setLoading(true);
 
     try {
+      // Clear any leftover demo Brand DNA before session routes into onboarding
+      resetOnboardingDraft();
+
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -220,14 +223,14 @@ export function OnboardingView({ setActiveScreen }) {
     return Number.isFinite(n) ? Math.min(Math.max(n, 1), ONBOARDING_TOTAL_STEPS) : 1;
   });
 
-  const [companyName, setCompanyName] = useState(() => localStorage.getItem('marqq_ob_companyName') || 'Elevate');
-  const [website, setWebsite] = useState(() => localStorage.getItem('marqq_ob_website') || 'theelevate.co.in');
-  const [niche, setNiche] = useState(() => localStorage.getItem('marqq_ob_niche') || 'Management strategy, AI solutions & digital transformation consulting');
-  const [icp, setIcp] = useState(() => localStorage.getItem('marqq_ob_icp') || 'Growth-stage companies and mid-market leaders seeking strategy-to-execution partners');
-  const [outcome, setOutcome] = useState(() => localStorage.getItem('marqq_ob_outcome') || 'Grow qualified leads from strategy and AI transformation buyers');
-  const [timeWindow, setTimeWindow] = useState(() => localStorage.getItem('marqq_ob_timeWindow') || '90 days');
-  const [target, setTarget] = useState(() => localStorage.getItem('marqq_ob_target') || '5 qualified leads per month');
-  const [baseline, setBaseline] = useState(() => localStorage.getItem('marqq_ob_baseline') || '1 qualified lead per month');
+  const [companyName, setCompanyName] = useState(() => localStorage.getItem('marqq_ob_companyName') || '');
+  const [website, setWebsite] = useState(() => localStorage.getItem('marqq_ob_website') || '');
+  const [niche, setNiche] = useState(() => localStorage.getItem('marqq_ob_niche') || '');
+  const [icp, setIcp] = useState(() => localStorage.getItem('marqq_ob_icp') || '');
+  const [outcome, setOutcome] = useState(() => localStorage.getItem('marqq_ob_outcome') || '');
+  const [timeWindow, setTimeWindow] = useState(() => localStorage.getItem('marqq_ob_timeWindow') || '');
+  const [target, setTarget] = useState(() => localStorage.getItem('marqq_ob_target') || '');
+  const [baseline, setBaseline] = useState(() => localStorage.getItem('marqq_ob_baseline') || '');
 
   useEffect(() => {
     localStorage.setItem('marqq_onboarding_step', String(step));
@@ -249,8 +252,8 @@ export function OnboardingView({ setActiveScreen }) {
   const [groqData, setGroqData] = useState(null);
 
   // Brand DNA extra fields
-  const [brandTagline, setBrandTagline] = useState(() => localStorage.getItem('marqq_ob_tagline') || 'Strategy Meets Execution');
-  const [toneOfVoice, setToneOfVoice] = useState(() => localStorage.getItem('marqq_ob_tone') || 'Clear, senior, execution-focused');
+  const [brandTagline, setBrandTagline] = useState(() => localStorage.getItem('marqq_ob_tagline') || '');
+  const [toneOfVoice, setToneOfVoice] = useState(() => localStorage.getItem('marqq_ob_tone') || '');
   const [editingColors, setEditingColors] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
@@ -271,6 +274,11 @@ export function OnboardingView({ setActiveScreen }) {
   useEffect(() => { localStorage.setItem('marqq_ob_tone', toneOfVoice); }, [toneOfVoice]);
 
   useEffect(() => {
+    // Fresh / incomplete onboarding: do not hydrate shared workspace Brand DNA
+    // (that was pre-filling Elevate/Nouriva into every new signup).
+    if (!isOnboardingComplete() && !localStorage.getItem('marqq_ob_companyName') && !localStorage.getItem('marqq_ob_website')) {
+      return undefined;
+    }
     let cancelled = false;
     (async () => {
       const [ctx, files] = await Promise.all([fetchBrandContext(), fetchKnowledgeFiles()]);
@@ -643,11 +651,23 @@ export function OnboardingView({ setActiveScreen }) {
               <div style={{ display: 'grid', gap: '16px', marginBottom: '24px' }}>
                 <div className="field">
                   <label htmlFor="ob-name">Company name</label>
-                  <input className="input" id="ob-name" value={companyName} onChange={e => setCompanyName(e.target.value)} />
+                  <input
+                    className="input"
+                    id="ob-name"
+                    placeholder="Acme Health"
+                    value={companyName}
+                    onChange={e => setCompanyName(e.target.value)}
+                  />
                 </div>
                 <div className="field">
                   <label htmlFor="ob-site">Website URL</label>
-                  <input className="input" id="ob-site" value={website} onChange={e => setWebsite(e.target.value)} />
+                  <input
+                    className="input"
+                    id="ob-site"
+                    placeholder="https://acme.example"
+                    value={website}
+                    onChange={e => setWebsite(e.target.value)}
+                  />
                 </div>
               </div>
             </div>
@@ -662,7 +682,15 @@ export function OnboardingView({ setActiveScreen }) {
               <p className="text-muted" style={{ marginBottom: '24px' }}>Define target titles, company size, and geographic scope.</p>
               <div className="field" style={{ marginBottom: '24px' }}>
                 <label htmlFor="ob-icp">Ideal Customer Profile</label>
-                <textarea className="input" id="ob-icp" style={{ minHeight: '90px' }} value={icp} onChange={e => setIcp(e.target.value)} required />
+                <textarea
+                  className="input"
+                  id="ob-icp"
+                  style={{ minHeight: '90px' }}
+                  placeholder="e.g. Clinic owners and medical directors at mid-size hospitals in India"
+                  value={icp}
+                  onChange={e => setIcp(e.target.value)}
+                  required
+                />
               </div>
             </div>
           )}

@@ -1,8 +1,10 @@
-/** One-time workspace identity: Elevate @ theelevate.co.in */
+/** Workspace bootstrap — clean onboarding (no pre-filled Brand DNA). */
 
 export const WORKSPACE_BOOTSTRAP_KEY = "marqq_workspace_bootstrap";
-export const WORKSPACE_BOOTSTRAP_VERSION = "elevate-theelevate-co-in-v6";
+/** Bump to clear stale Elevate seeds from older builds. */
+export const WORKSPACE_BOOTSTRAP_VERSION = "clean-onboarding-v1";
 
+/** @deprecated Kept for reference / demos only — not written into new signups. */
 export const ELEVATE_DEFAULTS = {
   companyName: "Elevate",
   website: "theelevate.co.in",
@@ -30,6 +32,7 @@ const OB_KEYS = [
   "marqq_ob_tagline",
   "marqq_ob_tone",
   "marqq_active_screen",
+  "marqq_brand_context",
 ];
 
 const AUTO_SECTION_PREFIX = "marqq_gtm_auto_sections_";
@@ -75,9 +78,24 @@ export function isOnboardingComplete() {
   return localStorage.getItem("marqq_onboarding_complete") === "1";
 }
 
+/** Wipe Brand DNA / company draft fields so onboarding + Brand DNA scrape can run fresh. */
+export function resetOnboardingDraft() {
+  if (typeof localStorage === "undefined") return;
+  for (const key of OB_KEYS) {
+    if (key === "marqq_active_screen") continue;
+    localStorage.removeItem(key);
+  }
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(AUTO_SECTION_PREFIX)) localStorage.removeItem(key);
+  }
+  clearGtmWizardSession();
+  localStorage.setItem("marqq_onboarding_step", "1");
+  localStorage.removeItem("marqq_onboarding_complete");
+}
+
 /**
- * Ensures Elevate workspace defaults and resets onboarding to step 1 once
- * when the bootstrap version changes.
+ * One-time migration when bootstrap version changes.
+ * Does NOT pre-fill Elevate (or any) company data.
  * @returns {{ resetApplied: boolean, startOnboarding: boolean }}
  */
 export function ensureElevateWorkspace() {
@@ -96,32 +114,9 @@ export function ensureElevateWorkspace() {
     return { resetApplied: false, startOnboarding: !Number.isFinite(step) || step < 8 };
   }
 
-  for (const key of OB_KEYS) localStorage.removeItem(key);
-  for (const key of Object.keys(localStorage)) {
-    if (key.startsWith(AUTO_SECTION_PREFIX)) localStorage.removeItem(key);
-  }
-  for (const key of SESSION_KEYS) {
-    try {
-      sessionStorage.removeItem(key);
-    } catch {
-      /* ignore */
-    }
-  }
-
+  resetOnboardingDraft();
   localStorage.setItem(WORKSPACE_BOOTSTRAP_KEY, WORKSPACE_BOOTSTRAP_VERSION);
-  localStorage.setItem("marqq_onboarding_step", "1");
-  localStorage.removeItem("marqq_onboarding_complete");
-  localStorage.setItem("marqq_ob_companyName", ELEVATE_DEFAULTS.companyName);
-  localStorage.setItem("marqq_ob_website", ELEVATE_DEFAULTS.website);
-  localStorage.setItem("marqq_ob_niche", ELEVATE_DEFAULTS.niche);
-  localStorage.setItem("marqq_ob_icp", ELEVATE_DEFAULTS.icp);
-  localStorage.setItem("marqq_ob_outcome", ELEVATE_DEFAULTS.outcome);
-  localStorage.setItem("marqq_ob_timeWindow", ELEVATE_DEFAULTS.timeWindow);
-  localStorage.setItem("marqq_ob_target", ELEVATE_DEFAULTS.target);
-  localStorage.setItem("marqq_ob_baseline", ELEVATE_DEFAULTS.baseline);
-  localStorage.setItem("marqq_ob_tagline", ELEVATE_DEFAULTS.tagline);
-  localStorage.setItem("marqq_ob_tone", ELEVATE_DEFAULTS.tone);
-  // Do not force onboarding screen — App auth gate lands on login first
+  // Auth gate lands on login first
   localStorage.setItem("marqq_active_screen", "login");
 
   return { resetApplied: true, startOnboarding: true };
