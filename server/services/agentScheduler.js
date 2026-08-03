@@ -174,7 +174,7 @@ async function invokeLocalRun(entry) {
   });
 }
 
-export async function processDeploymentQueueTick() {
+export async function processDeploymentQueueTick({ force = false, workspaceId = null } = {}) {
   if (ticking) return { skipped: true };
   ticking = true;
   const result = { ran: [], failed: [], skipped: 0 };
@@ -182,10 +182,18 @@ export async function processDeploymentQueueTick() {
     const db = ensureAgentCollections(getDb());
     const queue = [...(db.agent_deployments || [])];
     const now = Date.now();
+    const ws = workspaceId ? String(workspaceId).trim() : null;
 
     for (let i = 0; i < queue.length; i += 1) {
       const entry = queue[i];
-      if (!isDeploymentRunnable(entry, now)) {
+      if (ws && entry.workspaceId && entry.workspaceId !== ws) {
+        result.skipped += 1;
+        continue;
+      }
+      const runnable = force
+        ? ['pending', 'active'].includes(String(entry.status || ''))
+        : isDeploymentRunnable(entry, now);
+      if (!runnable) {
         result.skipped += 1;
         continue;
       }
@@ -289,12 +297,49 @@ export function startDeploymentScheduler() {
   }, INTERVAL_MS);
   if (typeof timer.unref === 'function') timer.unref();
   console.log(`✓ Agent deployment scheduler every ${INTERVAL_MS}ms`);
+  startOutreachDueScheduler();
   return { started: true, intervalMs: INTERVAL_MS };
 }
 
 export function stopDeploymentScheduler() {
   if (timer) clearInterval(timer);
   timer = null;
+  stopOutreachDueScheduler();
+}
+
+let outreachDueTimer = null;
+const OUTREACH_DUE_MS = Math.max(
+  30_000,
+  Number(process.env.OUTREACH_DUE_SEND_INTERVAL_MS || 60_000)
+);
+
+export function startOutreachDueScheduler() {
+  if (outreachDueTimer) return { already: true, intervalMs: OUTREACH_DUE_MS };
+  const tick = async () => {
+    try {
+      const { processDueOutreachSends } = await import('./outreach.js');
+      const result = await processDueOutreachSends();
+      if (result?.processed) {
+        console.log(`[outreach-due] processed=${result.processed}`);
+      }
+    } catch (err) {
+      console.warn('[outreach-due] tick failed:', err?.message || err);
+    }
+  };
+  setTimeout(() => {
+    tick().catch(() => {});
+  }, 8_000);
+  outreachDueTimer = setInterval(() => {
+    tick().catch(() => {});
+  }, OUTREACH_DUE_MS);
+  if (typeof outreachDueTimer.unref === 'function') outreachDueTimer.unref();
+  console.log(`✓ Outreach due-send scheduler every ${OUTREACH_DUE_MS}ms`);
+  return { started: true, intervalMs: OUTREACH_DUE_MS };
+}
+
+export function stopOutreachDueScheduler() {
+  if (outreachDueTimer) clearInterval(outreachDueTimer);
+  outreachDueTimer = null;
 }
 
 export { buildDeploymentRunQuery, loadAgentOsProfile, saveAgentOsProfile };

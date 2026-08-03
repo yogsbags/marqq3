@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Sparkles, CheckCircle, ArrowRight, FileText } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import DeliveryModeToggle from '../components/DeliveryModeToggle.jsx';
 import { stashJourneyHandoff } from '../lib/journeyHandoff';
 import { studioSeed, getCompanyName } from '../lib/liveWorkspace';
+import { BlogArticleBrowserPreview, InlineBrowserPreview } from '../components/outcome-previews/ChannelPreviews.jsx';
 
 const STEPS = [
   { id: 'research', label: '1 · Research', agent: 'Maya' },
@@ -25,6 +27,25 @@ export default function ContentStudio({ setActiveScreen }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [deliveryMode, setDeliveryMode] = useState('draft'); // draft | live
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('marqq_smoke_content_article');
+      if (!raw) return;
+      const payload = JSON.parse(raw);
+      if (!payload?.article?.title || !payload?.article?.html) return;
+      setArticle(payload.article);
+      if (payload.brief) setBrief(payload.brief);
+      if (payload.plan) setPlan(payload.plan);
+      if (payload.runId) setRunId(payload.runId);
+      setStep('approve');
+      setNotice(`Smoke seeded “${payload.article.title}”`);
+      sessionStorage.removeItem('marqq_smoke_content_article');
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     // Resume from SEO handoff if a run was stashed
@@ -33,6 +54,25 @@ export default function ContentStudio({ setActiveScreen }) {
       if (raw) {
         void loadRun(raw);
       }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // E2E / smoke: seed a drafted article so browser preview can be asserted
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('marqq_smoke_content_article');
+      if (!raw) return;
+      const payload = JSON.parse(raw);
+      if (!payload?.article?.title || !payload?.article?.html) return;
+      setArticle(payload.article);
+      if (payload.brief) setBrief(payload.brief);
+      if (payload.plan) setPlan(payload.plan);
+      if (payload.runId) setRunId(payload.runId);
+      setStep('approve');
+      setNotice(`Smoke seeded “${payload.article.title}”`);
+      sessionStorage.removeItem('marqq_smoke_content_article');
     } catch {
       /* ignore */
     }
@@ -447,9 +487,12 @@ export default function ContentStudio({ setActiveScreen }) {
               <div className="text-muted" style={{ fontSize: 12 }}>
                 /{article.slug} · {article.word_count} words · {article.primary_keyword}
               </div>
-              <div
-                style={{ fontSize: 13, lineHeight: 1.5, maxHeight: 320, overflow: 'auto', padding: 12, border: '1px solid var(--color-divider)', borderRadius: 6 }}
-                dangerouslySetInnerHTML={{ __html: article.html }}
+              <div className="card-kicker">Browser preview · feels published</div>
+              <BlogArticleBrowserPreview
+                title={article.title}
+                metaDescription={article.meta_description || article.excerpt}
+                html={article.html}
+                urlLabel={seed.domain || 'blog.yoursite.com'}
               />
               <button type="button" className="btn btn-primary" onClick={() => setStep('approve')}>
                 Continue to approve <ArrowRight size={14} />
@@ -486,11 +529,18 @@ export default function ContentStudio({ setActiveScreen }) {
                 <label>HTML body</label>
                 <textarea
                   className="input"
-                  rows={12}
+                  rows={8}
                   value={article.html || ''}
                   onChange={(e) => setArticle({ ...article, html: e.target.value })}
                 />
               </div>
+              <div className="card-kicker">Browser preview · feels published</div>
+              <BlogArticleBrowserPreview
+                title={article.title}
+                metaDescription={article.meta_description}
+                html={article.html}
+                urlLabel={seed.domain || 'blog.yoursite.com'}
+              />
               <button
                 type="button"
                 className="btn btn-primary"
@@ -525,18 +575,44 @@ export default function ContentStudio({ setActiveScreen }) {
             <p className="text-muted" style={{ fontSize: 13 }}>Approve an article first.</p>
           ) : (
             <>
+              <DeliveryModeToggle
+                value={deliveryMode}
+                onChange={setDeliveryMode}
+                draftLabel="Draft (safe)"
+                liveLabel="Publish live"
+                draftHint="Formats the SEO HTML package only — nothing is pushed to GitHub."
+                liveHint="Will format (if needed) and push the blog post live via GitHub → Cloudflare."
+              />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="btn btn-primary" disabled={!!busy} onClick={() => void doPublish(false)}>
-                  <FileText size={14} /> {busy === 'publish' ? 'Formatting…' : 'Format SEO package'}
-                </button>
                 <button
                   type="button"
-                  className="btn btn-secondary"
-                  disabled={!!busy || !publish?.seo?.ok}
-                  onClick={() => void doPublish(true)}
+                  className="btn btn-primary"
+                  disabled={!!busy}
+                  onClick={() => void doPublish(deliveryMode === 'live')}
                 >
-                  <CheckCircle size={14} /> {busy === 'publish-live' ? 'Pushing…' : 'Push live to GitHub'}
+                  {deliveryMode === 'live' ? (
+                    <>
+                      <CheckCircle size={14} />{' '}
+                      {busy === 'publish-live' || busy === 'publish'
+                        ? 'Publishing…'
+                        : 'Approve & publish live'}
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={14} /> {busy === 'publish' ? 'Formatting…' : 'Format SEO package'}
+                    </>
+                  )}
                 </button>
+                {deliveryMode === 'draft' && publish?.seo?.ok ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={!!busy}
+                    onClick={() => setDeliveryMode('live')}
+                  >
+                    Switch to Publish live
+                  </button>
+                ) : null}
               </div>
               {publish ? (
                 <div style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -556,12 +632,15 @@ export default function ContentStudio({ setActiveScreen }) {
                     </a>
                   ) : null}
                   {publish.html ? (
-                    <details>
-                      <summary>Preview HTML</summary>
-                      <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>
-                        {String(publish.html).slice(0, 4000)}
-                      </pre>
-                    </details>
+                    <>
+                      <div className="card-kicker">Live SEO package · browser preview</div>
+                      <InlineBrowserPreview
+                        urlLabel={(publish.canonical || publish.url || seed.domain || 'yoursite.com').replace(/^https?:\/\//, '').split('/')[0]}
+                        title={article?.title}
+                        html={publish.html}
+                        height={480}
+                      />
+                    </>
                   ) : null}
                 </div>
               ) : null}

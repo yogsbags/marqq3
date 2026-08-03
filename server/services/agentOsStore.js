@@ -137,6 +137,7 @@ export function seedDeploymentsFromStrategy({
         (d) =>
           d.sectionId === own.sectionId &&
           d.agentName === own.primaryAgent &&
+          d.workspaceId === workspaceId &&
           ['pending', 'active', 'running'].includes(String(d.status || ''))
       );
       if (existing) continue;

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * UI: signup → Elevate onboarding (theelevate.co.in) → GTM wizard → full strategy doc.
+ * UI: signup → Nouriva AI onboarding (nouriva.tech) → GTM wizard → full strategy doc.
  *
- *   BASE_UI=http://localhost:5179 node scripts/e2e-ui-elevate-onboarding-strategy.mjs
+ *   BASE_UI=http://localhost:5179 node scripts/e2e-ui-nouriva-onboarding-strategy.mjs
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -14,15 +14,15 @@ const ROOT = join(__dirname, "..");
 const OUT_DIR = join(__dirname, "output");
 const BASE_UI = String(process.env.BASE_UI || "http://localhost:5179").replace(/\/$/, "");
 
-const ELEVATE = {
-  companyName: "Elevate",
-  website: "https://theelevate.co.in",
-  niche: "Management strategy, AI solutions & digital transformation consulting",
-  icp: "Growth-stage companies and mid-market leaders seeking strategy-to-execution partners",
-  outcome: "Grow qualified leads from strategy and AI transformation buyers",
+const NOURIVA = {
+  companyName: "Nouriva AI",
+  website: "https://nouriva.tech",
+  niche: "Consumer health & nutrition AI app (lab-personalized meal scoring)",
+  icp: "Indians managing diabetes, PCOS, thyroid, hypertension, or vitamin deficiencies who want meal guidance beyond calorie counting — built for Indian kitchens",
+  outcome: "Grow paid conversions from trial users who upload labs or set conditions",
   timeWindow: "90 days",
-  target: "5 qualified leads per month",
-  baseline: "1 qualified lead per month",
+  target: "200 paid conversions / month",
+  baseline: "organic installs + trial starts; paid conversion rate to be instrumented",
 };
 
 async function loadPlaywright() {
@@ -151,11 +151,11 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const email = `elevate.ui.${Date.now()}@marqq.test`;
-  const password = "ElevateTest123!";
+  const email = `nouriva.ui.${Date.now()}@marqq.test`;
+  const password = "NourivaTest123!";
 
   const shot = async (name) => {
-    const path = join(OUT_DIR, `elevate-ui-${name}.png`);
+    const path = join(OUT_DIR, `nouriva-ui-${name}.png`);
     await page.screenshot({ path, fullPage: true });
     console.log(`  📸 ${path}`);
     return path;
@@ -189,7 +189,7 @@ async function main() {
       await page.waitForTimeout(800);
     }
 
-    await page.locator("#su-name, input").filter({ hasNot: page.locator('[type=password]') }).first().fill("Elevate UI Smoke").catch(async () => {
+    await page.locator("#su-name, input").filter({ hasNot: page.locator('[type=password]') }).first().fill("Nouriva UI Smoke").catch(async () => {
       const inputs = page.locator("input");
       const n = await inputs.count();
       // name, email, password, confirm — fill by order of visible text fields
@@ -197,7 +197,7 @@ async function main() {
         const t = await inputs.nth(i).getAttribute("type");
         const id = await inputs.nth(i).getAttribute("id");
         if (id === "su-name" || (!t && i === 0) || t === "text") {
-          await inputs.nth(i).fill("Elevate UI Smoke");
+          await inputs.nth(i).fill("Nouriva UI Smoke");
           break;
         }
       }
@@ -205,7 +205,7 @@ async function main() {
 
     // Prefer labeled fields
     const nameInput = page.locator("#su-name").or(page.getByLabel(/Full name|Name/i)).first();
-    if (await nameInput.isVisible().catch(() => false)) await nameInput.fill("Elevate UI Smoke");
+    if (await nameInput.isVisible().catch(() => false)) await nameInput.fill("Nouriva UI Smoke");
     const emailInput = page.locator("#su-email").or(page.getByLabel(/Email/i)).first();
     if (await emailInput.isVisible().catch(() => false)) await emailInput.fill(email);
     else {
@@ -242,7 +242,7 @@ async function main() {
       }
     }
 
-    console.log("\n[2] Fill Elevate onboarding");
+    console.log("\n[2] Fill Nouriva onboarding");
     // Pre-seed localStorage fields then reload so inputs pick them up if controlled slowly
     await page.evaluate((data) => {
       localStorage.setItem("marqq_ob_companyName", data.companyName);
@@ -255,7 +255,7 @@ async function main() {
       localStorage.setItem("marqq_ob_baseline", data.baseline);
       localStorage.setItem("marqq_onboarding_step", "1");
       localStorage.setItem("marqq_active_screen", "onboarding");
-    }, ELEVATE);
+    }, NOURIVA);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1000);
     await shot("02-onboarding-seeded");
@@ -269,28 +269,28 @@ async function main() {
       console.log(`  … ${stepText.trim() || "(no step)"}`);
 
       if (step === 1 || step === 0) {
-        await fillByLabel(page, /Company/i, ELEVATE.companyName);
-        await fillByLabel(page, /Website|URL/i, ELEVATE.website);
+        await fillByLabel(page, /Company/i, NOURIVA.companyName);
+        await fillByLabel(page, /Website|URL/i, NOURIVA.website);
         // fallback first inputs
         const inputs = page.locator("input.input, input");
         if ((await inputs.count()) >= 1) {
           const v0 = await inputs.nth(0).inputValue().catch(() => "");
-          if (!v0) await inputs.nth(0).fill(ELEVATE.companyName);
+          if (!v0) await inputs.nth(0).fill(NOURIVA.companyName);
         }
         if ((await inputs.count()) >= 2) {
           const v1 = await inputs.nth(1).inputValue().catch(() => "");
-          if (!v1) await inputs.nth(1).fill(ELEVATE.website);
+          if (!v1) await inputs.nth(1).fill(NOURIVA.website);
         }
       }
       if (step === 2) {
-        await fillByLabel(page, /Niche|Industry/i, ELEVATE.niche);
-        await fillByLabel(page, /ICP|customer/i, ELEVATE.icp);
+        await fillByLabel(page, /Niche|Industry/i, NOURIVA.niche);
+        await fillByLabel(page, /ICP|customer/i, NOURIVA.icp);
       }
       if (step === 3) {
-        await fillByLabel(page, /Outcome|goal/i, ELEVATE.outcome);
-        await fillByLabel(page, /Window|Timeline|days/i, ELEVATE.timeWindow);
-        await fillByLabel(page, /Target/i, ELEVATE.target);
-        await fillByLabel(page, /Baseline/i, ELEVATE.baseline);
+        await fillByLabel(page, /Outcome|goal/i, NOURIVA.outcome);
+        await fillByLabel(page, /Window|Timeline|days/i, NOURIVA.timeWindow);
+        await fillByLabel(page, /Target/i, NOURIVA.target);
+        await fillByLabel(page, /Baseline/i, NOURIVA.baseline);
       }
 
       // Step 6: wait for live Brand DNA scrape/synthesis before Continue
@@ -384,16 +384,29 @@ async function main() {
       const candidates = page.locator("button.btn");
       const n = await candidates.count();
       let clicked = false;
+      let fallbackIdx = -1;
       for (let j = 0; j < Math.min(n, 24); j++) {
         const t = ((await candidates.nth(j).textContent()) || "").trim();
         if (!t || t.length > 140) continue;
         if (/Back|Export|Regenerate|Start over|Ask|Open|Skip|Sign|Google|SSO|Logout|Goals|Module|Offer|Audience|^Strategy$|Market analysis|Positioning|Distribution|Marketing strategy|Sales strategy|Launch plan|Measurement|Risks|Timeline/i.test(t))
           continue;
         if (/Lock |Continue/i.test(t)) continue;
-        await safeClick(candidates.nth(j));
+        if (fallbackIdx < 0) fallbackIdx = j;
+        if (
+          /lab|nutrition|health|biomarker|diabetes|PCOS|consumer|activation|paid users|subscription|freemium|app store|Instagram|ASO|Nouriva|meal|Indian|trial/i.test(
+            t
+          )
+        ) {
+          await safeClick(candidates.nth(j));
+          clicked = true;
+          await page.waitForTimeout(450);
+          break;
+        }
+      }
+      if (!clicked && fallbackIdx >= 0) {
+        await safeClick(candidates.nth(fallbackIdx));
         clicked = true;
         await page.waitForTimeout(450);
-        break;
       }
       if (!clicked) await page.waitForTimeout(2000);
     }
@@ -447,11 +460,11 @@ async function main() {
     await shot("06-strategy-sections");
 
     const md = [
-      `# Elevate UI onboarding → strategy`,
+      `# Nouriva UI onboarding → strategy`,
       ``,
       `- URL: ${BASE_UI}`,
-      `- Company: ${ELEVATE.companyName}`,
-      `- Website: ${ELEVATE.website}`,
+      `- Company: ${NOURIVA.companyName}`,
+      `- Website: ${NOURIVA.website}`,
       `- Signup: ${email}`,
       `- Generated: ${new Date().toISOString()}`,
       `- Title: ${strategy?.title || "(none)"}`,
@@ -471,9 +484,9 @@ async function main() {
       ]),
     ].join("\n");
 
-    const mdPath = join(OUT_DIR, `elevate-ui-strategy-${stamp}.md`);
+    const mdPath = join(OUT_DIR, `nouriva-ui-strategy-${stamp}.md`);
     writeFileSync(mdPath, md);
-    writeFileSync(join(OUT_DIR, `elevate-ui-strategy-${stamp}.json`), JSON.stringify({ strategy, sectionReport, results }, null, 2));
+    writeFileSync(join(OUT_DIR, `nouriva-ui-strategy-${stamp}.json`), JSON.stringify({ strategy, sectionReport, results }, null, 2));
     console.log(`\n📄 ${mdPath}`);
   } finally {
     await browser.close();

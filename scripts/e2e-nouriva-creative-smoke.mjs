@@ -53,22 +53,49 @@ async function main() {
     body: {
       companyName: "Nouriva AI",
       companyId: "marqq-ws-1",
-      topic: "lab-personalized nutrition",
+      workspaceId: "marqq-ws-1",
+      topic: "lab-personalized Indian meal plans from blood markers",
       platform: "instagram",
-      aspectRatio: "1:1",
+      aspectRatio: "9:16",
     },
   });
   if (!create.ok) { fail("create", create.data?.error); process.exit(1); }
-  const runId = create.data.runId;
+  const runId = create.data.runId || create.data.run?.id;
+  const assets = create.data.run?.brandAssets;
   ok("create", runId);
+  if (assets?.logoPublicUrl || assets?.logoUrl) {
+    ok("brand-logo", assets.logoPublicUrl ? "public" : assets.logoUrl);
+  } else {
+    fail("brand-logo", "no logo resolved for marqq-ws-1");
+  }
 
-  const concept = await api(`/api/creative/runs/${runId}/concept`, { method: "POST", body: {} });
+  const concept = await api(`/api/creative/runs/${runId}/concept`, {
+    method: "POST",
+    body: { topic: "lab-personalized Indian meal plans from blood markers", platform: "instagram" },
+  });
   if (!concept.ok) { fail("concept", concept.data?.error); process.exit(1); }
+  const plan = concept.data.concept?.video_plan;
   ok("concept", concept.data.concept?.headline?.slice(0, 50));
+  if (plan?.aspect_ratio === "9:16" && plan?.render_mode) {
+    ok(
+      "viral-plan",
+      `${plan.channel_label || "?"} · ${plan.format} · ${plan.aspect_ratio} · ${plan.duration_seconds}s · ${plan.render_mode}`,
+    );
+  } else {
+    fail("viral-plan", JSON.stringify(plan || {}));
+  }
+  if (plan?.hook) ok("hook", String(plan.hook).slice(0, 80));
+  else fail("hook", "missing");
 
   const image = await api(`/api/creative/runs/${runId}/image`, { method: "POST" });
   if (!image.ok) { fail("image", image.data?.error); process.exit(1); }
-  ok("image", `${image.data.image?.host || "?"} · ${image.data.image?.model || "?"}`);
+  const wm = image.data.image?.watermark;
+  ok(
+    "image",
+    `${image.data.image?.host || "?"} · ${image.data.image?.model || "?"} · watermark=${wm?.applied ? "yes" : "no"}`,
+  );
+  if (wm?.applied) ok("logo-watermark", "composited");
+  else fail("logo-watermark", wm?.error || "not applied");
 
   const video = await api(`/api/creative/runs/${runId}/video`, {
     method: "POST",
@@ -78,7 +105,7 @@ async function main() {
 
   let videoPayload = video.data.video;
   if (video.data.poll && videoPayload?.status === "processing") {
-    ok("video-submit", videoPayload.fal_request_id || "queued");
+    ok("video-submit", `${videoPayload.model || "?"} · ${videoPayload.plan?.render_mode || "?"}`);
     const started = Date.now();
     let done = false;
     while (Date.now() - started < 180000) {
@@ -97,7 +124,8 @@ async function main() {
       ok("video", `${videoPayload?.status}${videoPayload?.url ? " +url" : ""}`);
     }
   } else {
-    ok("video", (videoPayload?.status || "?") + (videoPayload?.url ? " +url" : " prompt_only"));
+    const mode = videoPayload?.plan?.render_mode || videoPayload?.model || "?";
+    ok("video", `${videoPayload?.status || "?"} · ${mode}${videoPayload?.url ? " +url" : " prompt_only"}`);
   }
 
   const approve = await api(`/api/creative/runs/${runId}/approve`, { method: "POST" });

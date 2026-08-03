@@ -243,20 +243,32 @@ export async function runPaidPlan(runId) {
   return { run: publicRun(run), plan: run.plan };
 }
 
-async function tryFalImage(prompt) {
+/** @see https://fal.ai/models/fal-ai/nano-banana-2 */
+async function tryFalImage(prompt, aspectRatio = '1:1') {
   const key = process.env.FAL_KEY || process.env.FAL_API_KEY;
   if (!key) return null;
+  const model = process.env.FAL_IMAGE_MODEL || 'fal-ai/nano-banana-2';
+  const allowed = new Set([
+    'auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8',
+  ]);
+  const ar = allowed.has(String(aspectRatio || '').trim()) ? String(aspectRatio).trim() : '1:1';
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 45000);
-    const res = await fetch('https://fal.run/fal-ai/flux/dev', {
+    const timer = setTimeout(() => controller.abort(), 90000);
+    const res = await fetch(`https://fal.run/${model}`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
         Authorization: `Key ${key}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ prompt: String(prompt).slice(0, 1500), image_size: 'square_hd', num_images: 1 }),
+      body: JSON.stringify({
+        prompt: String(prompt).slice(0, 4000),
+        num_images: 1,
+        aspect_ratio: ar,
+        output_format: 'png',
+        resolution: process.env.FAL_IMAGE_RESOLUTION || '1K',
+      }),
     });
     clearTimeout(timer);
     const data = await res.json().catch(() => ({}));
@@ -308,7 +320,8 @@ export async function runPaidCreativeDraft(runId, { generateImage = true } = {})
   let imageNote = null;
   if (generateImage && imagePrompt) {
     imageUrl = await tryFalImage(
-      `${imagePrompt}. Brand: ${run.companyName}. Clean modern nutrition lifestyle. Aspect 1:1. No watermarks.`
+      `${imagePrompt}. Brand mood only (do not render text): ${run.companyName}. Clean modern nutrition lifestyle. Aspect 1:1. CRITICAL: no on-image text, badges, scores, logos, or watermarks.`,
+      '1:1'
     );
     if (!imageUrl) imageNote = 'Image gen skipped/failed — copy draft still valid';
   }

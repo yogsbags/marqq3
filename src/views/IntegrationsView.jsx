@@ -25,6 +25,7 @@ export function IntegrationsView({ setActiveScreen }) {
     { id: 'whatsapp', name: 'WhatsApp', connected: false, status: 'not_connected' },
     { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
     { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
+    { id: 'github', name: 'GitHub', connected: false, status: 'not_connected' },
   ]);
   const [preferences, setPreferences] = useState({});
   const [connectingId, setConnectingId] = useState(null);

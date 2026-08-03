@@ -200,6 +200,7 @@ export function studioSeed() {
     domain: domain || "example.com",
     marketType: "b2b",
     brandContext,
+    logoUrl: brand.logoUrl || "",
     quantifiedTarget: quantified,
     timelineTarget: timeline,
     timeline,
@@ -207,8 +208,8 @@ export function studioSeed() {
     topic: [topicBase, niche].filter(Boolean).join(" · ") || `GTM motion for ${company}`,
     northStarMetric: ga.north_star_metric || "",
     northStarDefinition: ga.metric_definition || "",
-    channels: ["linkedin", "instagram", "twitter", "facebook"],
+    channels: ["linkedin", "instagram", "twitter", "facebook", "tiktok", "youtube"],
     platform: "instagram",
-    aspectRatio: "1:1",
+    aspectRatio: "9:16",
   };
 }

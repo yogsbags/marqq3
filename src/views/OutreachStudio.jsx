@@ -1,9 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { Mail, Linkedin, Phone, Send, CheckCircle, RefreshCw, Sparkles, ArrowLeft } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import DeliveryModeToggle from '../components/DeliveryModeToggle.jsx';
 import { getActiveWorkspaceId, loadLocalBrandContext } from '../lib/brandContext';
 import { getAudienceProfile, getCompanyName, wizardAnswerLabel } from '../lib/liveWorkspace';
 import { loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
+import {
+  EmailClientPreview,
+  WhatsAppDmPreview,
+  SocialPostPreview,
+} from '../components/outcome-previews/ChannelPreviews.jsx';
 
 const STEPS = [
   { id: 'prospects', label: '1 · Prospects' },
@@ -89,6 +95,7 @@ export default function OutreachStudio({ setActiveScreen }) {
 
   const [deliveryMode, setDeliveryMode] = useState('draft'); // draft | live
   const [emailProvider, setEmailProvider] = useState('auto'); // auto | instantly | gmail
+  const [sequenceSteps, setSequenceSteps] = useState([]);
   const [waTemplates, setWaTemplates] = useState([]);
   const [waTemplateName, setWaTemplateName] = useState('');
   const [waLanguage, setWaLanguage] = useState('en_US');
@@ -109,6 +116,25 @@ export default function OutreachStudio({ setActiveScreen }) {
       .then((r) => r.json())
       .then((d) => setConnectors(d.connectors || []))
       .catch(() => {});
+  }, []);
+
+  // E2E / smoke: seed a compose prospect when Apollo returns empty
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('marqq_smoke_outreach_prospect');
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (!p?.id || !p?.full_name) return;
+      setProspects((prev) => (prev.some((x) => x.id === p.id) ? prev : [p, ...prev]));
+      setSelectedId(p.id);
+      setSubject(p.subject || 'Partnership idea for your patients');
+      setBody(p.body || 'Hi — quick note from Nouriva AI about lab-personalized meal plans.');
+      setStep('compose');
+      setComposeChannel('email');
+      sessionStorage.removeItem('marqq_smoke_outreach_prospect');
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const loadWaTemplates = async () => {
@@ -175,7 +201,17 @@ export default function OutreachStudio({ setActiveScreen }) {
       setSelectedId(null);
       setReplies([]);
       setSent([]);
-      setNotice(`Loaded ${(data.prospects || []).length} Apollo prospects · ${data.run?.source || 'apollo'}`);
+      setNotice(
+        `Loaded ${(data.prospects || []).length} Apollo prospects · ${data.run?.source || 'apollo'}${
+          data.crm_sync?.ok
+            ? ` · CRM → ${data.crm_sync.destination}${data.crm_sync.url ? ` (${data.crm_sync.count || ''} leads)` : ''}`
+            : data.crm_sync?.skipped
+              ? ' · no CRM/Sheets connected (leads stay in Marqq)'
+              : data.crm_sync?.error
+                ? ` · CRM sync warn: ${data.crm_sync.error}`
+                : ''
+        }`
+      );
       setStep('prospects');
     } catch (err) {
       setError(err.message || 'Fetch failed');
@@ -210,6 +246,27 @@ export default function OutreachStudio({ setActiveScreen }) {
       setSubject(copy?.subject || '');
       setBody(copy?.body || '');
       setNotice('Sam drafted copy with cold-email skill');
+      if (composeChannel === 'email' && (copy?.subject || copy?.body)) {
+        // Auto-build 4-step sequence after first-touch copy
+        try {
+          const seqRes = await fetch(`/api/outreach/runs/${runId}/generate-sequence`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prospectId: selected.id,
+              subject: copy?.subject || '',
+              body: copy?.body || '',
+            }),
+          });
+          const seqData = await seqRes.json();
+          if (seqRes.ok && seqData.ok && Array.isArray(seqData.sequence_emails)) {
+            setSequenceSteps(seqData.sequence_emails);
+            setNotice(`Sam drafted copy + ${seqData.sequence_emails.length}-step email sequence`);
+          }
+        } catch {
+          /* sequence is optional enrichment */
+        }
+      }
     } catch (err) {
       setError(err.message || 'Copy failed');
     } finally {
@@ -217,25 +274,80 @@ export default function OutreachStudio({ setActiveScreen }) {
     }
   };
 
+  const generateSequence = async () => {
+    if (!runId || !selected) return;
+    setBusy('sequence');
+    setError(null);
+    try {
+      await saveEdits();
+      const res = await fetch(`/api/outreach/runs/${runId}/generate-sequence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prospectId: selected.id, subject, body }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setSequenceSteps(data.sequence_emails || []);
+      const first = data.sequence_emails?.[0];
+      if (first) {
+        setSubject(first.subject || subject);
+        setBody(first.body || body);
+      }
+      setNotice(`${(data.sequence_emails || []).length}-step sequence ready (day 0 / 3 / 7 / 14 · follow-up skill)`);
+    } catch (err) {
+      setError(err.message || 'Sequence failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const persistSequence = async (steps) => {
+    if (!runId) return;
+    setSequenceSteps(steps);
+    await fetch(`/api/outreach/runs/${runId}/sequence`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence_emails: steps }),
+    }).catch(() => {});
+  };
+
+  const updateSequenceStep = (index, patch) => {
+    const next = sequenceSteps.map((s, i) => (i === index ? { ...s, ...patch } : s));
+    void persistSequence(next);
+    if (index === 0) {
+      if (patch.subject != null) setSubject(patch.subject);
+      if (patch.body != null) setBody(patch.body);
+    }
+  };
+
   const saveEdits = async () => {
     if (!runId || !selected) return;
+    const emailSubject = sequenceSteps[0]?.subject || subject;
+    const emailBody = sequenceSteps[0]?.body || body;
     const channel_copies = { ...(selected.channel_copies || {}) };
     if (composeChannel === 'linkedin') {
       channel_copies.linkedin_dm = { ...(channel_copies.linkedin_dm || {}), body, skills: ['copywriting'] };
     } else if (composeChannel === 'whatsapp') {
       channel_copies.whatsapp_dm = { ...(channel_copies.whatsapp_dm || {}), body, skills: ['copywriting'] };
     } else {
-      channel_copies.email = { subject, body, skills: ['cold-email'] };
+      channel_copies.email = { subject: emailSubject, body: emailBody, skills: ['cold-email'] };
     }
     await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        subject: composeChannel === 'email' ? subject : selected.subject,
-        body: composeChannel === 'email' ? body : selected.body,
+        subject: composeChannel === 'email' ? emailSubject : selected.subject,
+        body: composeChannel === 'email' ? emailBody : selected.body,
         channel_copies,
       }),
     });
+    if (composeChannel === 'email' && sequenceSteps.length) {
+      await persistSequence(
+        sequenceSteps.map((s, i) =>
+          i === 0 ? { ...s, subject: emailSubject, body: emailBody } : s
+        )
+      );
+    }
   };
 
   const goApprove = async () => {
@@ -257,6 +369,8 @@ export default function OutreachStudio({ setActiveScreen }) {
           delivery: deliveryMode,
           subject,
           body,
+          sequence_emails:
+            composeChannel === 'email' && sequenceSteps.length ? sequenceSteps : undefined,
           testTo: composeChannel === 'email' ? testTo || undefined : undefined,
           provider: composeChannel === 'email' && emailProvider !== 'auto' ? emailProvider : undefined,
           template_name: composeChannel === 'whatsapp' ? waTemplateName || undefined : undefined,
@@ -268,12 +382,22 @@ export default function OutreachStudio({ setActiveScreen }) {
       setProspects((prev) =>
         prev.map((x) => (x.id === selected.id ? { ...x, ...data.prospect } : x))
       );
+      if (Array.isArray(data.sequence_emails) && data.sequence_emails.length) {
+        setSequenceSteps(data.sequence_emails);
+      }
       const provider = data.result?.provider || composeChannel;
       const status = data.result?.status || data.delivery;
+      const seqN = data.result?.sequence_steps || data.sequence_emails?.length || sequenceSteps.length;
       setNotice(
         data.delivery === 'live'
-          ? `Live via ${provider} · ${status}${data.result?.template_name ? ` · template ${data.result.template_name}` : ''}`
-          : `Prepared via ${provider} (draft — not activated). Flip to Live to send.`
+          ? `Live via ${provider} · ${status}${seqN ? ` · ${seqN}-step sequence` : ''}${
+              data.result?.template_name ? ` · template ${data.result.template_name}` : ''
+            }${
+              data.prospect?.gmail_sequence_status === 'scheduled'
+                ? ` · next drip ${data.prospect.scheduled_for || 'queued'}`
+                : ''
+            }`
+          : `Prepared via ${provider} (draft — not activated)${seqN ? ` · ${seqN}-step sequence` : ''}. Flip to Live to send.`
       );
       if (data.delivery === 'live' || data.result?.activated) {
         setInboxTab('sent');
@@ -438,9 +562,9 @@ export default function OutreachStudio({ setActiveScreen }) {
   const channelHint =
     composeChannel === 'email'
       ? instantlyOk
-        ? 'Instantly (preferred) · Gmail fallback'
+        ? 'Instantly (preferred) · multi-step sequences · Gmail fallback'
         : gmailOk
-          ? 'Gmail only — connect Instantly for sequences'
+          ? 'Gmail drip · 4-step local sequence · stop on reply'
           : 'Connect Instantly or Gmail'
       : composeChannel === 'linkedin'
         ? heyreachOk
@@ -455,7 +579,7 @@ export default function OutreachStudio({ setActiveScreen }) {
       <JourneyBar screenId="outreach" setActiveScreen={setActiveScreen} title="Outreach Studio" />
       <div>
         <p className="text-muted" style={{ margin: 0 }}>
-          Arjun fetches Apollo prospects · Sam writes cold email · you approve · Gmail sends · replies stay here.
+          Arjun fetches Apollo prospects · Sam writes a multi-step email sequence · you approve · Instantly or Gmail drip · stop on reply.
         </p>
       </div>
 
@@ -602,26 +726,120 @@ export default function OutreachStudio({ setActiveScreen }) {
             <button type="button" className="btn btn-secondary" disabled={busy === 'copy'} onClick={() => void generateCopy()}>
               <Sparkles size={14} /> {busy === 'copy' ? 'Sam writing…' : 'Generate copy (cold-email)'}
             </button>
+            {composeChannel === 'email' ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy === 'sequence' || !(body || sequenceSteps[0]?.body)}
+                onClick={() => void generateSequence()}
+              >
+                <Sparkles size={14} /> {busy === 'sequence' ? 'Building sequence…' : 'Generate 4-step sequence'}
+              </button>
+            ) : null}
           </div>
 
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ margin: 0 }}>{step === 'approve' ? 'Approve & send' : 'Sequence composer'}</h3>
-            {composeChannel === 'email' ? (
-              <div className="field">
-                <label>Subject</label>
-                <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
+            {composeChannel === 'email' && sequenceSteps.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="card-kicker">
+                  {sequenceSteps.length}-step sequence · Instantly multi-touch or Gmail drip (stop on reply)
+                </div>
+                {sequenceSteps.map((s, i) => (
+                  <div
+                    key={`seq-${i}`}
+                    className="card"
+                    style={{
+                      padding: 10,
+                      background: i === 0 ? 'var(--color-surface)' : 'var(--color-bg)',
+                      border: i === 0 ? '1px solid var(--color-accent)' : undefined,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                      <strong style={{ fontSize: 12 }}>
+                        Step {i + 1}
+                        {i === 0 ? ' · first touch' : ` · +${s.delay_days || 0}d`}
+                      </strong>
+                      {i > 0 ? (
+                        <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          Delay
+                          <input
+                            className="input"
+                            type="number"
+                            min={1}
+                            max={30}
+                            value={s.delay_days ?? 3}
+                            style={{ width: 56, padding: '2px 6px', fontSize: 12 }}
+                            onChange={(e) =>
+                              updateSequenceStep(i, { delay_days: Number(e.target.value) || 3 })
+                            }
+                          />
+                          d
+                        </label>
+                      ) : null}
+                    </div>
+                    <input
+                      className="input"
+                      value={s.subject || ''}
+                      placeholder="Subject"
+                      style={{ marginBottom: 6, fontSize: 13 }}
+                      onChange={(e) => updateSequenceStep(i, { subject: e.target.value })}
+                    />
+                    <textarea
+                      className="input"
+                      rows={i === 0 ? 5 : 3}
+                      value={s.body || ''}
+                      placeholder="Body"
+                      style={{ fontSize: 12 }}
+                      onChange={(e) => updateSequenceStep(i, { body: e.target.value })}
+                    />
+                  </div>
+                ))}
               </div>
-            ) : null}
-            <div className="field">
-              <label>Body</label>
-              <textarea className="input" rows={10} value={body} onChange={(e) => setBody(e.target.value)} />
-            </div>
+            ) : (
+              <>
+                {composeChannel === 'email' ? (
+                  <div className="field">
+                    <label>Subject</label>
+                    <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
+                  </div>
+                ) : null}
+                <div className="field">
+                  <label>Body</label>
+                  <textarea className="input" rows={10} value={body} onChange={(e) => setBody(e.target.value)} />
+                </div>
+              </>
+            )}
+
+            <div className="card-kicker">Channel preview · feels published</div>
+            {composeChannel === 'email' ? (
+              <EmailClientPreview
+                from={`${getCompanyName() || 'you'}@${(loadLocalBrandContext()?.website || 'company.com').replace(/^https?:\/\//, '').split('/')[0]}`}
+                to={selected.email || 'prospect@company.com'}
+                subject={sequenceSteps[0]?.subject || subject}
+                body={sequenceSteps[0]?.body || body}
+              />
+            ) : composeChannel === 'whatsapp' ? (
+              <WhatsAppDmPreview contactName={selected.full_name} message={body || (waTemplateName ? `Template: ${waTemplateName}` : '')} />
+            ) : (
+              <SocialPostPreview
+                platform="linkedin"
+                authorName={getCompanyName() || 'You'}
+                authorHandle={selected.title || 'Outreach'}
+                post={body}
+                hook={`DM to ${selected.full_name}`}
+              />
+            )}
 
             {step === 'compose' ? (
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={composeChannel === 'whatsapp' ? !(body || waTemplateName) : !body}
+                disabled={
+                  composeChannel === 'whatsapp'
+                    ? !(body || waTemplateName)
+                    : !(sequenceSteps[0]?.body || body)
+                }
                 onClick={() => void goApprove()}
               >
                 Continue to approve <Send size={14} />
@@ -642,19 +860,18 @@ export default function OutreachStudio({ setActiveScreen }) {
                     </button>
                   ) : null}
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {['draft', 'live'].map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      className={deliveryMode === m ? 'btn btn-primary' : 'btn btn-secondary'}
-                      style={{ textTransform: 'capitalize', fontSize: 12 }}
-                      onClick={() => setDeliveryMode(m)}
-                    >
-                      {m === 'draft' ? 'Draft (safe)' : 'Live send'}
-                    </button>
-                  ))}
-                </div>
+                <DeliveryModeToggle
+                  value={deliveryMode}
+                  onChange={setDeliveryMode}
+                  draftLabel="Draft (safe)"
+                  liveLabel="Publish live"
+                  draftHint="Draft prepares Instantly campaigns / HeyReach plans without activating. WhatsApp stays unsent. Gmail creates sequence drafts only."
+                  liveHint={`Live will activate Instantly campaigns, start HeyReach sequences, or send WhatsApp${
+                    composeChannel === 'whatsapp' && waTemplateName
+                      ? ` template “${waTemplateName}”`
+                      : ' messages'
+                  }.`}
+                />
                 {composeChannel === 'email' && instantlyOk && gmailOk ? (
                   <div className="field">
                     <label>Email provider</label>
@@ -730,23 +947,13 @@ export default function OutreachStudio({ setActiveScreen }) {
                     ) : null}
                   </div>
                 ) : null}
-                {deliveryMode === 'live' ? (
-                  <p className="text-muted" style={{ fontSize: 12, color: 'var(--color-accent-2)' }}>
-                    Live will activate Instantly campaigns, start HeyReach sequences, or send WhatsApp
-                    {composeChannel === 'whatsapp' && waTemplateName ? ` template “${waTemplateName}”` : ' messages'}.
-                  </p>
-                ) : (
-                  <p className="text-muted" style={{ fontSize: 12 }}>
-                    Draft prepares Instantly campaigns / HeyReach plans without activating. WhatsApp stays unsent.
-                  </p>
-                )}
                 <button
                   type="button"
                   className="btn btn-primary"
                   disabled={
                     busy === 'send' ||
                     !channelReady ||
-                    (composeChannel === 'whatsapp' ? !(body || waTemplateName) : !body)
+                    (composeChannel === 'whatsapp' ? !(body || waTemplateName) : !(sequenceSteps[0]?.body || body))
                   }
                   onClick={() => void sendNow()}
                 >

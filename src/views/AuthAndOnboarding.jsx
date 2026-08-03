@@ -553,8 +553,13 @@ export function OnboardingView({ setActiveScreen }) {
 
 
   const nextStep = async () => {
+    // Don't leave Brand DNA while scrape/synthesis is still running
+    if (groqLoading) return;
     if (step === 5 && !groqData) {
-      handleRunGroqSynthesis();
+      // Advance to step 6 so the BrandStyleLoader shows, then await fetch
+      setStep(6);
+      await handleRunGroqSynthesis();
+      return;
     }
     if (step >= 6) {
       await saveBrandContextNow();
@@ -1059,8 +1064,12 @@ export function OnboardingView({ setActiveScreen }) {
               </button>
             ) : <div />}
 
-            <button type="button" className="btn btn-primary" onClick={nextStep}>
-              {step === ONBOARDING_TOTAL_STEPS ? 'Launch GTM Strategy Wizard →' : 'Continue'}
+            <button type="button" className="btn btn-primary" onClick={nextStep} disabled={groqLoading}>
+              {groqLoading
+                ? 'Fetching Brand DNA…'
+                : step === ONBOARDING_TOTAL_STEPS
+                  ? 'Launch GTM Strategy Wizard →'
+                  : 'Continue'}
             </button>
           </div>
         </div>

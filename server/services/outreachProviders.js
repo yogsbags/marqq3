@@ -60,13 +60,18 @@ export async function launchInstantlyCampaign(companyId, {
   name = 'Marqq Outreach',
   subject,
   body,
+  sequence_emails,
   leads = [],
   activate = false,
   daily_limit = 50,
   timezone = 'Asia/Kolkata',
 } = {}) {
-  const sequences = instantlyBuildSequences([{ subject, body, delay_days: 0 }]);
-  if (!sequences) throw new Error('subject/body required for Instantly');
+  const emailSteps =
+    Array.isArray(sequence_emails) && sequence_emails.length
+      ? sequence_emails
+      : [{ subject, body, delay_days: 0 }];
+  const sequences = instantlyBuildSequences(emailSteps);
+  if (!sequences) throw new Error('subject/body or sequence_emails required for Instantly');
 
   const { accounts: senderAccounts, error: accountsError } = await instantlyListSenderAccounts(companyId);
   if (accountsError) console.warn('[instantly] list accounts:', accountsError);
@@ -153,6 +158,8 @@ export async function launchInstantlyCampaign(companyId, {
     leads_added: leadsAdded,
     sender: emailList[0] || null,
     activated,
+    sequence_steps: emailSteps.length,
+    stop_on_reply: true,
   };
 }
 

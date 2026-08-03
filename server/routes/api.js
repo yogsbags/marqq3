@@ -34,6 +34,9 @@ import {
   getWhatsAppDeliveryForRun,
   ingestWhatsAppWebhook,
   pollWhatsAppStatuses,
+  generateRunEmailSequence,
+  setRunEmailSequence,
+  processDueOutreachSends,
 } from '../services/outreach.js';
 import {
   createContentRun,
@@ -89,6 +92,14 @@ import {
 } from '../services/agentScheduler.js';
 import { getAnalyticsDashboard, buildEmptyDashboard } from '../services/analyticsDashboard.js';
 import { getCommandCenter } from '../services/commandCenterInsights.js';
+import {
+  preferencesStore,
+  WORKSPACE_DEFAULT_PREFS,
+  getWorkspacePreferences,
+  patchWorkspacePreferences,
+} from '../services/workspacePrefs.js';
+import { resolveCrmDestination } from '../services/crmLeads.js';
+import { resolveOutreachSpreadsheet } from '../services/googleSheetsLeads.js';
 import workspacesRouter from './workspaces.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { useSupabasePersistence } from '../lib/persistence.js';
@@ -328,8 +339,10 @@ router.post('/agents/deployments', (req, res) => {
   res.json({ ok: true, deployment: entry });
 });
 
-router.post('/agents/scheduler/tick', async (_req, res) => {
-  const result = await processDeploymentQueueTick();
+router.post('/agents/scheduler/tick', async (req, res) => {
+  const force = Boolean(req.body?.force);
+  const workspaceId = String(req.body?.workspaceId || req.query?.workspaceId || '').trim() || null;
+  const result = await processDeploymentQueueTick({ force, workspaceId });
   res.json({ ok: true, ...result });
 });
 
@@ -364,7 +377,7 @@ router.post('/strategy/activate', (req, res) => {
       companyId: workspaceId,
     });
     // Kick an immediate tick so drafts appear without waiting a full minute
-    processDeploymentQueueTick().catch(() => {});
+    processDeploymentQueueTick({ force: true, workspaceId }).catch(() => {});
     res.json(result);
   } catch (err) {
     console.error('[strategy/activate]', err);
@@ -446,8 +459,10 @@ router.post('/outreach/runs', async (req, res) => {
         source: run.source,
         contactChannels: run.contactChannels,
         titles: run.titles,
+        crm_sync: run.crm_sync || null,
       },
       prospects: run.prospects,
+      crm_sync: run.crm_sync || null,
     });
   } catch (err) {
     console.error('[outreach/runs]', err);
@@ -533,6 +548,38 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', async (req, r
   } catch (err) {
     console.error('[outreach/go-live]', err);
     res.status(400).json({ ok: false, error: err.message || 'Go-live failed' });
+  }
+});
+
+/** Generate 4-step email sequence (first + 3 follow-ups) for Instantly / Gmail drip */
+router.post('/outreach/runs/:runId/generate-sequence', async (req, res) => {
+  try {
+    const result = await generateRunEmailSequence(req.params.runId, req.body || {});
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[outreach/generate-sequence]', err);
+    res.status(400).json({ ok: false, error: err.message || 'Sequence generation failed' });
+  }
+});
+
+router.put('/outreach/runs/:runId/sequence', (req, res) => {
+  try {
+    const emails = req.body?.sequence_emails || req.body?.emails || req.body;
+    const result = setRunEmailSequence(req.params.runId, emails);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+/** Process due Gmail drip sends (also runs on a 60s scheduler) */
+router.post('/outreach/process-due', async (req, res) => {
+  try {
+    const result = await processDueOutreachSends();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[outreach/process-due]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Process-due failed' });
   }
 });
 
@@ -1130,6 +1177,7 @@ router.get('/integrations', async (req, res) => {
     { id: 'whatsapp', name: 'WhatsApp', connected: false, status: 'not_connected' },
     { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
     { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
+    { id: 'github', name: 'GitHub', connected: false, status: 'not_connected' },
   ];
 
   if (!apiKey) {
@@ -1223,20 +1271,6 @@ router.post('/integrations/connect', async (req, res) => {
   }
 });
 
-// In-memory connector preferences store per companyId
-const preferencesStore = new Map();
-
-const WORKSPACE_DEFAULT_PREFS = {
-  google_ads_customer_id: '',
-  meta_ads_account_id: process.env.META_AD_ACCOUNT_ID || '',
-  linkedin_ads_account_id: '',
-  ga4_property_id: '',
-  gsc_site_url: '',
-  google_sheets_spreadsheet_id: process.env.GOOGLE_SHEETS_SPREADSHEET_ID || '',
-  salesforce_account_id: '',
-  hubspot_account_id: '',
-};
-
 /** GET /api/analytics/dashboard — live GSC + Meta (+ GA4 status) scorecard */
 router.get('/analytics/dashboard', async (req, res) => {
   try {
@@ -1304,19 +1338,74 @@ router.post('/command-center', handleCommandCenter);
 // GET /api/integrations/preferences?companyId=X
 router.get('/integrations/preferences', (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
-  const prefs = preferencesStore.get(companyId) || { ...WORKSPACE_DEFAULT_PREFS };
-  res.json({ preferences: prefs });
+  res.json({ preferences: getWorkspacePreferences(companyId) });
 });
 
 // POST /api/integrations/preferences  { companyId, ...prefs }
 router.post('/integrations/preferences', (req, res) => {
   const companyId = req.body.companyId || 'default';
-  const current = preferencesStore.get(companyId) || {};
-  const patch = req.body;
+  const patch = { ...(req.body || {}) };
   delete patch.companyId;
-  const updated = { ...current, ...patch };
-  preferencesStore.set(companyId, updated);
+  const updated = patchWorkspacePreferences(companyId, patch);
   res.json({ ok: true, preferences: updated });
+});
+
+/** CRM destination: HubSpot / Salesforce / Google Sheets fallback */
+router.get('/crm/destination', async (req, res) => {
+  try {
+    const companyId = String(req.query.companyId || req.query.workspaceId || 'marqq-ws-1').trim();
+    const dest = await resolveCrmDestination(companyId);
+    let sheets = null;
+    if (dest.destination === 'google_sheets') {
+      sheets = await resolveOutreachSpreadsheet(companyId, { createIfMissing: true });
+    } else if (!dest.destination) {
+      sheets = await resolveOutreachSpreadsheet(companyId, { createIfMissing: false });
+    }
+    res.json({
+      ok: true,
+      ...dest,
+      sheets: sheets?.ok
+        ? {
+            spreadsheetId: sheets.spreadsheetId,
+            worksheet: sheets.worksheet,
+            url: `https://docs.google.com/spreadsheets/d/${sheets.spreadsheetId}`,
+            created: Boolean(sheets.created),
+          }
+        : sheets,
+      preferences: getWorkspacePreferences(companyId),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message || 'CRM destination failed' });
+  }
+});
+
+/** Manual CRM/Sheets sync for prospects (smoke + CRM screen) */
+router.post('/crm/sync-leads', async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.body?.workspaceId || 'marqq-ws-1').trim();
+    const prospects = Array.isArray(req.body?.prospects) ? req.body.prospects : [];
+    if (!prospects.length) {
+      return res.status(400).json({ ok: false, error: 'prospects[] required' });
+    }
+    const { syncProspectsToCrm } = await import('../services/crmLeads.js');
+    const run = {
+      id: req.body?.runId || `crm_${Date.now()}`,
+      companyId,
+      workspaceId: companyId,
+      companyName: req.body?.companyName || 'Nouriva AI',
+      source: req.body?.source || 'crm_sync',
+    };
+    const result = await syncProspectsToCrm(run, prospects, {
+      status: req.body?.status || 'fetched',
+      next_action: req.body?.next_action || 'awaiting_copy',
+      source: req.body?.source || 'crm_sync',
+      channel: req.body?.channel || 'email',
+    });
+    res.json({ ok: Boolean(result?.ok), run, ...result });
+  } catch (err) {
+    console.error('[crm/sync-leads]', err);
+    res.status(500).json({ ok: false, error: err.message || 'CRM sync failed' });
+  }
 });
 
 // POST /api/brand-dna

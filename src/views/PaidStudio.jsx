@@ -4,6 +4,7 @@ import JourneyBar from '../components/JourneyBar.jsx';
 import { stashJourneyHandoff, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
 import { loadLocalBrandContext, getActiveWorkspaceId } from '../lib/brandContext';
 import { getAudienceProfile, getCompanyName, getWebsite, wizardAnswerLabel } from '../lib/liveWorkspace';
+import { SocialPostPreview } from '../components/outcome-previews/ChannelPreviews.jsx';
 
 const STEPS = [
   { id: 'goals', label: '1 · Goals' },
@@ -297,21 +298,25 @@ export default function PaidStudio({ setActiveScreen }) {
           </div>
           {!plan ? <p className="text-muted" style={{ fontSize: 13 }}>Run the plan first.</p> : null}
           {draft ? (
-            <div style={{ display: 'grid', gridTemplateColumns: draft.image_url ? '1fr 1fr' : '1fr', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ fontSize: 13 }}>
                 <div style={{ fontWeight: 700 }}>{draft.campaign_name}</div>
                 <div className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
                   {draft.creative_draft_id} · intended Meta status {draft.meta_status_intended}
                 </div>
-                <p style={{ fontWeight: 700, margin: '12px 0 4px' }}>{draft.headline}</p>
-                <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{draft.primary_text}</p>
                 <p className="text-muted" style={{ fontSize: 12, marginTop: 8 }}>
                   CTA {draft.cta} · {draft.link_url}
                 </p>
               </div>
-              {draft.image_url ? (
-                <img src={draft.image_url} alt="Ad creative" style={{ maxWidth: '100%', maxHeight: 280, objectFit: 'contain', border: '1px solid var(--color-divider)' }} />
-              ) : null}
+              <div className="card-kicker">Meta / Facebook feed preview · feels published</div>
+              <SocialPostPreview
+                platform="facebook"
+                authorName={goals.companyName || getCompanyName() || 'Your Brand'}
+                post={draft.primary_text || ''}
+                hook={draft.headline}
+                imageUrl={draft.image_url || undefined}
+                cta={draft.cta}
+              />
             </div>
           ) : null}
           {draft ? (

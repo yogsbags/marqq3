@@ -794,7 +794,11 @@ export function OrchestrationView({ setActiveScreen }) {
   const runTick = async () => {
     setTicking(true);
     try {
-      await fetch('/api/agents/scheduler/tick', { method: 'POST' });
+      await fetch('/api/agents/scheduler/tick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      });
       const dep = await fetch('/api/agents/deployments').then((r) => r.json());
       setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
       const osRes = await fetch('/api/agent-os').then((r) => r.json()).catch(() => ({}));
@@ -1411,6 +1415,7 @@ export function LeadMagnetsView({ setActiveScreen }) {
 export function CrmView({ setActiveScreen }) {
   const audience = getAudienceProfile();
   const salesBullets = playsFromSection('sales_strategy', 'Sales play');
+  const [crmDest, setCrmDest] = useState(null);
   const segments = [];
   if (audience.icp) {
     segments.push({
@@ -1440,12 +1445,63 @@ export function CrmView({ setActiveScreen }) {
     });
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/crm/destination?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setCrmDest(d);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const destLabel =
+    crmDest?.destination === 'hubspot'
+      ? 'HubSpot'
+      : crmDest?.destination === 'salesforce'
+        ? 'Salesforce'
+        : crmDest?.destination === 'google_sheets'
+          ? 'Google Sheets (CRM fallback)'
+          : 'None — connect HubSpot, Salesforce, or Google Sheets';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="crm" setActiveScreen={setActiveScreen} title="CRM Sync & Account Priorities" />
       <p className="text-muted" style={{ margin: 0 }}>
         Priority segments from ICP + sales strategy for {audience.companyName}. Fake clinic accounts removed.
       </p>
+
+      <div className="card" style={{ borderLeft: '3px solid var(--color-accent)' }}>
+        <div className="card-kicker">Lead destination</div>
+        <h3 style={{ margin: '4px 0 0' }}>{destLabel}</h3>
+        <p className="text-muted" style={{ fontSize: 13, margin: '6px 0 0' }}>
+          {crmDest?.fallback
+            ? 'No HubSpot/Salesforce connected — outreach leads are created and updated in Google Sheets by default.'
+            : crmDest?.destination
+              ? 'Outreach fetch / send / reply syncs leads to this CRM.'
+              : 'Connect Google Sheets under Integrations to use it as the default CRM when HubSpot/Salesforce are offline.'}
+        </p>
+        {crmDest?.sheets?.url ? (
+          <p style={{ fontSize: 13, margin: '8px 0 0' }}>
+            Sheet:{' '}
+            <a href={crmDest.sheets.url} target="_blank" rel="noreferrer">
+              {crmDest.sheets.worksheet || 'Outreach Leads'}
+            </a>
+          </p>
+        ) : null}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('integrations')}>
+            Integrations
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('outreach')}>
+            Outreach Studio
+          </button>
+        </div>
+      </div>
+
       {!segments.length ? (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>No segments yet</h3>

@@ -24,6 +24,17 @@ import {
   listRecentInboundReplies,
 } from './whatsappTracking.js';
 import { persistOutreachRun, loadOutreachRun } from './outreachPersist.js';
+import {
+  normalizeSequenceEmails,
+  ensureEmailSequence,
+  buildGmailSequenceSteps,
+  scheduleNextGmailSequenceStep,
+  stopGmailSequenceOnReply,
+  processDueOutreachSends as processDueSendsCore,
+  ensureEmailGreeting,
+  resolveProspectFirstName,
+} from './outreachSequences.js';
+import { syncProspectsToCrm, syncProspectToCrm } from './crmLeads.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -91,8 +102,8 @@ function extractGmailMessageId(payload) {
   );
 }
 
-/** Strip LLM placeholders and ensure a real sign-off. */
-function finalizeEmailBody(body, senderName, companyName) {
+/** Strip LLM placeholders, ensure "Hi <FirstName>," and a real sign-off. */
+function finalizeEmailBody(body, senderName, companyName, prospect = null) {
   let text = String(body || '').trim();
   const name = String(senderName || 'Yogesh').trim();
   const company = String(companyName || '').trim();
@@ -103,6 +114,9 @@ function finalizeEmailBody(body, senderName, companyName) {
     .replace(/\{\{\s*name\s*\}\}/gi, name)
     .replace(/\{\s*name\s*\}/gi, name)
     .replace(/Your Name(?=\s*$)/gim, name);
+  if (prospect) {
+    text = ensureEmailGreeting(text, prospect);
+  }
   // If sign-off still looks like a placeholder, rewrite the last lines
   if (/\b(thanks|best|regards|cheers)[,\s]*$/i.test(text.split('\n').slice(-2).join(' ')) &&
       !new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text.slice(-80))) {
@@ -189,6 +203,8 @@ function mapPerson(person, index) {
     '';
   return {
     id: String(person.id || `p-${index}-${randomUUID().slice(0, 8)}`),
+    first_name: String(person.first_name || '').trim() || String(person.name || '').trim().split(/\s+/)[0] || '',
+    last_name: String(person.last_name || '').trim(),
     full_name: [person.first_name, person.last_name].filter(Boolean).join(' ') || person.name || 'Unknown',
     title: person.title || person.headline || '',
     company: org.name || person.organization_name || '',
@@ -315,12 +331,30 @@ export async function createOutreachRun(input = {}) {
     titles: searchBody.person_titles,
     industries,
     source,
+    sequence_emails: normalizeSequenceEmails(input.sequence_emails || input.sequenceEmails),
     createdAt: new Date().toISOString(),
     prospects,
     replies: [],
     campaigns: [],
   };
   cacheRun(run);
+
+  // CRM / Sheets fallback: create lead rows when no HubSpot/Salesforce (or Sheets bridge)
+  let crmSync = null;
+  try {
+    crmSync = await syncProspectsToCrm(run, prospects, {
+      status: 'fetched',
+      next_action: 'awaiting_copy',
+      source: source || 'apollo',
+    });
+    run.crm_sync = crmSync;
+    if (crmSync?.ok) await touchRun(run);
+  } catch (err) {
+    console.warn('[outreach/crm-sync]', err?.message || err);
+    crmSync = { ok: false, error: err?.message || String(err) };
+    run.crm_sync = crmSync;
+  }
+
   return run;
 }
 
@@ -367,12 +401,13 @@ export function patchProspect(runId, prospectId, patch = {}) {
   }
   if (patch.body !== undefined || patch.channel_copies?.email?.body) {
     const senderName = resolveSenderName(run.senderName);
-    prospect.body = finalizeEmailBody(prospect.body, senderName, run.companyName);
+    prospect.body = finalizeEmailBody(prospect.body, senderName, run.companyName, prospect);
     if (prospect.channel_copies?.email) {
       prospect.channel_copies.email.body = finalizeEmailBody(
         prospect.channel_copies.email.body || prospect.body,
         senderName,
-        run.companyName
+        run.companyName,
+        prospect
       );
     }
   }
@@ -421,14 +456,15 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
   const senderName = resolveSenderName(run.senderName);
 
   if (wanted.includes('email') || wanted.includes('email')) {
+    const firstName = resolveProspectFirstName(prospect) || 'there';
     const parsed = await groqJson(
-      `You are Sam, Marqq copy agent. Follow the cold-email skill playbook strictly. Return JSON: {"subject":"...","body":"..."}. Never use placeholders like [Your Name], [Name], or {{name}} — always sign with the real sender name provided.`,
-      `${playbook}\n\n---\nWrite a first-touch cold email for:\nCompany sending: ${run.companyName}\nSender full name (sign-off MUST use this exact name): ${senderName}\nProspect: ${prospect.full_name}, ${prospect.title} at ${prospect.company}\nBrief: ${run.question || 'Book a short intro call about lab-personalized nutrition for their patients / org.'}\nSign off as:\nThanks,\n${senderName}\n${run.companyName}\nReturn only JSON.`
+      `You are Sam, Marqq copy agent. Follow the cold-email skill playbook strictly. Return JSON: {"subject":"...","body":"..."}. Never use placeholders like [Your Name], [Name], {{name}}, or {{first_name}} — always use real names. Body MUST open with "Hi ${firstName}," on its own line.`,
+      `${playbook}\n\n---\nWrite a first-touch cold email for:\nCompany sending: ${run.companyName}\nSender full name (sign-off MUST use this exact name): ${senderName}\nProspect first name (salutation MUST be "Hi ${firstName},"): ${firstName}\nProspect: ${prospect.full_name}, ${prospect.title} at ${prospect.company}\nBrief: ${run.question || 'Book a short intro call about lab-personalized nutrition for their patients / org.'}\nOpen with: Hi ${firstName},\nSign off as:\nThanks,\n${senderName}\n${run.companyName}\nReturn only JSON.`
     );
     const rawBody = String(parsed.body || '').trim();
     channelCopies.email = {
       subject: String(parsed.subject || '').trim() || `Quick idea for ${prospect.company}`,
-      body: finalizeEmailBody(rawBody, senderName, run.companyName),
+      body: finalizeEmailBody(rawBody, senderName, run.companyName, prospect),
       skills: ['cold-email'],
     };
     prospect.subject = channelCopies.email.subject;
@@ -464,7 +500,7 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
   return prospect;
 }
 
-export async function saveGmailDraft(runId, prospectId, { subject, body } = {}) {
+export async function saveGmailDraft(runId, prospectId, { subject, body, buildSequence = true } = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Outreach run not found');
   const prospect = run.prospects.find((p) => p.id === prospectId);
@@ -473,6 +509,23 @@ export async function saveGmailDraft(runId, prospectId, { subject, body } = {}) 
   if (body != null) prospect.body = String(body);
   if (!prospect.email) throw new Error('Prospect email required');
   if (!prospect.subject || !prospect.body) throw new Error('Subject and body required');
+
+  prospect.body = finalizeEmailBody(
+    prospect.body,
+    resolveSenderName(run.senderName),
+    run.companyName,
+    prospect
+  );
+
+  let sequenceEmails = normalizeSequenceEmails(run.sequence_emails);
+  if (buildSequence) {
+    sequenceEmails = await ensureEmailSequence(run, prospect, {
+      subject: prospect.subject,
+      body: prospect.body,
+    });
+  } else if (!sequenceEmails.length) {
+    sequenceEmails = [{ subject: prospect.subject, body: prospect.body, delay_days: 0 }];
+  }
 
   const draft = await executeComposioAction(
     'GMAIL_CREATE_EMAIL_DRAFT',
@@ -493,30 +546,57 @@ export async function saveGmailDraft(runId, prospectId, { subject, body } = {}) 
     draft.result?.draft?.id ||
     draft.raw?.data?.id ||
     null;
+
+  prospect.gmail_sequence_steps = buildGmailSequenceSteps(sequenceEmails, { prospect });
+  prospect.gmail_sequence_index = 0;
+  prospect.gmail_sequence_status = 'draft';
+  if (prospect.gmail_sequence_steps[0]) {
+    prospect.gmail_sequence_steps[0].draft_id = draftId;
+  }
   prospect.gmail_draft_id = draftId;
+  prospect.scheduled_for = null;
   prospect.status = 'drafted';
-  return { prospect, draftId, result: draft.result };
+  await touchRun(run);
+  return {
+    prospect,
+    draftId,
+    result: draft.result,
+    sequence_steps: prospect.gmail_sequence_steps,
+    sequence_emails: run.sequence_emails,
+  };
 }
 
 /**
  * Send via Gmail. Optional testTo overrides recipient (smoke: yogsbags@gmail.com).
+ * When a multi-step sequence exists, advances to the next scheduled drip step.
  */
-export async function sendProspectEmail(runId, prospectId, { subject, body, testTo } = {}) {
+export async function sendProspectEmail(
+  runId,
+  prospectId,
+  { subject, body, testTo, advanceSequence = true } = {}
+) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Outreach run not found');
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
+  if (prospect.status === 'replied' || prospect.gmail_sequence_status === 'stopped_reply') {
+    throw new Error('Sequence stopped because this prospect has already replied');
+  }
   if (subject != null) prospect.subject = String(subject);
   if (body != null) prospect.body = String(body);
   prospect.body = finalizeEmailBody(
     prospect.body,
     resolveSenderName(run.senderName),
-    run.companyName
+    run.companyName,
+    prospect
   );
 
   const to = String(testTo || prospect.email || '').trim();
   if (!to) throw new Error('Missing recipient email');
   if (!prospect.subject || !prospect.body) throw new Error('Subject and body required');
+
+  let method = 'gmail_send_email';
+  let result = null;
 
   // Prefer send draft if we have one and not redirecting to a test inbox
   if (prospect.gmail_draft_id && !testTo) {
@@ -527,39 +607,82 @@ export async function sendProspectEmail(runId, prospectId, { subject, body, test
       'gmail'
     );
     if (!sendDraft.error) {
-      prospect.status = 'sent';
-      prospect.sent_at = new Date().toISOString();
-      prospect.send_error = null;
-      prospect.gmail_thread_id = extractGmailThreadId(sendDraft.result) || prospect.gmail_thread_id;
-      prospect.gmail_message_id = extractGmailMessageId(sendDraft.result) || prospect.gmail_message_id;
-      prospect.send_meta = { to, method: 'gmail_send_draft', test: false, result: sendDraft.result };
-      return { prospect, method: 'gmail_send_draft', result: sendDraft.result, to, sent: listSentEmails(run) };
+      method = 'gmail_send_draft';
+      result = sendDraft.result;
     }
   }
 
-  const sendEmail = await executeComposioAction(
-    'GMAIL_SEND_EMAIL',
-    {
-      recipient_email: to,
-      to,
-      subject: prospect.subject,
-      body: prospect.body,
-      message_body: prospect.body,
-    },
-    run.companyId,
-    'gmail'
-  );
-  if (sendEmail.error) {
-    prospect.send_error = sendEmail.error;
-    throw new Error(sendEmail.error);
+  if (!result) {
+    const sendEmail = await executeComposioAction(
+      'GMAIL_SEND_EMAIL',
+      {
+        recipient_email: to,
+        to,
+        subject: prospect.subject,
+        body: prospect.body,
+        message_body: prospect.body,
+      },
+      run.companyId,
+      'gmail'
+    );
+    if (sendEmail.error) {
+      prospect.send_error = sendEmail.error;
+      throw new Error(sendEmail.error);
+    }
+    method = 'gmail_send_email';
+    result = sendEmail.result;
   }
-  prospect.status = 'sent';
-  prospect.sent_at = new Date().toISOString();
+
+  const sentAt = new Date().toISOString();
+  prospect.sent_at = sentAt;
   prospect.send_error = null;
-  prospect.gmail_thread_id = extractGmailThreadId(sendEmail.result) || prospect.gmail_thread_id;
-  prospect.gmail_message_id = extractGmailMessageId(sendEmail.result) || prospect.gmail_message_id;
-  prospect.send_meta = { to, method: 'gmail_send_email', test: Boolean(testTo), result: sendEmail.result };
-  return { prospect, method: 'gmail_send_email', result: sendEmail.result, to, sent: listSentEmails(run) };
+  prospect.gmail_thread_id = extractGmailThreadId(result) || prospect.gmail_thread_id;
+  prospect.gmail_message_id = extractGmailMessageId(result) || prospect.gmail_message_id;
+  prospect.send_meta = { to, method, test: Boolean(testTo), result };
+
+  const steps = Array.isArray(prospect.gmail_sequence_steps) ? prospect.gmail_sequence_steps : [];
+  const idx = Number(prospect.gmail_sequence_index || 0);
+  if (steps[idx]) {
+    steps[idx].sent_at = sentAt;
+    steps[idx].draft_id = null;
+  }
+
+  let sequenceAdvance = null;
+  if (advanceSequence && steps.length > 1 && !testTo) {
+    sequenceAdvance = await scheduleNextGmailSequenceStep(run, prospect, { now: new Date() });
+    if (sequenceAdvance?.done) {
+      prospect.status = 'sent';
+    }
+  } else {
+    prospect.status = 'sent';
+    prospect.gmail_draft_id = null;
+    if (steps.length <= 1) {
+      prospect.gmail_sequence_status = steps.length ? 'completed' : prospect.gmail_sequence_status;
+    }
+  }
+
+  await touchRun(run);
+  try {
+    await syncProspectToCrm(run, prospect, {
+      status: prospect.status === 'scheduled' ? 'scheduled' : 'sent',
+      channel: 'email',
+      provider: 'gmail',
+      sent_at: prospect.sent_at || '',
+      next_action: prospect.status === 'scheduled' ? 'awaiting_follow_up' : 'awaiting_reply',
+      source: 'outreach_send',
+    });
+    await touchRun(run);
+  } catch (err) {
+    console.warn('[outreach/send/crm]', err?.message || err);
+  }
+  return {
+    prospect,
+    method,
+    result,
+    to,
+    sent: listSentEmails(run),
+    sequence_advance: sequenceAdvance,
+  };
 }
 
 function matchReplyToSentProspect(run, msg) {
@@ -755,6 +878,7 @@ export async function pollGmailReplies(runId) {
     };
     if (!match.gmail_thread_id && reply.threadId) match.gmail_thread_id = reply.threadId;
     match.status = 'replied';
+    stopGmailSequenceOnReply(match);
     match.replies = Array.isArray(match.replies) ? match.replies : [];
     match.replies.unshift(reply);
     run.replies.unshift(reply);
@@ -780,6 +904,26 @@ export async function pollGmailReplies(runId) {
       };
       console.warn('[outreach/auto-reply-draft]', err.message || err);
     }
+  }
+
+  if (fresh.length) {
+    await touchRun(run);
+    for (const reply of fresh) {
+      const prospect = run.prospects.find((p) => p.id === reply.prospectId);
+      if (!prospect) continue;
+      try {
+        await syncProspectToCrm(run, prospect, {
+          status: 'replied',
+          channel: 'email',
+          replied_at: reply.receivedAt || new Date().toISOString(),
+          next_action: 'review_reply',
+          source: 'outreach_reply',
+        });
+      } catch (err) {
+        console.warn('[outreach/reply/crm]', err?.message || err);
+      }
+    }
+    await touchRun(run);
   }
 
   return {
@@ -1136,10 +1280,12 @@ export function getWorkspaceSummary(workspaceId) {
       source: r.source,
       prospectCount: r.prospects.length,
       createdAt: r.createdAt,
+      crm_sync: r.crm_sync || null,
     })),
     prospects,
     replies,
     sent,
+    crm_synced: prospects.filter((p) => p.crm_sync?.destination).length,
   };
 }
 
@@ -1189,7 +1335,7 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
   } else {
     subject = copies.email?.subject || subject;
     body = copies.email?.body || body;
-    body = finalizeEmailBody(body, resolveSenderName(run.senderName), run.companyName);
+    body = finalizeEmailBody(body, resolveSenderName(run.senderName), run.companyName, prospect);
   }
   if (channel === 'whatsapp') {
     if (!templateName && !body) throw new Error('WhatsApp text or approved template_name required');
@@ -1216,25 +1362,62 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
     const instantlyOk = await connectorActive(companyId, 'instantly');
     const gmailOk = await connectorActive(companyId, 'gmail');
     const useInstantly = prefer === 'instantly' || (prefer !== 'gmail' && instantlyOk);
+
+    // Multi-step sequence (Instantly + Gmail drip): body opts.sequence_emails or AI follow-ups
+    if (Array.isArray(opts.sequence_emails) && opts.sequence_emails.length) {
+      run.sequence_emails = normalizeSequenceEmails(opts.sequence_emails);
+    }
+    const sequenceEmails = await ensureEmailSequence(run, prospect, { subject, body });
+    subject = sequenceEmails[0]?.subject || subject;
+    body = sequenceEmails[0]?.body || body;
+    prospect.subject = subject;
+    prospect.body = body;
+    prospect.channel_copies = {
+      ...(prospect.channel_copies || {}),
+      email: { subject, body, skills: ['cold-email'] },
+    };
+
     if (useInstantly && instantlyOk) {
       result = await launchInstantlyCampaign(companyId, {
         name: `Marqq · ${prospect.full_name || prospect.email || 'lead'}`.slice(0, 80),
         subject: subject || 'Quick question',
         body,
+        sequence_emails: sequenceEmails,
         leads: [lead],
         activate,
       });
     } else if (gmailOk) {
       if (activate) {
+        const draft = await saveGmailDraft(runId, prospectId, {
+          subject,
+          body,
+          buildSequence: true,
+        });
         const sent = await sendProspectEmail(runId, prospectId, {
           subject,
           body,
           testTo: opts.testTo || null,
+          advanceSequence: !opts.testTo,
         });
-        result = { provider: 'gmail', status: 'live', ...sent };
+        result = {
+          provider: 'gmail',
+          status: 'live',
+          sequence_steps: prospect.gmail_sequence_steps?.length || draft.sequence_steps?.length || 1,
+          draftId: draft.draftId,
+          method: sent.method,
+          to: sent.to,
+          sequence_advance: sent.sequence_advance
+            ? { done: Boolean(sent.sequence_advance.done) }
+            : null,
+        };
       } else {
-        const draft = await saveGmailDraft(runId, prospectId, { subject, body });
-        result = { provider: 'gmail', status: 'draft', draftId: draft.draftId };
+        const draft = await saveGmailDraft(runId, prospectId, { subject, body, buildSequence: true });
+        result = {
+          provider: 'gmail',
+          status: 'draft',
+          draftId: draft.draftId,
+          sequence_steps: draft.sequence_steps?.length || 1,
+        };
       }
     } else {
       throw new Error('Connect Instantly or Gmail under Integrations for email outreach');
@@ -1297,13 +1480,57 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
     channel,
     delivery,
     at: new Date().toISOString(),
-    result,
+    result: result
+      ? {
+          provider: result.provider,
+          status: result.status,
+          campaign_id: result.campaign_id || null,
+          activated: result.activated || false,
+          sequence_steps: result.sequence_steps || null,
+          method: result.method || null,
+          to: result.to || null,
+          draftId: result.draftId || null,
+        }
+      : null,
   };
   if (result.status === 'live' || result.activated) {
-    prospect.status = 'sent';
-    prospect.sent_at = new Date().toISOString();
-  } else if (prospect.status !== 'sent') {
+    // Preserve Gmail drip "scheduled" after step-0 send
+    if (prospect.gmail_sequence_status !== 'scheduled') {
+      prospect.status = 'sent';
+      prospect.sent_at = prospect.sent_at || new Date().toISOString();
+    }
+  } else if (prospect.status !== 'sent' && prospect.status !== 'scheduled') {
     prospect.status = 'drafted';
+  }
+
+  await touchRun(run);
+
+  let crmSync = null;
+  try {
+    const status =
+      prospect.gmail_sequence_status === 'scheduled'
+        ? 'scheduled'
+        : result.status === 'live' || result.activated
+          ? 'sent'
+          : 'drafted';
+    crmSync = await syncProspectToCrm(run, prospect, {
+      status,
+      channel,
+      provider: result.provider || '',
+      campaign_id: result.campaign_id || '',
+      sent_at: prospect.sent_at || '',
+      next_action:
+        status === 'scheduled'
+          ? 'awaiting_follow_up'
+          : status === 'sent'
+            ? 'awaiting_reply'
+            : 'awaiting_activate',
+      source: 'outreach_go_live',
+    });
+    if (crmSync?.ok) await touchRun(run);
+  } catch (err) {
+    console.warn('[outreach/go-live/crm]', err?.message || err);
+    crmSync = { ok: false, error: err?.message || String(err) };
   }
 
   return {
@@ -1312,6 +1539,8 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
     delivery,
     result,
     channelPlan: OUTREACH_CHANNEL_CONNECTORS[channel] || null,
+    sequence_emails: run.sequence_emails || [],
+    crm_sync: crmSync,
   };
 }
 
@@ -1379,4 +1608,56 @@ export async function pollWhatsAppStatuses(companyId) {
 
 export function getWhatsAppInbound(runId) {
   return listRecentInboundReplies({ runId });
+}
+
+/**
+ * Generate / replace run-level multi-step email sequence (first + 3 follow-ups).
+ */
+export async function generateRunEmailSequence(runId, { subject, body, prospectId } = {}) {
+  const run = runsById.get(runId);
+  if (!run) throw new Error('Outreach run not found');
+  const prospect =
+    (prospectId && run.prospects.find((p) => p.id === prospectId)) ||
+    run.prospects.find((p) => p.subject || p.body || p.channel_copies?.email) ||
+    run.prospects[0];
+  if (!prospect) throw new Error('No prospect available for sequence generation');
+
+  const firstSubject = String(
+    subject || prospect.subject || prospect.channel_copies?.email?.subject || 'Quick question'
+  ).trim();
+  const firstBody = String(
+    body || prospect.body || prospect.channel_copies?.email?.body || ''
+  ).trim();
+  if (!firstBody) throw new Error('Write or generate first-touch email body before building a sequence');
+
+  // Force regenerate follow-ups
+  run.sequence_emails = [];
+  const steps = await ensureEmailSequence(run, prospect, {
+    subject: firstSubject,
+    body: firstBody,
+  });
+  await touchRun(run);
+  return { sequence_emails: steps, prospectId: prospect.id };
+}
+
+/**
+ * Patch run-level sequence_emails from the UI.
+ */
+export function setRunEmailSequence(runId, emails) {
+  const run = runsById.get(runId);
+  if (!run) throw new Error('Outreach run not found');
+  run.sequence_emails = normalizeSequenceEmails(emails);
+  touchRun(run);
+  return { sequence_emails: run.sequence_emails };
+}
+
+/**
+ * Due Gmail drip processor (Marqq2 ~60s poller).
+ */
+export async function processDueOutreachSends({ now = new Date() } = {}) {
+  return processDueSendsCore(runsById, {
+    now,
+    sendFn: (runId, prospectId) =>
+      sendProspectEmail(runId, prospectId, { advanceSequence: true }),
+  });
 }

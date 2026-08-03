@@ -30,6 +30,56 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Pull FAQ Q&A pairs from article HTML (<section id="faq"> / details+summary).
+ * Returns [] when no usable FAQ block is present.
+ */
+export function extractFaqItems(html) {
+  const raw = String(html || '');
+  if (!raw.trim()) return [];
+
+  let scope = raw;
+  const section =
+    raw.match(/<section[^>]*id=["']faq["'][^>]*>([\s\S]*?)<\/section>/i) ||
+    raw.match(/id=["']faq["'][^>]*>([\s\S]*?)(?=<h2[\s>]|<\/article|<\/main|$)/i);
+  if (section) scope = section[1] || section[0];
+
+  const items = [];
+  const detailRe = /<details[^>]*>\s*<summary[^>]*>([\s\S]*?)<\/summary>\s*([\s\S]*?)<\/details>/gi;
+  let m;
+  while ((m = detailRe.exec(scope)) !== null) {
+    const question = String(m[1] || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const answer = String(m[2] || '')
+      .replace(/<\/?p[^>]*>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (question.length >= 8 && answer.length >= 12) {
+      items.push({ question, answer });
+    }
+  }
+  return items.slice(0, 12);
+}
+
+function buildFaqPageSchema(faqItems) {
+  if (!Array.isArray(faqItems) || faqItems.length < 2) return null;
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqItems.map((item) => ({
+      '@type': 'Question',
+      name: item.question,
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: item.answer,
+      },
+    })),
+  };
+}
+
 function slugify(value) {
   return String(value || '')
     .toLowerCase()
@@ -57,19 +107,19 @@ function publishConfig(overrides = {}) {
     overrides.branch || process.env.BLOG_GITHUB_BRANCH || process.env.GITHUB_BRANCH || 'main'
   ).trim();
   const pathPrefix = String(
-    overrides.path_prefix || process.env.BLOG_PATH_PREFIX || 'blog'
+    overrides.path_prefix || process.env.BLOG_PATH_PREFIX || 'nouriva-landing/blog'
   )
     .trim()
     .replace(/^\/|\/$/g, '');
   const publicBase = String(
-    overrides.public_base || process.env.BLOG_PUBLIC_BASE_URL || ''
+    overrides.public_base || process.env.BLOG_PUBLIC_BASE_URL || 'https://nouriva.tech'
   )
     .trim()
     .replace(/\/$/, '');
   const deployProvider = String(
     overrides.deploy_provider || process.env.BLOG_DEPLOY_PROVIDER || 'github_actions'
   ).trim();
-  // Nouriva live site uses /blog/{slug}/ → blog/{slug}/index.html (not flat .html)
+  // Nouriva live site uses /blog/{slug}/ → nouriva-landing/blog/{slug}/index.html
   const pathStyle = String(
     overrides.path_style || process.env.BLOG_PATH_STYLE || 'slug_index'
   ).trim(); // slug_index | flat_html
@@ -142,7 +192,16 @@ export function buildSeoBlogDocument(article = {}, opts = {}) {
     keywords: [keyword, ...(article.secondary_keywords || [])].filter(Boolean).join(', ') || undefined,
   };
 
-  const html = `<!DOCTYPE html><html lang="${escapeHtml(chrome.lang || 'en-IN')}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(chrome.themeColor || '#0F3D2E')}"><meta name="robots" content="index,follow"><title>${escapeHtml(pageTitle)}</title>${meta ? `<meta name="description" content="${escapeHtml(meta)}">` : ''}${keyword ? `<meta name="keywords" content="${escapeHtml(keyword)}">` : ''}<link rel="canonical" href="${escapeHtml(canonical)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(title)}">${meta ? `<meta property="og:description" content="${escapeHtml(meta)}">` : ''}<meta property="og:url" content="${escapeHtml(canonical)}"><meta property="og:site_name" content="${escapeHtml(company)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}">${meta ? `<meta name="twitter:description" content="${escapeHtml(meta)}">` : ''}${chrome.fontsLink || ''}${chrome.styleBlock || ''}${chrome.blogNavFixStyle || ''}<script type="application/ld+json">${JSON.stringify(schema)}</script></head><body>
+  const faqItems = extractFaqItems(body);
+  const faqSchema = buildFaqPageSchema(faqItems);
+  const schemaScripts = [
+    `<script type="application/ld+json">${JSON.stringify(schema)}</script>`,
+    faqSchema ? `<script type="application/ld+json">${JSON.stringify(faqSchema)}</script>` : '',
+  ]
+    .filter(Boolean)
+    .join('');
+
+  const html = `<!DOCTYPE html><html lang="${escapeHtml(chrome.lang || 'en-IN')}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="${escapeHtml(chrome.themeColor || '#0F3D2E')}"><meta name="robots" content="index,follow"><title>${escapeHtml(pageTitle)}</title>${meta ? `<meta name="description" content="${escapeHtml(meta)}">` : ''}${keyword ? `<meta name="keywords" content="${escapeHtml(keyword)}">` : ''}<link rel="canonical" href="${escapeHtml(canonical)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(title)}">${meta ? `<meta property="og:description" content="${escapeHtml(meta)}">` : ''}<meta property="og:url" content="${escapeHtml(canonical)}"><meta property="og:site_name" content="${escapeHtml(company)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}">${meta ? `<meta name="twitter:description" content="${escapeHtml(meta)}">` : ''}${chrome.fontsLink || ''}${chrome.styleBlock || ''}${chrome.blogNavFixStyle || ''}${schemaScripts}</head><body>
 ${chrome.navHtml || ''}
 <main class="blog-shell"><div class="container blog-wrap"><a class="blog-back" href="/blog/">← Blog</a><div class="blog-card"><div class="blog-kicker">${escapeHtml(chrome.kicker || `${company} · Insights`)}</div><!-- META: ${escapeHtml(meta)} -->
 <!-- SLUG: ${escapeHtml(slug)} -->
@@ -160,11 +219,13 @@ ${chrome.scrollScript || ''}
     meta_description: meta,
     canonical,
     file_path,
+    faq_count: faqItems.length,
     seo: validateSeoDocument(html, { title: pageTitle, meta, canonical }),
   };
 }
 
 export function validateSeoDocument(html, { title, meta, canonical } = {}) {
+  const faqItems = extractFaqItems(html);
   const checks = {
     doctype: /<!DOCTYPE html>/i.test(html),
     title_tag: Boolean(title) && /<title>[^<]*<\/title>/i.test(html) && html.includes(String(title).slice(0, 40)),
@@ -172,6 +233,8 @@ export function validateSeoDocument(html, { title, meta, canonical } = {}) {
     canonical: Boolean(canonical) && /rel="canonical"/i.test(html),
     og_title: /property="og:title"/i.test(html),
     json_ld_article: /"@type"\s*:\s*"Article"/i.test(html) || /"@type":"Article"/i.test(html),
+    json_ld_faq: /"@type"\s*:\s*"FAQPage"/i.test(html) || /"@type":"FAQPage"/i.test(html),
+    faq_section: faqItems.length >= 3,
     h1: /<h1[\s>]/i.test(html),
     h2: /<h2[\s>]/i.test(html),
     main: /<main[\s>]/i.test(html),
@@ -213,6 +276,61 @@ async function getGithubFileSha({ owner, repo, path, branch, entityId }) {
   );
   if (res.error) return null;
   return extractGithubSha(res);
+}
+
+async function resolveGithubToken() {
+  const fromEnv = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const { execFileSync } = await import('node:child_process');
+    const token = execFileSync('gh', ['auth', 'token'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    }).trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Direct GitHub Contents API (fallback when Composio GitHub is not connected). */
+async function putGithubFileViaToken({ owner, repo, path, branch, message, contentBase64, sha, token }) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`;
+  const getRes = await fetch(`${url}?ref=${encodeURIComponent(branch)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'marqq-blog-publish',
+    },
+  });
+  let nextSha = sha;
+  if (getRes.ok) {
+    const existing = await getRes.json();
+    nextSha = existing.sha || nextSha;
+  }
+  const putRes = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      'User-Agent': 'marqq-blog-publish',
+    },
+    body: JSON.stringify({
+      message,
+      content: contentBase64,
+      branch,
+      ...(nextSha ? { sha: nextSha } : {}),
+    }),
+  });
+  const body = await putRes.json().catch(() => ({}));
+  if (!putRes.ok) {
+    return { error: body.message || `GitHub HTTP ${putRes.status}`, raw: body };
+  }
+  return { result: body, sha: body.content?.sha || body.commit?.sha || nextSha };
 }
 
 /**
@@ -273,6 +391,10 @@ export async function publishBlogPackage({
   }
 
   const entityId = String(companyId || process.env.COMPOSIO_ENTITY_ID || 'marqq-ws-1').trim();
+  const contentBase64 = Buffer.from(formatted.html, 'utf8').toString('base64');
+  const message = `Marqq publish blog: ${formatted.title}`;
+
+  // Prefer Composio GitHub when connected; fall back to GITHUB_TOKEN / gh auth
   const sha = await getGithubFileSha({
     owner: cfg.owner,
     repo: cfg.repo,
@@ -286,31 +408,56 @@ export async function publishBlogPackage({
     repo: cfg.repo,
     path: formatted.file_path,
     branch: cfg.branch,
-    message: `Marqq publish blog: ${formatted.title}`,
-    content: Buffer.from(formatted.html, 'utf8').toString('base64'),
+    message,
+    content: contentBase64,
   };
   if (sha) args.sha = sha;
 
-  const result = await executeComposioAction(
+  let result = await executeComposioAction(
     'GITHUB_CREATE_OR_UPDATE_FILE_CONTENTS',
     args,
     entityId,
     'github'
   );
+  let via = 'composio';
 
   if (result.error) {
-    return {
-      ok: false,
-      error: result.error,
-      publish: packagePayload,
-      raw: result.raw || null,
-    };
+    const token = await resolveGithubToken();
+    if (!token) {
+      return {
+        ok: false,
+        error: `${result.error} (and no GITHUB_TOKEN / gh auth for fallback — connect Composio GitHub or run gh auth login)`,
+        publish: packagePayload,
+        raw: result.raw || null,
+      };
+    }
+    const fallback = await putGithubFileViaToken({
+      owner: cfg.owner,
+      repo: cfg.repo,
+      path: formatted.file_path,
+      branch: cfg.branch,
+      message,
+      contentBase64,
+      sha,
+      token,
+    });
+    if (fallback.error) {
+      return {
+        ok: false,
+        error: `Composio: ${result.error}; GitHub token: ${fallback.error}`,
+        publish: packagePayload,
+        raw: fallback.raw || result.raw || null,
+      };
+    }
+    result = fallback;
+    via = 'github_token';
   }
 
   packagePayload.status = 'published';
   packagePayload.deployment.status = 'queued_by_repository_push';
   packagePayload.github = {
-    sha: extractGithubSha(result) || sha,
+    sha: extractGithubSha(result) || result.sha || sha,
+    via,
     connectedAccountId: result.connectedAccountId || null,
     result: result.result || null,
   };

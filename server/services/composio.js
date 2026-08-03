@@ -15,6 +15,19 @@ const TOOLKIT = {
   instagram: 'instagram',
   twitter: 'twitter',
   youtube: 'youtube',
+  google_sheets: 'googlesheets',
+  googlesheets: 'googlesheets',
+  hubspot: 'hubspot',
+  salesforce: 'salesforce',
+  ga4: 'google_analytics',
+  google_analytics: 'google_analytics',
+  gsc: 'google_search_console',
+  google_search_console: 'google_search_console',
+  meta_ads: 'metaads',
+  metaads: 'metaads',
+  google_ads: 'googleads',
+  googleads: 'googleads',
+  github: 'github',
 };
 
 function apiKey() {
@@ -66,7 +79,8 @@ function readGenericApiKey(detail) {
 export async function resolveConnectedAccountId(toolkit, userId) {
   const key = apiKey();
   if (!key) throw new Error('COMPOSIO_API_KEY not configured');
-  const slug = String(toolkit || '').toLowerCase();
+  const raw = String(toolkit || '').toLowerCase();
+  const slug = TOOLKIT[raw] || raw;
   const items = [];
   for (const entityId of entityLookupIds(userId)) {
     const res = await fetch(
@@ -80,8 +94,12 @@ export async function resolveConnectedAccountId(toolkit, userId) {
       const status = String(a.status || '').toUpperCase();
       const active = status === 'ACTIVE' || status === 'CONNECTED' || status === 'SUCCESS';
       // Prefer exact toolkit match (googleads ≠ google_analytics)
-      const exact = t === slug;
-      const loose = !exact && t.includes(slug) && !(slug === 'google' && t.includes('analytics'));
+      const exact = t === slug || t === raw;
+      const loose =
+        !exact &&
+        (t.includes(slug) || t.includes(raw)) &&
+        !(slug === 'google' && t.includes('analytics')) &&
+        !(raw === 'linkedin' && t.includes('ads'));
       if (active && (exact || loose)) items.push(a);
     }
   }

@@ -42,6 +42,7 @@ const fail = (n, d = "") => {
   results.push({ name: n, status: "fail", detail: d });
   console.error(`  ✗ ${n}${d ? ` — ${d}` : ""}`);
 };
+const note = (m) => console.log(`  · ${m}`);
 
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -143,6 +144,8 @@ async function main() {
     "canonical",
     "og_title",
     "json_ld_article",
+    "json_ld_faq",
+    "faq_section",
     "h1",
     "h2",
     "main",
@@ -153,6 +156,8 @@ async function main() {
     process.exit(1);
   }
   ok("seo-checks", requiredChecks.join(", "));
+  if ((pub.faq_count || 0) >= 3) ok("faq-count", String(pub.faq_count));
+  else fail("faq-count", `expected ≥3, got ${pub.faq_count || 0}`);
 
   mkdirSync(OUT_DIR, { recursive: true });
   if (pub.html) {
@@ -167,16 +172,76 @@ async function main() {
         deploy_provider: process.env.BLOG_DEPLOY_PROVIDER || "github_actions",
         repo_owner: process.env.BLOG_GITHUB_OWNER || "yogsbags",
         repo_name: process.env.BLOG_GITHUB_REPO || "nouriva",
+        path_prefix: process.env.BLOG_PATH_PREFIX || "nouriva-landing/blog",
+        public_base: process.env.BLOG_PUBLIC_BASE_URL || "https://nouriva.tech",
+        path_style: process.env.BLOG_PATH_STYLE || "slug_index",
       },
     });
     if (!live.ok) {
       fail("github-live", live.data?.error);
       process.exit(1);
     }
+    const livePub = live.data.publish || {};
     ok(
       "github-live",
-      `${live.data.publish?.file_path} · deploy=${live.data.publish?.deployment?.status}`
+      `${livePub.file_path} · via=${livePub.github?.via || "?"} · deploy=${livePub.deployment?.status}`
     );
+
+    const publicUrl = live.data.url || livePub.canonical || pub.canonical;
+    if (publicUrl) {
+      note(`Waiting for Cloudflare deploy → ${publicUrl}`);
+      // Poll GitHub Actions for deploy-nouriva-landing
+      let deployOk = false;
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 10000));
+        try {
+          const { execFileSync } = await import("node:child_process");
+          const runs = execFileSync(
+            "gh",
+            ["run", "list", "--repo", "yogsbags/nouriva", "--workflow", "deploy-nouriva-landing.yml", "--limit", "1", "--json", "status,conclusion,url,displayTitle,createdAt"],
+            { encoding: "utf8" }
+          );
+          const list = JSON.parse(runs || "[]");
+          const latest = list[0];
+          if (latest) {
+            note(`Actions: ${latest.status}/${latest.conclusion || "…"} · ${latest.url}`);
+            if (latest.status === "completed") {
+              if (latest.conclusion === "success") {
+                ok("cloudflare-actions", latest.url);
+                deployOk = true;
+              } else {
+                fail("cloudflare-actions", `${latest.conclusion} · ${latest.url}`);
+              }
+              break;
+            }
+          }
+        } catch (e) {
+          note(`Actions poll: ${e.message}`);
+        }
+      }
+      if (!deployOk && results.every((r) => r.name !== "cloudflare-actions" || r.status !== "fail")) {
+        fail("cloudflare-actions", "timed out waiting for workflow");
+      }
+
+      // Verify live URL (allow a bit more for CF edge)
+      let httpOk = false;
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        try {
+          const res = await fetch(publicUrl, { redirect: "follow" });
+          const text = await res.text();
+          if (res.ok && /<!DOCTYPE html>/i.test(text) && /Nouriva/i.test(text)) {
+            ok("live-url", `${res.status} · ${publicUrl}`);
+            httpOk = true;
+            break;
+          }
+          note(`live-url attempt ${i + 1}: HTTP ${res.status}`);
+        } catch (e) {
+          note(`live-url attempt ${i + 1}: ${e.message}`);
+        }
+      }
+      if (!httpOk) fail("live-url", publicUrl);
+    }
   } else {
     ok("github-live", "skipped (set CONTENT_PUBLISH_LIVE=1)");
   }

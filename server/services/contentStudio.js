@@ -355,7 +355,9 @@ export async function runContentDraft(runId) {
         ').',
       'Return ONLY JSON with keys: title, meta_description, slug, html, word_count, key_takeaway.',
       'html must be semantic HTML fragments only (h1 optional once, h2/h3/p/ul/li/aside/details/summary) — no html/body wrappers.',
-      'Structure: answer-first intro, #key-takeaway aside after intro, H2 sections from brief.outline, FAQ as <section id="faq"> with <details>/<summary>, short conclusion + soft CTA.',
+      'Structure: answer-first intro, #key-takeaway aside after intro, H2 sections from brief.outline, REQUIRED FAQ block, short conclusion + soft CTA.',
+      'FAQ is mandatory for SEO/AEO: include <h2>Frequently Asked Questions…</h2> then <section id="faq"> with 4–6 <details><summary>Question?</summary><p>Answer…</p></details> pairs.',
+      'Use brief.faq_questions when provided; otherwise invent intent-matching questions readers actually search. Answers must be concrete (2–4 sentences), never empty.',
       'Naturally spray primary + secondary keywords (title, first 100 words, one H2, FAQ). Never stuff.',
       'meta_description ≤155 chars, benefit-led.',
       b2cVoice,
@@ -391,6 +393,13 @@ export async function runContentDraft(runId) {
     );
   }
 
+  // FAQ is required for SEO-rich blogs — repair if model omitted it
+  html = ensureFaqSection(html, {
+    keyword: run.brief.keyword,
+    faqQuestions: run.brief.faq_questions || [],
+    company: run.companyName,
+  });
+
   let humanizerMeta = {
     skill: 'humanizer',
     requested: isB2c,
@@ -411,6 +420,12 @@ export async function runContentDraft(runId) {
     } else {
       humanizerMeta = { ...humanizerMeta, applied: false, reason: humanized.reason || 'pass_failed' };
     }
+    // Humanizer must not drop FAQ — re-assert after rewrite
+    html = ensureFaqSection(html, {
+      keyword: run.brief.keyword,
+      faqQuestions: run.brief.faq_questions || [],
+      company: run.companyName,
+    });
     run.skills.humanizer = humanizerMeta;
   }
 
@@ -441,6 +456,64 @@ export async function runContentDraft(runId) {
   return { run: publicRun(run), article: run.article };
 }
 
+/** Ensure article HTML includes a usable FAQ block (≥3 Q&As) for SEO/AEO. */
+function ensureFaqSection(html, { keyword = '', faqQuestions = [], company = 'our product' } = {}) {
+  const countDetails = (h) => (String(h).match(/<details[\s>]/gi) || []).length;
+  const hasFaqId = /id=["']faq["']/i.test(html);
+  if (hasFaqId && countDetails(html) >= 3) return html;
+
+  const escape = (s) =>
+    String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const kw = String(keyword || 'this topic').trim();
+  const brand = String(company || 'our product').trim() || 'our product';
+  const defaults = [
+    `What is ${kw} and why does it matter?`,
+    `How does ${kw} work in practice?`,
+    `Who should consider ${kw}?`,
+    `How long before I see results with ${kw}?`,
+    `How is ${brand}'s approach to ${kw} different?`,
+  ];
+  const questions = (Array.isArray(faqQuestions) && faqQuestions.length ? faqQuestions : defaults)
+    .map(String)
+    .map((q) => q.trim())
+    .filter((q) => q.length >= 8)
+    .slice(0, 6);
+
+  while (questions.length < 4) {
+    questions.push(defaults[questions.length] || `What should I know about ${kw}?`);
+  }
+
+  const details = questions
+    .map((q, i) => {
+      const answer =
+        i === 0
+          ? `${escape(kw)} is a practical way to get clearer, more personalized guidance instead of one-size-fits-all advice. The goal is decisions you can act on with confidence.`
+          : i === 1
+            ? `You start with your own context (labs, goals, or constraints), then get a plan tailored to that signal. ${escape(brand)} turns that into steps you can follow in daily life.`
+            : i === 2
+              ? `Anyone who wants more than generic tips — especially people managing conditions, plateaus, or busy routines — tends to benefit most from a structured ${escape(kw)} approach.`
+              : `Most people notice clearer habits within 1–2 weeks; deeper biomarker or outcome shifts usually take longer depending on baseline and consistency.`;
+      return `<details><summary>${escape(q)}</summary><p>${answer}</p></details>`;
+    })
+    .join('\n');
+
+  const block = `\n<h2>Frequently Asked Questions about ${escape(kw)}</h2>\n<section id="faq">\n${details}\n</section>\n`;
+
+  if (/<\/article>/i.test(html)) {
+    return html.replace(/<\/article>/i, `${block}</article>`);
+  }
+  const lastH2 = html.lastIndexOf('<h2');
+  if (lastH2 > html.length * 0.55) {
+    return `${html.slice(0, lastH2)}${block}${html.slice(lastH2)}`;
+  }
+  return `${html.trim()}\n${block}`;
+}
+
 /** Second-pass humanizer (Marqq2 B2C create_seo_article parity). */
 async function humanizeArticleHtml(html, { title, keyword, audience, brandContext } = {}) {
   const pack = await buildPlaybookFromPack(
@@ -462,6 +535,7 @@ async function humanizeArticleHtml(html, { title, keyword, audience, brandContex
           content: [
             'You are the blader/humanizer + copy-editing pass for a B2C SEO blog.',
             'Rewrite the HTML article body so it sounds human. Preserve ALL HTML tags, ids, and structure (h1/h2/aside/details/faq).',
+            'Keep <section id="faq"> and every <details>/<summary> pair intact — never remove or empty the FAQ block.',
             'Never invent facts, stats, quotes, or citations. Output HTML fragment only — no markdown fences.',
             pack.playbook || '',
           ].join('\n'),

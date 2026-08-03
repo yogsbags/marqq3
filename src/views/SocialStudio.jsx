@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {  Sparkles, CheckCircle, ArrowRight, Send  } from 'lucide-react';
 import JourneyBar from '../components/JourneyBar.jsx';
+import DeliveryModeToggle from '../components/DeliveryModeToggle.jsx';
 import {  studioSeed, getCompanyName  } from '../lib/liveWorkspace';
 import {   getActiveWorkspaceId  } from '../lib/brandContext';
+import { SocialPostPreview } from '../components/outcome-previews/ChannelPreviews.jsx';
 
 const STEPS = [
   { id: 'brief', label: '1 · Brief' },
@@ -297,19 +299,14 @@ export default function SocialStudio({ setActiveScreen }) {
                 {posts.length} posts · Instagram needs image URL · YouTube needs video URL + title
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {['draft', 'live'].map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={deliveryMode === m ? 'btn btn-primary' : 'btn btn-secondary'}
-                  style={{ textTransform: 'capitalize', fontSize: 12 }}
-                  onClick={() => setDeliveryMode(m)}
-                >
-                  {m === 'draft' ? 'Draft (safe)' : 'Live publish'}
-                </button>
-              ))}
-            </div>
+            <DeliveryModeToggle
+              value={deliveryMode}
+              onChange={setDeliveryMode}
+              draftLabel="Draft (safe)"
+              liveLabel="Publish live"
+              draftHint="Prepares platform drafts only — nothing posts publicly."
+              liveHint="Will publish to connected social accounts now."
+            />
           </div>
 
           <button
@@ -397,6 +394,15 @@ export default function SocialStudio({ setActiveScreen }) {
                     />
                   </div>
                 )}
+                <div className="card-kicker">Channel preview · feels published</div>
+                <SocialPostPreview
+                  platform={p.channel}
+                  authorName={getCompanyName() || seed.companyName || 'Your Brand'}
+                  post={p.caption || ''}
+                  hook={p.hook || p.title}
+                  imageUrl={p.image_url || undefined}
+                  videoUrl={p.video_url || undefined}
+                />
                 {!ready ? (
                   <p className="text-muted" style={{ fontSize: 12, margin: 0 }}>
                     Connect {p.channel === 'twitter' ? 'X (Twitter)' : p.channel} under Integrations to publish.
