@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { withGroqReasoning, resolveGroqModel, resolveGtmAutoSectionModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishBlogPackage } from './blogPublish.js';
+import { apifyToken, researchKeywordsFromSeeds, classifyKeywordIntent, scoreKeywordForContent } from './apifyKeywords.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
@@ -156,13 +157,191 @@ export async function createContentRun(input = {}) {
   return publicRun(run);
 }
 
+function currentCalendarYear() {
+  return new Date().getFullYear();
+}
+
+/** Drop keywords that hard-code a past year (e.g. "... 2024"). Allow current + next year only. */
+function hasStaleYearInText(text, year = currentCalendarYear()) {
+  const years = String(text || '').match(/\b(20\d{2})\b/g) || [];
+  return years.some((y) => {
+    const n = Number(y);
+    return n < year || n > year + 1;
+  });
+}
+
+function stripStaleYears(text, year = currentCalendarYear()) {
+  return String(text || '')
+    .replace(/\b20\d{2}\b/g, (m) => {
+      const n = Number(m);
+      if (n < year || n > year + 1) return String(year);
+      return m;
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/** Short commercial seeds for Apify — avoid career/salary traps and long brand prose. */
+function deriveApifySeeds(run) {
+  const brand = String(run.brandContext || '').replace(/\s+/g, ' ').trim();
+  const company = String(run.companyName || '').trim();
+  const blob = `${company} ${brand}`;
+  const seeds = [];
+
+  if (/elevat|digital transformation|management strateg|strategy.to.execution|ai solutions/i.test(blob)) {
+    seeds.push(
+      'digital transformation consulting',
+      'AI consulting India',
+      'digital transformation roadmap',
+      'strategy execution framework'
+    );
+  } else if (/nouriva|nutrition|lab/i.test(blob)) {
+    seeds.push('personalized nutrition India', 'lab based meal plan', 'nutrition plan from blood test');
+  } else if (String(run.marketType || '').toLowerCase() === 'b2c') {
+    const clause = brand
+      .split(/[—–\-|:.(]/)
+      .map((s) => s.trim())
+      .find((s) => s.length >= 8 && s.length <= 50 && !/^https?:/i.test(s));
+    if (clause) seeds.push(clause.replace(/\s+/g, ' ').split(' ').slice(0, 5).join(' '));
+    if (company) seeds.push(`${company} app`, `${company} guide`);
+  } else {
+    const clause = brand
+      .split(/[—–\-|:.(]/)
+      .map((s) => s.trim())
+      .find((s) => s.length >= 8 && s.length <= 50 && !/^https?:/i.test(s));
+    if (clause) {
+      const short = clause.replace(/\s+/g, ' ').split(' ').slice(0, 5).join(' ');
+      seeds.push(short, `${short} consulting`, `${short} services`);
+    }
+    if (company) seeds.push(`${company} consulting`, `${company} services`);
+  }
+
+  return [...new Set(seeds.map((s) => s.trim()).filter(Boolean))].slice(0, 4);
+}
+
+function enrichLiveKeywords(keywords, marketType) {
+  return (keywords || [])
+    .map((k) => {
+      const scored = scoreKeywordForContent(k, { marketType });
+      return {
+        ...k,
+        intent: scored.intent,
+        content_score: scored.score,
+      };
+    })
+    .filter((k) => k.keyword && k.intent !== 'career')
+    .sort((a, b) => (b.content_score || 0) - (a.content_score || 0) || (b.volume || 0) - (a.volume || 0));
+}
+
+function queueFromLiveKeywords(keywords, year) {
+  return keywords
+    .filter((k) => k.keyword && !hasStaleYearInText(k.keyword, year) && k.intent !== 'career')
+    .slice(0, 6)
+    .map((k, i) => ({
+      id: `q-${i + 1}`,
+      keyword: k.keyword,
+      topic: `Guide: ${k.keyword}`,
+      intent: String(k.intent || 'informational').trim(),
+      priority: i + 1,
+      why: `Apify live · score ${k.content_score ?? '—'} · vol ${k.volume ?? 0}${
+        k.difficulty != null ? ` · KD ${k.difficulty}` : ''
+      }${k.cpc != null ? ` · CPC ${k.cpc}` : ''} · intent ${k.intent}`,
+      estimated_difficulty:
+        k.difficulty == null
+          ? 'medium'
+          : k.difficulty >= 70
+            ? 'hard'
+            : k.difficulty >= 40
+              ? 'medium'
+              : 'easy',
+      volume: k.volume ?? 0,
+      cpc: k.cpc,
+      difficulty: k.difficulty,
+      content_score: k.content_score ?? null,
+      live: true,
+    }));
+}
+
 /**
- * Maya — keyword / topical plan (simplified build_seo_organic_plan).
+ * Prefer commercial live keywords for blog #1; demote career; drop invented non-live when live exists.
+ */
+function finalizeArticleQueue(modelQueue, liveKeywords, year, marketType) {
+  const liveByKey = new Map(
+    (liveKeywords || []).map((k) => [String(k.keyword || '').toLowerCase(), k])
+  );
+
+  const fromModel = (Array.isArray(modelQueue) ? modelQueue : [])
+    .map((row, i) => {
+      const keyword = stripStaleYears(String(row.keyword || row.topic || '').trim(), year);
+      const topic = stripStaleYears(String(row.topic || row.keyword || '').trim(), year);
+      if (!keyword || hasStaleYearInText(keyword, year)) return null;
+      const intent = classifyKeywordIntent(keyword, row.intent);
+      if (intent === 'career') return null;
+      const live = liveByKey.get(keyword.toLowerCase());
+      const scored = scoreKeywordForContent(
+        {
+          keyword,
+          volume: live?.volume ?? row.volume,
+          cpc: live?.cpc ?? row.cpc,
+          difficulty: live?.difficulty,
+          intent,
+        },
+        { marketType }
+      );
+      return {
+        id: `q-${i + 1}`,
+        keyword,
+        topic,
+        intent: scored.intent,
+        priority: Number(row.priority) || i + 1,
+        why: String(row.why || '').trim(),
+        estimated_difficulty: String(row.estimated_difficulty || 'medium').trim(),
+        volume: live?.volume ?? (Number(row.volume) || null),
+        cpc: live?.cpc ?? null,
+        difficulty: live?.difficulty ?? null,
+        content_score: scored.score,
+        live: Boolean(live),
+      };
+    })
+    .filter(Boolean);
+
+  const liveRows = fromModel.filter((r) => r.live);
+  const invented = fromModel.filter((r) => !r.live);
+  let merged;
+  if (liveKeywords?.length) {
+    const liveQueue = queueFromLiveKeywords(liveKeywords, year);
+    const seen = new Set(liveQueue.map((r) => r.keyword.toLowerCase()));
+    const extra = invented.find((r) => !seen.has(r.keyword.toLowerCase()) && r.intent !== 'career');
+    merged = extra ? [...liveQueue.slice(0, 5), { ...extra, priority: liveQueue.length + 1 }] : liveQueue.slice(0, 6);
+    merged = merged.map((row) => {
+      const m = liveRows.find((x) => x.keyword.toLowerCase() === row.keyword.toLowerCase());
+      return m?.why ? { ...row, why: m.why, topic: m.topic || row.topic } : row;
+    });
+  } else {
+    merged = fromModel;
+  }
+
+  merged.sort(
+    (a, b) =>
+      (b.content_score || 0) - (a.content_score || 0) ||
+      (b.volume || 0) - (a.volume || 0) ||
+      a.priority - b.priority
+  );
+
+  return merged.slice(0, 6).map((row, i) => ({ ...row, id: `q-${i + 1}`, priority: i + 1 }));
+}
+
+/**
+ * Maya — keyword / topical plan.
+ * Prefer Apify PPE live keyword research (s-r/google-keywords); LLM ranks/clusters only.
+ * compound-mini web search alone is not treated as a keyword volume source.
  */
 export async function runContentResearch(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Content run not found');
 
+  const year = currentCalendarYear();
+  const marketType = String(run.marketType || 'b2b').toLowerCase();
   const playbookResult = await buildPlaybookFromPack(RESEARCH_PACK, { label: 'seo_research' });
   run.skills.research = {
     skillIds: playbookResult.skillIds,
@@ -170,20 +349,62 @@ export async function runContentResearch(runId) {
     warning: playbookResult.warning || null,
   };
 
-  const model = resolveGtmAutoSectionModel(); // compound-mini can web-search when available
+  let keywordIntel = {
+    ok: false,
+    keywords: [],
+    seeds: [],
+    runs: [],
+    actorId: null,
+    error: null,
+  };
+
+  if (apifyToken()) {
+    const seeds = deriveApifySeeds(run);
+    keywordIntel = await researchKeywordsFromSeeds(seeds, {
+      country: process.env.APIFY_KEYWORD_COUNTRY || 'in',
+      language: process.env.APIFY_KEYWORD_LANGUAGE || 'en',
+      limit: Number(process.env.APIFY_KEYWORD_LIMIT || 40),
+      minVolume: Number(process.env.APIFY_KEYWORD_MIN_VOLUME ?? 5),
+      maxSeeds: Number(process.env.APIFY_KEYWORD_MAX_SEEDS || 4),
+      marketType,
+    });
+    if (!keywordIntel.ok) {
+      keywordIntel.error = keywordIntel.runs?.find((r) => r.error)?.error || 'no keywords from Apify';
+    }
+  } else {
+    keywordIntel.error = 'APIFY_TOKEN missing — falling back to model-only research';
+  }
+
+  const liveKeywords = enrichLiveKeywords(keywordIntel.keywords || [], marketType).slice(0, 60);
+  const hasLive = liveKeywords.length > 0;
+  const topCommercial = liveKeywords
+    .filter((k) => k.intent === 'commercial' || k.intent === 'transactional')
+    .slice(0, 12);
+
+  const model = resolveGtmAutoSectionModel();
   const parsed = await groqJson({
     model,
     temperature: 0.3,
     system: [
       'You are Maya, Marqq SEO / search intelligence agent.',
-      'Build a practical SEO organic content plan for a blog.',
+      'Build a practical SEO organic content plan for a blog that attracts buying-intent traffic.',
+      `Today's calendar year is ${year}. Never use past years in keywords or topics (no ${year - 1}, ${year - 2}, etc.).`,
+      'Prefer evergreen keywords without a year.',
+      hasLive
+        ? [
+            'CRITICAL: article_queue MUST be chosen from live_keyword_research (prefer recommended_commercial first).',
+            'Rank by commercial/buyer intent for leads — NOT raw volume.',
+            'HARD REJECT: salary, jobs, careers, wages, hiring-as-employee keywords.',
+            'Do NOT invent keywords or claim SEMrush/Ahrefs. At most one close long-tail variant of a live keyword.',
+          ].join(' ')
+        : 'No live keyword dataset — propose evergreen commercial keywords only; data_source=model_estimate; no SEMrush/Ahrefs claims.',
       'Return ONLY JSON with keys:',
       'topical_authority (string),',
       'topic_clusters (array of { name, why }),',
-      'article_queue (array of 4-6 objects: { keyword, topic, intent, priority, why, estimated_difficulty }),',
+      'article_queue (array of 4-6 objects: { keyword, topic, intent, priority, why, estimated_difficulty, volume }),',
       'content_gaps (array of { cluster, note }),',
       'llmo_notes (array of short strings about AI-answer / GEO visibility),',
-      'data_source (string describing how you inferred keywords).',
+      'data_source (string — use apify_actor when live data was used).',
       playbookResult.playbook ? `\n${playbookResult.playbook}` : '',
     ]
       .filter(Boolean)
@@ -192,33 +413,57 @@ export async function runContentResearch(runId) {
       {
         company: run.companyName,
         domain: run.domain,
-        market_type: run.marketType,
+        market_type: marketType,
         brand_context: run.brandContext || `${run.companyName} — brand context from onboarding`,
         quantified_target: run.quantifiedTarget || null,
         timeline_target: run.timelineTarget || null,
+        calendar_year: year,
+        ranking_rule: 'commercial_intent_over_volume',
+        live_keyword_research: hasLive
+          ? {
+              actor: keywordIntel.actorId,
+              seeds: keywordIntel.seeds,
+              recommended_commercial: topCommercial.map((k) => ({
+                keyword: k.keyword,
+                volume: k.volume,
+                cpc: k.cpc,
+                difficulty: k.difficulty,
+                intent: k.intent,
+                content_score: k.content_score,
+              })),
+              keywords: liveKeywords.map((k) => ({
+                keyword: k.keyword,
+                volume: k.volume,
+                cpc: k.cpc,
+                difficulty: k.difficulty,
+                intent: k.intent,
+                content_score: k.content_score,
+              })),
+            }
+          : { error: keywordIntel.error || 'unavailable' },
       },
       null,
       2
     ),
   });
 
-  const queue = Array.isArray(parsed.article_queue)
-    ? parsed.article_queue
-        .map((row, i) => ({
-          id: `q-${i + 1}`,
-          keyword: String(row.keyword || row.topic || '').trim(),
-          topic: String(row.topic || row.keyword || '').trim(),
-          intent: String(row.intent || 'informational').trim(),
-          priority: Number(row.priority) || i + 1,
-          why: String(row.why || '').trim(),
-          estimated_difficulty: String(row.estimated_difficulty || 'medium').trim(),
-        }))
-        .filter((row) => row.keyword)
-    : [];
+  let queue = finalizeArticleQueue(parsed.article_queue, liveKeywords, year, marketType);
+
+  if (!queue.length && hasLive) {
+    queue = queueFromLiveKeywords(liveKeywords, year);
+  }
 
   if (!queue.length) {
-    throw new Error('Research returned no article_queue items');
+    throw new Error(
+      keywordIntel.error
+        ? `Research returned no article_queue items (${keywordIntel.error})`
+        : 'Research returned no article_queue items'
+    );
   }
+
+  const dataSource = hasLive
+    ? `apify_actor:${keywordIntel.actorId}`
+    : String(parsed.data_source || 'model_estimate').replace(/semrush|ahrefs/gi, 'estimate');
 
   run.plan = {
     topical_authority: String(parsed.topical_authority || '').trim(),
@@ -226,7 +471,18 @@ export async function runContentResearch(runId) {
     article_queue: queue,
     content_gaps: Array.isArray(parsed.content_gaps) ? parsed.content_gaps : [],
     llmo_notes: Array.isArray(parsed.llmo_notes) ? parsed.llmo_notes : [],
-    data_source: String(parsed.data_source || 'groq').trim(),
+    data_source: dataSource,
+    keyword_research: {
+      provider: hasLive ? 'apify' : 'none',
+      actorId: keywordIntel.actorId || null,
+      seeds: keywordIntel.seeds || [],
+      runs: keywordIntel.runs || [],
+      keyword_count: liveKeywords.length,
+      commercial_count: topCommercial.length,
+      error: keywordIntel.error || null,
+      sample: liveKeywords.slice(0, 12),
+      ranking: 'commercial_intent_over_volume',
+    },
     agent: 'maya',
     createdAt: new Date().toISOString(),
   };
@@ -269,10 +525,12 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
     warning: playbookResult.warning || null,
   };
 
+  const year = currentCalendarYear();
   const parsed = await groqJson({
     temperature: 0.35,
     system: [
       'You are Maya, Marqq SEO agent writing a brief for Riya (content).',
+      `Calendar year is ${year}. Do not use past years in keyword, topic, or H2s.`,
       'Return ONLY JSON with keys:',
       'keyword, topic, intent, outline (array of H2 strings), secondary_keywords (array),',
       'faq_questions (array of strings), audience, angle, cta, why.',
@@ -289,6 +547,7 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
         brand_context: run.brandContext,
         seed,
         plan_authority: run.plan?.topical_authority || null,
+        calendar_year: year,
       },
       null,
       2
@@ -296,8 +555,8 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
   });
 
   run.brief = {
-    keyword: String(parsed.keyword || seed.keyword).trim(),
-    topic: String(parsed.topic || seed.topic || seed.keyword).trim(),
+    keyword: stripStaleYears(String(parsed.keyword || seed.keyword).trim(), year),
+    topic: stripStaleYears(String(parsed.topic || seed.topic || seed.keyword).trim(), year),
     intent: String(parsed.intent || seed.intent || 'informational').trim(),
     outline: Array.isArray(parsed.outline) ? parsed.outline.map(String) : [],
     secondary_keywords: Array.isArray(parsed.secondary_keywords)
