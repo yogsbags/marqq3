@@ -177,8 +177,8 @@ export default function ContentStudio({ setActiveScreen }) {
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
       applyRun(data.run);
       setBrief(data.brief);
-      setStep('draft');
-      setNotice(`Maya briefed “${data.brief.keyword}” — ready for Riya`);
+      setStep('brief');
+      setNotice(`Maya briefed “${data.brief.keyword}” — review below, then continue to Riya`);
     } catch (err) {
       setError(err.message || 'Brief failed');
     } finally {
@@ -481,6 +481,25 @@ export default function ContentStudio({ setActiveScreen }) {
             </button>
           </div>
           {!brief ? <p className="text-muted" style={{ fontSize: 13 }}>Generate a brief first.</p> : null}
+          {brief ? (
+            <div style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8, fontSize: 13 }}>
+              <div className="card-kicker">Maya brief</div>
+              <div style={{ fontWeight: 700, marginTop: 4 }}>{brief.topic || brief.keyword}</div>
+              <div className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                Keyword: {brief.keyword} · Intent: {brief.intent}
+              </div>
+              {(brief.outline || []).length ? (
+                <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                  {brief.outline.slice(0, 6).map((h, i) => (
+                    <li key={i}>{h}</li>
+                  ))}
+                </ol>
+              ) : null}
+              <button type="button" className="btn btn-ghost" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => setStep('brief')}>
+                Edit / re-brief →
+              </button>
+            </div>
+          ) : null}
           {article ? (
             <>
               <div style={{ fontWeight: 700, fontSize: 16 }}>{article.title}</div>

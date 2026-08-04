@@ -153,7 +153,8 @@ export async function runSocialBrief(runId, patch = {}) {
     createdAt: new Date().toISOString(),
   };
   run.status = 'briefed';
-  run.step = 'compose';
+  // Stay on brief so the UI can show hook / pillars / CTA before compose.
+  run.step = 'brief';
   run.updatedAt = new Date().toISOString();
   return { run: publicRun(run), brief: run.brief };
 }

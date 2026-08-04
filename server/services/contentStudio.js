@@ -539,7 +539,8 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
     createdAt: new Date().toISOString(),
   };
   run.status = 'briefed';
-  run.step = 'draft';
+  // Stay on brief so the UI can show outline / keywords before Riya drafts.
+  run.step = 'brief';
   run.updatedAt = new Date().toISOString();
   return { run: publicRun(run), brief: run.brief };
 }

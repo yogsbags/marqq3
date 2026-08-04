@@ -81,8 +81,8 @@ export default function SocialStudio({ setActiveScreen }) {
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
       applyRun(data.run);
       setBrief(data.brief);
-      setStep('compose');
-      setNotice('Kiran wrote the social brief');
+      setStep('brief');
+      setNotice('Kiran wrote the social brief — review below, then continue to compose');
     } catch (err) {
       setError(err.message || 'Brief failed');
     } finally {
@@ -265,6 +265,25 @@ export default function SocialStudio({ setActiveScreen }) {
             </button>
           </div>
           {!brief ? <p className="text-muted" style={{ fontSize: 13 }}>Generate a brief first.</p> : null}
+          {brief ? (
+            <div style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8, fontSize: 13 }}>
+              <div className="card-kicker">Kiran brief</div>
+              <div style={{ fontWeight: 700, marginTop: 4 }}>{brief.hook}</div>
+              <p className="text-muted" style={{ margin: '6px 0' }}>
+                CTA: {brief.cta} · Tone: {brief.tone}
+              </p>
+              {(brief.message_pillars || []).length ? (
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {brief.message_pillars.slice(0, 4).map((m, i) => (
+                    <li key={i}>{m}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <button type="button" className="btn btn-ghost" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => setStep('brief')}>
+                Edit / re-brief →
+              </button>
+            </div>
+          ) : null}
           {posts.map((p) => (
             <div key={p.id} style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8 }}>
               <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>

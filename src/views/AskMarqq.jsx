@@ -13,6 +13,7 @@ import { fetchAskMarqqChat, persistAskMarqqMessages, mergeSeedWithPersisted } fr
 import ChatMarkdown from '../components/ChatMarkdown.jsx';
 import {  askMarqqCompound  } from '../services/groqService';
 import {   getActiveWorkspaceId  } from '../lib/brandContext';
+import { getCompanyName, getWebsite } from '../lib/liveWorkspace';
 
 const gtmChannels = [
   'executive-summary',
@@ -96,11 +97,10 @@ function channelToSectionId(channel) {
 }
 
 function loadAskSidebarContext() {
-  const company =
-    localStorage.getItem('marqq_ob_companyName') ||
-    'Workspace';
+  const company = getCompanyName();
   const empty = {
     company,
+    website: getWebsite(),
     northStarMetric: '',
     quantifiedTarget: '',
     timelineTarget: '',
@@ -118,6 +118,7 @@ function loadAskSidebarContext() {
     const ga = doc?.goalAlignment || {};
     return {
       company,
+      website: getWebsite(),
       northStarMetric: String(ga.north_star_metric || '').trim(),
       quantifiedTarget: String(ga.quantified_target || '').trim(),
       timelineTarget: String(ga.timeline_target || '').trim(),
@@ -144,22 +145,41 @@ function connectorStatusLabel(c) {
   return { label: 'Not connected', tone: 'muted' };
 }
 
-function buildSystemPrompt(channel, sectionCtx, northStar) {
+function buildSystemPrompt(channel, sectionCtx, northStar, companyCtx = {}) {
   const sectionLabel = channel.replace(/-/g, ' ');
+  const companyName = String(companyCtx.name || '').trim() || 'the active workspace company';
+  const website = String(companyCtx.website || '').trim();
+  const niche = String(companyCtx.niche || '').trim();
+  const companyBlock = `Active company: ${companyName}${website ? ` (${website})` : ''}${niche ? ` · ${niche}` : ''}.
+Stay locked to this company only. Do not switch brands, invent another company, or reuse context from a different brand (e.g. Nouriva) unless that is the active company above.`;
+
+  let groundedSection = sectionCtx || '';
+  if (
+    groundedSection &&
+    companyName &&
+    !/^your workspace$/i.test(companyName) &&
+    /nouriva/i.test(groundedSection) &&
+    !/nouriva/i.test(companyName)
+  ) {
+    groundedSection = `[Note: The stored section text mentions another brand. Active company is ${companyName}${website ? ` · ${website}` : ''}. Prefer the active company; treat other brand names as stale.]\n\n${groundedSection}`;
+  }
+
   return `You are Marqq, a senior GTM strategy copilot inside the Marqq platform.
 
 You are chatting in channel #${channel} (${sectionLabel}).
 
+${companyBlock}
+
 ${northStar ? `Company goal system:\n${northStar}\n` : ''}
-${sectionCtx
-    ? `Current strategy section (authoritative context — use this to answer):\n---\n${sectionCtx}\n---`
+${groundedSection
+    ? `Current strategy section (authoritative context — use this to answer):\n---\n${groundedSection}\n---`
     : 'No strategy section is loaded for this channel yet. Answer from general GTM best practice and say what is missing.'}
 
 Rules:
 - Answer the user's question directly. If they ask to explain, explain the section clearly in plain language.
 - ${revisionPromptHint(channel)}
-- Stay grounded in the section context and North Star; do not invent unrelated metrics or markets.
-- You have built-in web search. Use it when the user asks about market facts, competitors, the company website, or anything that needs current public information. Prefer evidence from search over guesses.
+- Stay grounded in the section context, the active company, and North Star; do not invent unrelated metrics, markets, or brands.
+- You have built-in web search. Use it when the user asks about market facts, competitors, the company website, or anything that needs current public information. Prefer evidence from search over guesses. When searching, query for ${companyName}${website ? ` / ${website}` : ''}, not a different brand.
 - When the user attaches documents or voice notes, use that content as primary evidence for this channel.
 - Prefer short structured answers (headings/bullets/markdown tables) when helpful. Avoid filler and fake confidence scores.
 - Do not refuse ordinary strategy questions. Do not claim you cannot see the section when context is provided above.`;
@@ -564,7 +584,11 @@ export default function AskMarqq({ setActiveScreen }) {
       ]);
       const result = await askMarqqCompound(
         history,
-        buildSystemPrompt(channel, sectionCtx, northStarBrief),
+        buildSystemPrompt(channel, sectionCtx, northStarBrief, {
+          name: getCompanyName(),
+          website: getWebsite(),
+          niche: localStorage.getItem('marqq_ob_niche') || '',
+        }),
         { channel }
       );
 

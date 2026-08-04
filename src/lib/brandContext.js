@@ -1,5 +1,5 @@
 /** Client helpers for persisted brand / company context. */
-import { getActiveWorkspaceId } from './workspace.js';
+import { getActiveWorkspaceId, LEGACY_WORKSPACE_ID } from './workspace.js';
 import { apiFetch } from './apiFetch.js';
 
 export const BRAND_CONTEXT_KEY = "marqq_brand_context";
@@ -18,7 +18,19 @@ export function WORKSPACE_ID() {
 export function loadLocalBrandContext() {
   try {
     const raw = localStorage.getItem(BRAND_CONTEXT_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Drop Brand DNA left over from a different workspace (e.g. Nouriva → Elevate).
+    const activeWs = getActiveWorkspaceId();
+    if (
+      parsed?.workspaceId &&
+      activeWs &&
+      parsed.workspaceId !== activeWs &&
+      activeWs !== LEGACY_WORKSPACE_ID
+    ) {
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }

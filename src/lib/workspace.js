@@ -26,6 +26,7 @@ export function getActiveWorkspaceId() {
 
 export function setActiveWorkspace(workspace) {
   if (!workspace?.id) return;
+  const prevId = localStorage.getItem(WORKSPACE_STORAGE_KEY);
   localStorage.setItem(WORKSPACE_STORAGE_KEY, workspace.id);
   localStorage.setItem(
     ACTIVE_WORKSPACE_KEY,
@@ -36,6 +37,24 @@ export function setActiveWorkspace(workspace) {
       role: workspace.role || 'owner',
     })
   );
+  // Switching workspaces — drop session strategy/chat seeds so Ask Marqq
+  // does not keep another brand's market analysis (e.g. Nouriva → Elevate).
+  if (prevId && prevId !== workspace.id) {
+    try {
+      for (const key of ['marqq_gtm_wizard', 'marqq_gtm_strategy', 'marqq_gtm_briefs_complete', 'marqq_ask_context']) {
+        sessionStorage.removeItem(key);
+      }
+      const brandRaw = localStorage.getItem('marqq_brand_context');
+      if (brandRaw) {
+        const brand = JSON.parse(brandRaw);
+        if (brand?.workspaceId && brand.workspaceId !== workspace.id) {
+          localStorage.removeItem('marqq_brand_context');
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function getActiveWorkspaceMeta() {

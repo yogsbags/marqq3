@@ -4,18 +4,26 @@
  */
 
 import { loadLocalBrandContext, getActiveWorkspaceId } from "./brandContext";
+import { getActiveWorkspaceMeta } from "./workspace";
 import { formatStrategySectionForChat } from "./askMarqqContext";
 import { loadStrategyDoc, northStarLabel } from "./journeyHandoff";
 
 const WIZARD_KEY = "marqq_gtm_wizard";
 
+/**
+ * Resolve the active company name for UI + Ask Marqq.
+ * Prefer onboarding / workspace identity over stale Brand DNA from another brand.
+ */
 export function getCompanyName() {
   try {
-    const brand = loadLocalBrandContext();
-    const fromBrand = brand?.companyName && String(brand.companyName).trim();
-    if (fromBrand && !/^elevate$/i.test(fromBrand)) return fromBrand;
     const fromOb = localStorage.getItem("marqq_ob_companyName");
     if (fromOb && String(fromOb).trim()) return String(fromOb).trim();
+
+    const meta = getActiveWorkspaceMeta();
+    if (meta?.name && String(meta.name).trim()) return String(meta.name).trim();
+
+    const brand = loadLocalBrandContext();
+    const fromBrand = brand?.companyName && String(brand.companyName).trim();
     if (fromBrand) return fromBrand;
   } catch {
     /* ignore */
