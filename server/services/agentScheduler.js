@@ -12,6 +12,7 @@ import {
   saveAgentOsProfile,
 } from './agentOsStore.js';
 import { notifyDeploymentResult } from './agentNotifications.js';
+import { executionModeFromAgentOs, isAutonomousMode } from './executionMode.js';
 
 const PORT = () => Number(process.env.PORT || 3001);
 const INTERVAL_MS = Math.max(
@@ -51,8 +52,8 @@ function buildDeploymentRunQuery(entry) {
 }
 
 /**
- * Local agent run: plan + approval draft + task update + optional studio stub note.
- * Always draft-gated — never live spend/publish from scheduler.
+ * Local agent run: plan + task update.
+ * Human-gated → Approvals queue. Autonomous → auto-approved draft (still no live spend/publish).
  */
 export async function executeAgentRun({
   agentName,
@@ -61,6 +62,7 @@ export async function executeAgentRun({
   deployment_id,
   delivery_mode = 'draft',
   triggered_by = 'manual',
+  execution_mode = null,
 } = {}) {
   const agent = AGENT_BY_ID.get(String(agentName || '').toLowerCase()) || {
     id: agentName,
@@ -73,6 +75,16 @@ export async function executeAgentRun({
   if (depId) {
     deployment = listDeployments({}).find((d) => d.id === depId) || null;
   }
+
+  const ws =
+    String(company_id || deployment?.companyId || deployment?.workspaceId || '').trim() ||
+    'marqq-ws-1';
+  const os = loadAgentOsProfile(ws);
+  const mode =
+    execution_mode != null
+      ? executionModeFromAgentOs({ execution_mode })
+      : executionModeFromAgentOs(os);
+  const autonomous = isAutonomousMode(mode);
 
   const plan = planAgentTask({
     sectionId: deployment?.sectionId || null,
@@ -88,33 +100,40 @@ export async function executeAgentRun({
     0,
     280
   );
+  const openScreen = deployment?.openScreen || agent.openScreen || 'approvals';
 
   updateDb((state) => {
     const next = ensureAgentCollections(state);
-    const approvals = [
-      {
-        id: approvalId,
-        type: 'Agent draft',
-        title,
-        owner: `${agent.name} · ${agent.role}`,
-        risk: 'Low risk',
-        riskClass: 'tag tag-outline',
-        preview,
-        deadline: 'Awaiting review',
-        deploymentId: depId,
-        agentName: agent.id,
-        openScreen: deployment?.openScreen || agent.openScreen || 'approvals',
-        sectionId: deployment?.sectionId || null,
-        deliveryMode: delivery_mode || 'draft',
-        createdAt: new Date().toISOString(),
-        status: 'pending',
-      },
-      ...(next.approvals || []),
-    ].slice(0, 60);
+    const approval = {
+      id: approvalId,
+      type: 'Agent draft',
+      title,
+      owner: `${agent.name} · ${agent.role}`,
+      risk: autonomous ? 'Auto-approved' : 'Low risk',
+      riskClass: autonomous ? 'tag tag-accent' : 'tag tag-outline',
+      preview,
+      deadline: autonomous ? 'Auto-cleared' : 'Awaiting review',
+      deploymentId: depId,
+      agentName: agent.id,
+      openScreen,
+      sectionId: deployment?.sectionId || null,
+      deliveryMode: delivery_mode || 'draft',
+      executionMode: mode,
+      createdAt: new Date().toISOString(),
+      status: autonomous ? 'approved' : 'pending',
+      decidedAt: autonomous ? new Date().toISOString() : null,
+      decidedBy: autonomous ? 'autonomous' : null,
+    };
+    const approvals = [approval, ...(next.approvals || [])].slice(0, 60);
+
+    const approvedActions = { ...(next.approvedActions || {}) };
+    if (autonomous) approvedActions[approvalId] = 'approved';
 
     const tasks = (next.tasks || []).map((t) => {
       if (depId && t.deploymentId === depId) {
-        return { ...t, status: 'Needs approval', due: 'Awaiting approval' };
+        return autonomous
+          ? { ...t, status: 'Ready', due: 'Autonomous — open studio' }
+          : { ...t, status: 'Needs approval', due: 'Awaiting approval' };
       }
       return t;
     });
@@ -123,10 +142,13 @@ export async function executeAgentRun({
       id: `l_${randomUUID().slice(0, 8)}`,
       time: new Date().toLocaleString(),
       observed: preview,
-      action: `Queued draft for approval (${approvalId}). Open ${deployment?.openScreen || agent.openScreen || 'approvals'} to continue.`,
+      action: autonomous
+        ? `Autonomous draft ready (${approvalId}). Open ${openScreen} to continue — no live spend.`
+        : `Queued draft for approval (${approvalId}). Open Approvals to continue.`,
       confidence: 'scheduled',
       deploymentId: depId,
       triggered_by,
+      executionMode: mode,
     };
     const agentLogs = { ...(next.agentLogs || {}) };
     const key = agent.id;
@@ -142,12 +164,13 @@ export async function executeAgentRun({
           approvalId,
           at: new Date().toISOString(),
           triggered_by,
+          executionMode: mode,
         },
         updatedAt: new Date().toISOString(),
       };
     }
 
-    return { ...next, approvals, tasks, agentLogs, agent_os };
+    return { ...next, approvals, approvedActions, tasks, agentLogs, agent_os };
   });
 
   return {
@@ -157,9 +180,13 @@ export async function executeAgentRun({
     approvalId,
     deploymentId: depId,
     deliveryMode: delivery_mode || 'draft',
+    executionMode: mode,
+    autonomous,
     plan,
-    openScreen: deployment?.openScreen || agent.openScreen || 'approvals',
-    message: 'Draft queued for approval (no live spend/publish).',
+    openScreen: autonomous ? openScreen : 'approvals',
+    message: autonomous
+      ? 'Autonomous draft ready (no live spend/publish).'
+      : 'Draft queued for approval (no live spend/publish).',
   };
 }
 

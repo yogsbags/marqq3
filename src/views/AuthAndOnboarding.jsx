@@ -8,6 +8,7 @@ import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal'
 import {  BrandStyleLoader  } from '../components/BrandStyleLoader';
 import {  buildBrandContextFromOnboarding, persistBrandContext, fetchBrandContext, fetchKnowledgeFiles, getActiveWorkspaceId  } from '../lib/brandContext';
 import {  isOnboardingComplete, resetOnboardingDraft  } from '../lib/workspaceBootstrap';
+import { ensureUserWorkspace } from '../lib/workspace.js';
 
 const ONBOARDING_TOTAL_STEPS = 8;
 
@@ -471,14 +472,26 @@ export function OnboardingView({ setActiveScreen }) {
   const [connectingConnectorId, setConnectingConnectorId] = useState(null);
 
   useEffect(() => {
-    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
-      .then(r => r.json())
-      .then(data => {
+    let cancelled = false;
+    (async () => {
+      // Bind this user's workspace before listing connectors (never inherit prior browser workspace).
+      await ensureUserWorkspace().catch(() => null);
+      if (cancelled) return;
+      const ws = getActiveWorkspaceId();
+      try {
+        const r = await fetch(`/api/integrations?companyId=${encodeURIComponent(ws)}`);
+        const data = await r.json().catch(() => ({}));
+        if (cancelled) return;
         if (data?.connectors && data.connectors.length > 0) {
           setIntegrationsState(data.connectors);
         }
-      })
-      .catch(() => {});
+      } catch {
+        /* keep defaults — all disconnected */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const [onboardingPickerId, setOnboardingPickerId] = useState(null);

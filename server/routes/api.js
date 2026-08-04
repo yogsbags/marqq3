@@ -16,6 +16,9 @@ import { generateAutoSection } from '../services/gtmAutoSections.js';
 import { generateInterviewQuestionOptions } from '../services/gtmInterviewOptions.js';
 import { generateMarketingIdeas } from '../services/marketingIdeas.js';
 import { runMarketResearch } from '../services/marketResearch.js';
+import { apifyToken, MARQQ_APIFY_ACTORS } from '../services/apifyClient.js';
+import { fetchWebsiteSignals } from '../services/apifyWebsiteCrawl.js';
+import { scrapeCompetitorAds } from '../services/apifyAdsIntel.js';
 import { defaultUiAgents, planAgentTask } from '../services/agentOs.js';
 import {
   createOutreachRun,
@@ -103,7 +106,18 @@ import {
   loadAgentOsProfile,
   loadAgentOsProfileAsync,
   saveAgentOsProfile,
+  setAgentExecutionMode,
 } from '../services/agentOsStore.js';
+import { normalizeExecutionMode } from '../services/executionMode.js';
+import { resolveComposioEntityIds } from '../lib/composioEntities.js';
+import {
+  getControlLoop,
+  measureControlLoop,
+  diagnoseControlLoop,
+  proposeControlLoopInterventions,
+  decideControlLoopIntervention,
+  refreshControlLoopRoster,
+} from '../services/controlLoopStore.js';
 import {
   executeAgentRun,
   processDeploymentQueueTick,
@@ -124,7 +138,21 @@ import { collectTargetAccounts, runApolloSignals } from '../services/apolloSigna
 import workspacesRouter from './workspaces.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { useSupabasePersistence } from '../lib/persistence.js';
-import { upsertGtmModule, getActiveGtmModule, listGtmModules, lockGtmStrategy } from '../services/gtmModules.js';
+import {
+  upsertGtmModule,
+  getActiveGtmModule,
+  listGtmModules,
+  lockGtmStrategy,
+  createGtmModule,
+  activateGtmModule,
+  patchGtmModule,
+  getGtmModuleById,
+  GTM_MODULE_TYPES,
+} from '../services/gtmModules.js';
+import {
+  loadAskMarqqChat,
+  appendAskMarqqMessages,
+} from '../services/askMarqqConversations.js';
 import { upsertCompanyFromBrand, loadCompanyBrand } from '../services/companiesStore.js';
 import { persistDeploymentToSupabase } from '../services/agentSupabase.js';
 import { generateFullStrategyDocument } from '../services/gtmFullStrategy.js';
@@ -149,48 +177,141 @@ router.use('/workspaces', workspacesRouter);
 startDeploymentScheduler();
 
 /** GET /api/gtm/modules — list modules for workspace */
-router.get('/gtm/modules', requireAuth, async (req, res) => {
+router.get('/gtm/modules', async (req, res) => {
   const workspaceId = String(req.query.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const modules = await listGtmModules(workspaceId);
-  res.json({ ok: true, modules, persistence: useSupabasePersistence() });
+  res.json({ ok: true, modules, types: GTM_MODULE_TYPES, persistence: useSupabasePersistence() });
 });
 
 /** GET /api/gtm/modules/active — active module (wizard hydrate) */
-router.get('/gtm/modules/active', requireAuth, async (req, res) => {
+router.get('/gtm/modules/active', async (req, res) => {
   const workspaceId = String(req.query.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const module = await getActiveGtmModule(workspaceId);
   res.json({ ok: true, module });
 });
 
-/** PUT /api/gtm/modules — upsert wizard draft */
-router.put('/gtm/modules', requireAuth, async (req, res) => {
+/** POST /api/gtm/modules — create a NEW module (product / service / app / business_line) */
+router.post('/gtm/modules', async (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
+  const result = await createGtmModule({
+    workspaceId,
+    userId: req.authUserId || null,
+    companyId: req.body?.companyId || null,
+    name: req.body?.name,
+    moduleType: req.body?.moduleType || req.body?.module_type,
+    sourceContext: req.body?.sourceContext || req.body?.source_context || {},
+    active: req.body?.active !== false,
+  });
+  if (!result.ok) return res.status(503).json(result);
+  res.status(201).json(result);
+});
+
+/** PUT /api/gtm/modules — upsert wizard draft on a module (or active) */
+router.put('/gtm/modules', async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const result = await upsertGtmModule({
     workspaceId,
-    userId: req.authUserId,
+    userId: req.authUserId || null,
     moduleId: req.body?.moduleId || null,
     name: req.body?.name,
+    moduleType: req.body?.moduleType || req.body?.module_type,
     status: req.body?.status || 'in_progress',
     profile: req.body?.profile || {},
     sectionState: req.body?.sectionState || req.body?.section_state || {},
     sourceContext: req.body?.sourceContext || req.body?.source_context || {},
-    active: req.body?.active !== false,
+    active: req.body?.active === true,
   });
   if (!result.ok) return res.status(503).json(result);
   res.json(result);
 });
 
+/** PATCH /api/gtm/modules/:id — rename / type / set active */
+router.patch('/gtm/modules/:id', async (req, res) => {
+  const moduleId = String(req.params.id || '').trim();
+  const workspaceId = String(req.body?.workspaceId || req.query.workspaceId || '').trim();
+  if (!moduleId) return res.status(400).json({ error: 'module id required' });
+
+  if (req.body?.active === true) {
+    const result = await activateGtmModule({ workspaceId, moduleId });
+    if (!result.ok) return res.status(result.error === 'Module not found' ? 404 : 503).json(result);
+    return res.json(result);
+  }
+
+  const result = await patchGtmModule({
+    workspaceId: workspaceId || null,
+    moduleId,
+    name: req.body?.name,
+    moduleType: req.body?.moduleType || req.body?.module_type,
+    status: req.body?.status,
+    active: typeof req.body?.active === 'boolean' ? req.body.active : undefined,
+    profile: req.body?.profile,
+    sectionState: req.body?.sectionState || req.body?.section_state,
+    sourceContext: req.body?.sourceContext || req.body?.source_context,
+  });
+  if (!result.ok) return res.status(result.error === 'Module not found' ? 404 : 503).json(result);
+  res.json(result);
+});
+
+/** GET /api/gtm/modules/:id — one module */
+router.get('/gtm/modules/:id', async (req, res) => {
+  const moduleId = String(req.params.id || '').trim();
+  const workspaceId = String(req.query.workspaceId || '').trim();
+  if (!moduleId) return res.status(400).json({ error: 'module id required' });
+  const module = await getGtmModuleById(workspaceId || null, moduleId);
+  if (!module) return res.status(404).json({ error: 'Module not found' });
+  res.json({ ok: true, module });
+});
+
 /** POST /api/gtm/modules/lock — lock strategy as ready+active */
-router.post('/gtm/modules/lock', requireAuth, async (req, res) => {
+router.post('/gtm/modules/lock', async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const result = await lockGtmStrategy({
     workspaceId,
-    userId: req.authUserId,
+    userId: req.authUserId || null,
+    moduleId: req.body?.moduleId || null,
     wizardState: req.body?.wizardState || req.body,
+  });
+  if (!result.ok) return res.status(503).json(result);
+  res.json(result);
+});
+
+/** GET /api/ask-marqq/chat — load persisted Ask Marqq channel history */
+router.get('/ask-marqq/chat', async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || '').trim();
+  const channel = String(req.query.channel || '').trim();
+  const moduleId = String(req.query.moduleId || 'active').trim() || 'active';
+  if (!workspaceId || !channel) {
+    return res.status(400).json({ error: 'workspaceId and channel required' });
+  }
+  const result = await loadAskMarqqChat({
+    workspaceId,
+    userId: req.authUserId || null,
+    channel,
+    moduleId,
+  });
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
+});
+
+/** POST /api/ask-marqq/chat/messages — append user/assistant turns */
+router.post('/ask-marqq/chat/messages', async (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  const channel = String(req.body?.channel || '').trim();
+  const moduleId = String(req.body?.moduleId || 'active').trim() || 'active';
+  if (!workspaceId || !channel) {
+    return res.status(400).json({ error: 'workspaceId and channel required' });
+  }
+  const result = await appendAskMarqqMessages({
+    workspaceId,
+    userId: req.authUserId || null,
+    channel,
+    moduleId,
+    messages: req.body?.messages || [],
   });
   if (!result.ok) return res.status(503).json(result);
   res.json(result);
@@ -282,6 +403,49 @@ router.post('/market/research', async (req, res) => {
   } catch (err) {
     console.error('[market/research]', err);
     res.status(500).json({ ok: false, error: err.message || 'Market research failed' });
+  }
+});
+
+/** GET /api/apify/status — token + wired Marqq2 actors */
+router.get('/apify/status', (_req, res) => {
+  res.json({
+    ok: true,
+    configured: Boolean(apifyToken()),
+    actors: MARQQ_APIFY_ACTORS,
+  });
+});
+
+/** POST /api/apify/website-signals — apify/website-content-crawler */
+router.post('/apify/website-signals', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await fetchWebsiteSignals({
+      website: body.website || body.url || '',
+      domain: body.domain || '',
+      companyName: body.companyName || body.company || '',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    console.error('[apify/website-signals]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Website crawl failed' });
+  }
+});
+
+/** POST /api/apify/competitor-ads — LinkedIn / Facebook / Google ad library actors */
+router.post('/apify/competitor-ads', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await scrapeCompetitorAds({
+      competitors: body.competitors || [],
+      platforms: body.platforms,
+      country: body.country,
+      limit: body.limit,
+    });
+    const status = result.ok || (result.ads || []).length ? 200 : 400;
+    res.status(status).json(result);
+  } catch (err) {
+    console.error('[apify/competitor-ads]', err);
+    res.status(500).json({ ok: false, error: err.message || 'Competitor ads scrape failed', ads: [], results: [] });
   }
 });
 
@@ -572,6 +736,108 @@ router.post('/agent-os', (req, res) => {
   const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
   const saved = saveAgentOsProfile(req.body?.agentOs || req.body, workspaceId);
   res.json({ ok: true, agentOs: saved });
+});
+
+/** PATCH/POST /api/agent-os/execution-mode — human_gated | autonomous */
+router.post('/agent-os/execution-mode', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const mode = normalizeExecutionMode(
+      req.body?.executionMode ?? req.body?.execution_mode ?? req.body?.mode
+    );
+    const result = setAgentExecutionMode(workspaceId, mode, {
+      approvePending: req.body?.approvePending !== false,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Failed to set execution mode' });
+  }
+});
+
+router.patch('/agent-os/execution-mode', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const mode = normalizeExecutionMode(
+      req.body?.executionMode ?? req.body?.execution_mode ?? req.body?.mode
+    );
+    const result = setAgentExecutionMode(workspaceId, mode, {
+      approvePending: req.body?.approvePending !== false,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Failed to set execution mode' });
+  }
+});
+
+/** ── Control loop: Measure → Diagnose → Recommend → Approve → Execute (Marqq2) ── */
+router.get('/control-loop', async (req, res) => {
+  try {
+    const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+    const data = await getControlLoop(workspaceId);
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err?.message || 'Failed to load control loop' });
+  }
+});
+
+router.post('/control-loop/measure', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const data = await measureControlLoop(workspaceId, {
+      period: req.body?.period,
+      actual: req.body?.actual,
+      funnelActuals: req.body?.funnelActuals,
+    });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 400).json({ ok: false, error: err?.message || 'Measure failed' });
+  }
+});
+
+router.post('/control-loop/diagnose', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const data = await diagnoseControlLoop(workspaceId, { notes: req.body?.notes });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err?.message || 'Diagnose failed' });
+  }
+});
+
+router.post('/control-loop/interventions', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const data = await proposeControlLoopInterventions(workspaceId, {
+      diagnosis: req.body?.diagnosis,
+    });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err?.message || 'Propose failed' });
+  }
+});
+
+router.post('/control-loop/interventions/:interventionId/decide', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const data = await decideControlLoopIntervention(
+      workspaceId,
+      req.params.interventionId,
+      req.body?.decision
+    );
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err?.message || 'Decide failed' });
+  }
+});
+
+router.post('/control-loop/roster/refresh', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const data = await refreshControlLoopRoster(workspaceId);
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err?.message || 'Roster refresh failed' });
+  }
 });
 
 router.post('/agents/:name/run', async (req, res) => {
@@ -1489,23 +1755,21 @@ function getAuthConfigId(connectorId) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-/** Extra Composio user_ids to merge when listing connectors (e.g. Marqq2 company UUID). */
+/** Extra Composio user_ids — opt-in demo sharing only (see COMPOSIO_SHARE_DEMO_ENTITIES). */
 function getComposioEntityAliases(companyId) {
-  const aliases = new Set([String(companyId || '').trim()].filter(Boolean));
-  const raw = process.env.COMPOSIO_ENTITY_ALIASES || '';
-  for (const part of raw.split(',')) {
-    const id = part.trim();
-    if (id) aliases.add(id);
-  }
-  // Always share Marqq2 Nouriva/company connections with default workspace
-  if (companyId === DEFAULT_WS || companyId === 'default') {
-    aliases.add('b08d3df3-c1a9-4632-96ec-e6e5b703c2a0');
-  }
-  return [...aliases];
+  return resolveComposioEntityIds(companyId);
 }
 
-function mapConnectedAccounts(items, connectedMap) {
+function mapConnectedAccounts(items, connectedMap, allowedEntityIds = null) {
+  const allowed =
+    Array.isArray(allowedEntityIds) && allowedEntityIds.length
+      ? new Set(allowedEntityIds.map(String))
+      : null;
   for (const acct of items || []) {
+    const owner = String(acct.user_id || acct.userId || '').trim();
+    // Composio list often ignores user_id query — enforce tenant isolation here.
+    if (allowed && owner && !allowed.has(owner)) continue;
+    if (allowed && !owner) continue;
     const toolkitSlug = String(acct.toolkit?.slug || acct.toolkit_slug || acct.appName || '').toLowerCase();
     const statusUpper = String(acct.status || '').toUpperCase();
     const isActive = statusUpper === 'ACTIVE' || statusUpper === 'CONNECTED' || statusUpper === 'SUCCESS';
@@ -1576,7 +1840,7 @@ router.get('/integrations', async (req, res) => {
       if (!compRes.ok) continue;
       anyOk = true;
       const data = await compRes.json();
-      mapConnectedAccounts(data.items || [], connectedMap);
+      mapConnectedAccounts(data.items || [], connectedMap, entityIds);
     }
     if (!anyOk) {
       return res.json({ connectors: defaultConnectors });
@@ -1679,12 +1943,12 @@ router.get('/analytics/dashboard', async (req, res) => {
 
 /**
  * GET/POST /api/command-center — AI insights home payload.
- * POST body may include strategy context: northStar, loopStatus, bottleneck, highPriorityAgents, nextBestAction
+ * Server hydrates durable Agent OS / control-loop; optional body fields are soft overrides.
  */
 async function handleCommandCenter(req, res) {
   try {
     const companyId = String(
-      req.body?.companyId || req.query.companyId || req.query.workspaceId || DEFAULT_WS
+      req.body?.companyId || req.query.companyId || req.query.workspaceId || req.body?.workspaceId || DEFAULT_WS
     ).trim();
     const period = String(req.body?.period || req.query.period || '30d');
     const prefs = preferencesStore.get(companyId) || {};
@@ -1696,6 +1960,11 @@ async function handleCommandCenter(req, res) {
       bottleneck: req.body?.bottleneck || null,
       diagnosisSummary: req.body?.diagnosisSummary || null,
       periodLabel: req.body?.periodLabel || null,
+      attainmentPct: req.body?.attainmentPct ?? null,
+      recoveryRecommendation: req.body?.recoveryRecommendation || null,
+      recoveryShortfall: req.body?.recoveryShortfall ?? null,
+      recoveryRequiredPerPeriod: req.body?.recoveryRequiredPerPeriod ?? null,
+      openInterventions: req.body?.openInterventions || null,
       highPriorityAgents: req.body?.highPriorityAgents || [],
       nextBestAction: req.body?.nextBestAction || null,
     };

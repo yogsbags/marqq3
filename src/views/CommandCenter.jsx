@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {  ArrowRight, FileText, RefreshCw, Sparkles, AlertTriangle, TrendingUp, Info  } from 'lucide-react';
-import {  loadAgentOs  } from '../lib/agents/persist';
-import {  getNextBestAction, loadStrategyDoc, northStarLabel  } from '../lib/journeyHandoff';
-import {   getActiveWorkspaceId  } from '../lib/brandContext';
+import { ArrowRight, FileText, RefreshCw, Sparkles, AlertTriangle, TrendingUp, Info } from 'lucide-react';
+import { loadAgentOs, saveAgentOs } from '../lib/agents/persist';
+import { getNextBestAction, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
+import { getActiveWorkspaceId } from '../lib/brandContext';
 
 function SeverityIcon({ severity }) {
   if (severity === 'critical' || severity === 'warn') {
@@ -16,57 +16,85 @@ function SeverityIcon({ severity }) {
 
 /**
  * Command Center — AI insights home.
- * Live KPIs + rule/LLM briefing from /api/command-center, merged with local strategy/OS.
+ * Hydrates durable Agent OS / control loop from /api/command-center (server-side),
+ * then mirrors into sessionStorage so other screens stay in sync.
  */
 export default function CommandCenter({ agents = [], setActiveScreen }) {
   const [period, setPeriod] = useState('30d');
   const [data, setData] = useState(null);
+  const [os, setOs] = useState(() => loadAgentOs());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const os = loadAgentOs();
-  const loop = os?.control_loop;
   const doc = loadStrategyDoc();
   const nba = getNextBestAction();
+
+  const loop = data?.controlLoop || os?.control_loop || null;
+  const roster = data?.agentRoster || os?.agent_roster || null;
+  const ctx = data?.context || {};
   const checkpoints = loop?.checkpointPlan?.checkpoints || [];
-  const current = loop?.currentPeriod;
-  const highAgents = (os?.agent_roster?.agents || []).filter(
+  const current = loop?.currentPeriod || null;
+  const highAgents = (roster?.agents || []).filter(
     (a) => a.status === 'high_priority' || a.status === 'activated'
   );
-  const diagnosis = loop?.lastDiagnosis || null;
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      const ws = getActiveWorkspaceId();
+      const strategy = loadStrategyDoc();
+      const nextBest = getNextBestAction();
+      // Optional client hints; server merges durable agent_os as source of truth
+      const local = loadAgentOs();
+      const localLoop = local?.control_loop;
+      const localDiag = localLoop?.lastDiagnosis;
       const res = await fetch('/api/command-center', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          companyId: getActiveWorkspaceId(),
+          companyId: ws,
+          workspaceId: ws,
           period,
           withLlm: true,
-          northStar: northStarLabel(),
-          quantifiedTarget: doc?.goalAlignment?.quantified_target || null,
-          loopStatus: loop?.status || null,
-          bottleneck: diagnosis?.bottleneck_stage || null,
-          diagnosisSummary: diagnosis?.summary || null,
-          periodLabel: current?.label || null,
-          highPriorityAgents: highAgents.map((a) => ({ id: a.id, name: a.name, mission: a.mission })),
-          nextBestAction: nba
-            ? { label: nba.label, detail: nba.detail, screen: nba.screen, agentName: nba.agentName }
+          northStar: northStarLabel() || null,
+          quantifiedTarget: strategy?.goalAlignment?.quantified_target || null,
+          loopStatus: localLoop?.status || null,
+          bottleneck: localDiag?.bottleneck_stage || null,
+          diagnosisSummary: localDiag?.summary || null,
+          periodLabel: localLoop?.currentPeriod?.label || null,
+          nextBestAction: nextBest
+            ? {
+                label: nextBest.label,
+                detail: nextBest.detail,
+                screen: nextBest.screen,
+                agentName: nextBest.agentName,
+              }
             : null,
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Command center failed');
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || 'Command center failed');
       setData(json);
+
+      if (json.agentOs) {
+        const merged = {
+          ...(local || {}),
+          ...json.agentOs,
+          version: 1,
+          updatedAt: json.agentOs.updatedAt || new Date().toISOString(),
+        };
+        saveAgentOs(merged);
+        setOs(merged);
+      } else if (local) {
+        setOs(local);
+      }
     } catch (err) {
       setError(err?.message || 'Failed to load Command Center');
     } finally {
       setLoading(false);
     }
-  }, [period]); // eslint-disable-line react-hooks/exhaustive-deps -- refresh from latest OS on button
+  }, [period]);
 
   useEffect(() => {
     load();
@@ -93,12 +121,18 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
           : 'tag tag-accent-2',
     }));
 
+  const attainmentPct = ctx.attainmentPct ?? current?.attainmentPct;
   const attainment =
-    current?.attainmentPct != null
-      ? `${Math.round(Number(current.attainmentPct))}%`
+    attainmentPct != null
+      ? `${Math.round(Number(attainmentPct))}%`
       : current?.actual != null && current?.target != null
         ? `${current.actual} / ${current.target}`
         : null;
+
+  const loopStatus = ctx.loopStatus || loop?.status || 'pending';
+  const openCount = (ctx.openInterventions || loop?.interventions || []).filter((i) =>
+    ['proposed', 'approved', 'executing'].includes(String(i?.status || ''))
+  ).length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -107,7 +141,7 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
           <div className="card-kicker" style={{ marginBottom: 4 }}>Command Center</div>
           <h1 style={{ marginBottom: 4 }}>AI insights for today</h1>
           <p className="text-muted" style={{ margin: 0 }}>
-            North Star · {northStarLabel()}
+            North Star · {ctx.northStar || northStarLabel()}
             {data?.lastUpdated ? ` · updated ${data.lastUpdated}` : ''}
           </p>
         </div>
@@ -131,7 +165,6 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
         </div>
       </div>
 
-      {/* Hero briefing */}
       <div
         className="card"
         style={{
@@ -163,11 +196,21 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 160 }}>
             <div className="card elev-sm" style={{ padding: 12 }}>
               <div className="card-kicker">Loop</div>
-              <div style={{ fontWeight: 700 }}>{loop?.status || 'pending'}</div>
+              <div style={{ fontWeight: 700 }}>{loopStatus}</div>
               <div className="card-meta">
-                {current?.label || 'No checkpoint'}
+                {ctx.periodLabel || current?.label || 'No checkpoint'}
                 {attainment ? ` · ${attainment}` : ''}
               </div>
+              {ctx.bottleneck ? (
+                <div className="card-meta" style={{ marginTop: 4 }}>
+                  Bottleneck: {String(ctx.bottleneck).replace(/_/g, ' ')}
+                </div>
+              ) : null}
+              {openCount > 0 ? (
+                <div className="card-meta" style={{ marginTop: 2 }}>
+                  {openCount} open intervention{openCount > 1 ? 's' : ''}
+                </div>
+              ) : null}
             </div>
             <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('orchestration')}>
               Orchestration
@@ -179,13 +222,22 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
         </div>
       </div>
 
-      {/* KPI strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
         {(kpis.length
           ? kpis
           : [
-              { label: 'North Star', value: (doc?.goalAlignment?.north_star_metric || '—').toString().slice(0, 24), delta: northStarLabel().slice(0, 36), screen: 'analytics' },
-              { label: 'Checkpoints', value: String(checkpoints.length), delta: 'Generate strategy first', screen: 'orchestration' },
+              {
+                label: 'North Star',
+                value: (ctx.northStar || doc?.goalAlignment?.north_star_metric || '—').toString().slice(0, 24),
+                delta: (ctx.quantifiedTarget || northStarLabel()).slice(0, 36),
+                screen: 'analytics',
+              },
+              {
+                label: 'Checkpoints',
+                value: String(checkpoints.length),
+                delta: loop ? `status ${loopStatus}` : 'Generate strategy first',
+                screen: 'orchestration',
+              },
             ]
         ).map((k, i) => (
           <button
@@ -214,11 +266,10 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 28 }}>
-        {/* Insights */}
         <div>
           <h4 style={{ marginBottom: 4 }}>Insights</h4>
           <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
-            From live connectors + North Star · ranked by urgency
+            From live connectors + durable control loop · ranked by urgency
           </p>
           {!insights.length && !loading ? (
             <div className="card">
@@ -303,7 +354,6 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
           </div>
         </div>
 
-        {/* Right rail */}
         <div>
           <h4 style={{ marginBottom: 12 }}>Channels (GA4)</h4>
           {!channels.length ? (
@@ -348,6 +398,7 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
               {[
                 ['strategy', 'Strategy home'],
+                ['orchestration', 'Control loop'],
                 ['approvals', 'Approvals'],
                 ['paid', 'Paid Studio'],
                 ['content', 'Content Studio'],

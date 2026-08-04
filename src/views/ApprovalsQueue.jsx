@@ -6,7 +6,9 @@ export default function ApprovalsQueue({ approvals, approvedActions, onDecideAct
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div>
         <h1 style={{ marginBottom: '4px' }}>Approvals Queue</h1>
-        <p className="text-muted">Human-in-the-loop decision gate for autonomous agent budget, content, and sequence executions.</p>
+        <p className="text-muted">
+          Human-in-the-loop gate for agent drafts. Switch to Autonomous on Orchestration to skip this queue (still no live spend/publish).
+        </p>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>

@@ -4,6 +4,7 @@
  */
 
 import { resolveConnectedAccountId } from './composio.js';
+import { resolveComposioEntityIds } from '../lib/composioEntities.js';
 
 const COMPOSIO_V3 = 'https://backend.composio.dev/api/v3';
 const SOURCE_NAMES = {
@@ -27,16 +28,7 @@ function apiKey() {
 }
 
 function entityCandidates(companyId) {
-  const ids = new Set([String(companyId || '').trim()].filter(Boolean));
-  const raw = process.env.COMPOSIO_ENTITY_ALIASES || '';
-  for (const part of raw.split(',')) {
-    const id = part.trim();
-    if (id) ids.add(id);
-  }
-  if (companyId === 'marqq-ws-1' || companyId === 'default') {
-    ids.add('b08d3df3-c1a9-4632-96ec-e6e5b703c2a0');
-  }
-  return [...ids];
+  return resolveComposioEntityIds(companyId);
 }
 
 function periodToDates(period) {

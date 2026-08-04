@@ -226,9 +226,13 @@ export async function applyStrategySectionRevision(input: {
     os = null;
   }
 
+  const moduleId =
+    (typeof localStorage !== "undefined" && localStorage.getItem("marqq_active_gtm_module_id")) ||
+    null;
+
   const lockRes = await apiFetch("/api/gtm/modules/lock", {
     method: "POST",
-    body: JSON.stringify({ workspaceId, wizardState }),
+    body: JSON.stringify({ workspaceId, moduleId: moduleId || undefined, wizardState }),
   }).catch(() => null);
   const lockJson = lockRes ? await lockRes.json().catch(() => ({})) : {};
   if (lockRes && !lockRes.ok && lockJson?.error) {

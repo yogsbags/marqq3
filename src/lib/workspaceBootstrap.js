@@ -87,8 +87,19 @@ export function resetOnboardingDraft() {
   }
   for (const key of Object.keys(localStorage)) {
     if (key.startsWith(AUTO_SECTION_PREFIX)) localStorage.removeItem(key);
+    // Drop stale CRM / connector prefs keyed by previous workspace
+    if (key.startsWith("marqq_crm_") || key.startsWith("marqq_connector_")) {
+      localStorage.removeItem(key);
+    }
   }
   clearGtmWizardSession();
+  // Force a fresh workspace bind after signup so Composio entities don't leak
+  try {
+    localStorage.removeItem("marqq_workspace_id");
+    localStorage.removeItem("marqq_active_workspace");
+  } catch {
+    /* ignore */
+  }
   localStorage.setItem("marqq_onboarding_step", "1");
   localStorage.removeItem("marqq_onboarding_complete");
 }

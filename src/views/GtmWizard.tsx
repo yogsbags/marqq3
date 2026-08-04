@@ -38,6 +38,7 @@ import {
   GTM_AUTO_STRATEGY_SECTIONS,
   type GtmAutoSectionDraft,
 } from "../lib/gtmAutoSections";
+import GtmModuleSwitcher, { getStoredActiveModuleId } from "../components/GtmModuleSwitcher.jsx";
 import {
   buildAgentOs,
   clearAgentOs,
@@ -2121,6 +2122,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               workspaceId,
+              moduleId: getStoredActiveModuleId() || undefined,
               wizardState: {
                 ...normalized,
                 companyName: ctx.companyName,
@@ -2135,14 +2137,15 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
     } else {
       // Optimistic draft sync to gtm_modules (sessionStorage remains primary cache)
       const workspaceId = getActiveWorkspaceId();
-      if (workspaceId && workspaceId !== "marqq-ws-1") {
+      if (workspaceId) {
         void fetch("/api/gtm/modules", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             workspaceId,
+            moduleId: getStoredActiveModuleId() || undefined,
             status: "in_progress",
-            active: true,
+            active: false,
             profile: {
               answers: normalized.answers || {},
               companyName: ctx.companyName,
@@ -2494,9 +2497,45 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
   return (
     <div>
       <h1 style={{ marginBottom: 6 }}>GTM Wizard</h1>
-      <p className="text-muted" style={{ marginBottom: 20 }}>
+      <p className="text-muted" style={{ marginBottom: 16 }}>
         Answer Goals → Module → Offer → Audience with AI options. Strategy section headers show what will be generated at the end.
       </p>
+
+      <div style={{ marginBottom: 20 }}>
+        <GtmModuleSwitcher
+          setActiveScreen={setActiveScreen}
+          onSwitched={(mod) => {
+            if (!mod) return;
+            // Remount-friendly: clear in-memory wizard when switching/creating
+            if (mod.section_state?.strategy) {
+              setState(
+                normalizeWizardState(
+                  {
+                    stage: "document",
+                    answers: mod.profile?.answers || {},
+                    strategy: mod.section_state.strategy,
+                    briefsComplete: true,
+                    drafts: mod.section_state?.drafts || {},
+                  },
+                  ctx
+                )
+              );
+            } else {
+              setState(
+                normalizeWizardState(
+                  {
+                    stage: "module",
+                    answers: {},
+                    drafts: {},
+                    briefsComplete: false,
+                  },
+                  ctx
+                )
+              );
+            }
+          }}
+        />
+      </div>
 
       <StageChips
         stage={stage}

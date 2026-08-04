@@ -26,6 +26,8 @@ npm-debug.log*
 # Local runtime / smoke artifacts
 data/marqq-db.json
 data/brand-dna/
+server/data/gtm-modules.json
+server/data/ask-marqq-chats.json
 scripts/output/
 *.tsbuildinfo
 test-results/

@@ -5,7 +5,9 @@ import {  CONNECTOR_DISPLAY, isConnectorActive, connectorLabel  } from '../lib/c
 import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal';
 import {  fetchBrandContext, fetchKnowledgeFiles, persistBrandContext, loadLocalBrandContext, getActiveWorkspaceId  } from '../lib/brandContext';
 import JourneyBar from '../components/JourneyBar.jsx';
+import GtmModuleSwitcher from '../components/GtmModuleSwitcher.jsx';
 import MarketingCalendarView from './MarketingCalendarView.jsx';
+import ExecutionModeToggle from '../components/ExecutionModeToggle.jsx';
 import {  openSectionScreen, loadStrategyDoc, northStarLabel, stashJourneyHandoff  } from '../lib/journeyHandoff';
 import {  formatStrategySectionForChat  } from '../lib/askMarqqContext';
 import { 
@@ -17,9 +19,10 @@ import {
   sectionPlainText,
   wizardAnswerLabel,
  } from '../lib/liveWorkspace';
-import {  loadAgentOs  } from '../lib/agents/persist';
+import {  loadAgentOs, saveAgentOs  } from '../lib/agents/persist';
 import {  planAgentTask  } from '../lib/agents/planTask';
 import {  sectionBriefForScreen  } from '../lib/journeyHandoff';
+import { GtmControlLoopPanel } from '../components/GtmControlLoopPanel.jsx';
 
 function strategySectionPreview(s) {
   const text =
@@ -54,11 +57,19 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         <JourneyBar screenId="strategy" setActiveScreen={setActiveScreen} title="Strategy" />
+        <GtmModuleSwitcher setActiveScreen={setActiveScreen} onSwitched={() => {
+          try {
+            const raw = sessionStorage.getItem('marqq_gtm_strategy');
+            setDoc(raw ? JSON.parse(raw) : null);
+          } catch {
+            setDoc(null);
+          }
+        }} />
         <div className="card">
           <h3 style={{ marginTop: 0 }}>No locked GTM strategy yet</h3>
           <p className="card-body">
             Finish the GTM Wizard to lock North Star and 16 strategy sections. This screen is the journey home —
-            not a separate mock brief library.
+            not a separate mock brief library. Use <strong>Add module</strong> above for another product, service, app, or business line.
           </p>
           <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('gtmwizard')}>
             Open GTM Wizard
@@ -76,6 +87,17 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <JourneyBar screenId="strategy" setActiveScreen={setActiveScreen} />
+      <GtmModuleSwitcher
+        setActiveScreen={setActiveScreen}
+        onSwitched={() => {
+          try {
+            const raw = sessionStorage.getItem('marqq_gtm_strategy');
+            setDoc(raw ? JSON.parse(raw) : null);
+          } catch {
+            setDoc(null);
+          }
+        }}
+      />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ margin: '0 0 4px' }}>{doc.title || 'GTM Strategy'}</h1>
@@ -201,7 +223,10 @@ export function StrategyView({ setActiveModal, setActiveScreen }) {
 export function MarketView({ setActiveScreen }) {
   const intel = getMarketIntel();
   const audience = getAudienceProfile();
-  const cacheKey = `marqq_market_research_${getActiveWorkspaceId()}`;
+  const wsId = getActiveWorkspaceId();
+  const cacheKey = `marqq_market_research_${wsId}`;
+  const signalsCacheKey = `marqq_apify_website_${wsId}`;
+  const adsCacheKey = `marqq_apify_ads_${wsId}`;
   const [research, setResearch] = useState(() => {
     try {
       const raw = sessionStorage.getItem(cacheKey);
@@ -210,8 +235,47 @@ export function MarketView({ setActiveScreen }) {
       return null;
     }
   });
+  const [websiteSignals, setWebsiteSignals] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(signalsCacheKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [adsIntel, setAdsIntel] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(adsCacheKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [apifyStatus, setApifyStatus] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [signalsLoading, setSignalsLoading] = useState(false);
+  const [adsLoading, setAdsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [adsError, setAdsError] = useState('');
+  const [adsPlatforms, setAdsPlatforms] = useState({ google: true, linkedin: false, facebook: false });
+  const [adsDomain, setAdsDomain] = useState(() => {
+    const site = localStorage.getItem('marqq_ob_website') || '';
+    try {
+      return site ? new URL(site.startsWith('http') ? site : `https://${site}`).hostname.replace(/^www\./, '') : 'theelevate.co.in';
+    } catch {
+      return 'theelevate.co.in';
+    }
+  });
+  const [adsCompetitor, setAdsCompetitor] = useState(() => intel.companyName || getCompanyName() || 'Elevate');
+  const [linkedinSlug, setLinkedinSlug] = useState('');
+  const [facebookPage, setFacebookPage] = useState('');
+
+  useEffect(() => {
+    fetch('/api/apify/status')
+      .then((r) => r.json())
+      .then((j) => setApifyStatus(j))
+      .catch(() => setApifyStatus({ ok: false, configured: false }));
+  }, []);
 
   const runResearch = async () => {
     setLoading(true);
@@ -244,17 +308,95 @@ export function MarketView({ setActiveScreen }) {
     }
   };
 
+  const runWebsiteSignals = async () => {
+    setSignalsLoading(true);
+    setError('');
+    try {
+      const website = localStorage.getItem('marqq_ob_website') || adsDomain || '';
+      const res = await fetch('/api/apify/website-signals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          website,
+          domain: adsDomain,
+          companyName: intel.companyName || getCompanyName(),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!json.ok) throw new Error(json.error || `Website crawl failed (${res.status})`);
+      setWebsiteSignals(json);
+      try {
+        sessionStorage.setItem(signalsCacheKey, JSON.stringify(json));
+      } catch {
+        /* ignore */
+      }
+    } catch (err) {
+      setError(err.message || 'Website crawl failed');
+    } finally {
+      setSignalsLoading(false);
+    }
+  };
+
+  const runCompetitorAds = async () => {
+    setAdsLoading(true);
+    setAdsError('');
+    try {
+      const platforms = Object.entries(adsPlatforms)
+        .filter(([, on]) => on)
+        .map(([k]) => k);
+      if (!platforms.length) throw new Error('Select at least one platform');
+      const competitor = {
+        name: adsCompetitor || intel.companyName || 'Competitor',
+        google_domain: platforms.includes('google') ? adsDomain : undefined,
+        linkedin_company: platforms.includes('linkedin') ? linkedinSlug || undefined : undefined,
+        facebook_page: platforms.includes('facebook') ? facebookPage || undefined : undefined,
+      };
+      const res = await fetch('/api/apify/competitor-ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          competitors: [competitor],
+          platforms,
+          country: 'IN',
+          limit: 8,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok && !(json.ads || []).length) {
+        throw new Error(json.error || `Ads scrape failed (${res.status})`);
+      }
+      setAdsIntel(json);
+      try {
+        sessionStorage.setItem(adsCacheKey, JSON.stringify(json));
+      } catch {
+        /* ignore */
+      }
+    } catch (err) {
+      setAdsError(err.message || 'Ads scrape failed');
+    } finally {
+      setAdsLoading(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <JourneyBar screenId="market" setActiveScreen={setActiveScreen} title="Market & Competitor Intelligence" />
           <p className="text-muted" style={{ margin: '8px 0 0' }}>
-            Strategy market brief + live web research for {intel.companyName}
+            Strategy market brief + live web research + Apify scrapers for {intel.companyName}
             {intel.niche ? ` · ${intel.niche}` : ''}.
           </p>
+          {apifyStatus ? (
+            <p className="text-muted" style={{ margin: '6px 0 0', fontSize: 12 }} data-testid="apify-status">
+              Apify {apifyStatus.configured ? 'connected' : 'not configured'} · actors:{' '}
+              {apifyStatus.actors
+                ? Object.keys(apifyStatus.actors).join(', ')
+                : '—'}
+            </p>
+          ) : null}
         </div>
-        <button type="button" className="btn btn-primary" disabled={loading} onClick={runResearch}>
+        <button type="button" className="btn btn-primary" disabled={loading} onClick={runResearch} data-testid="market-run-research">
           {loading ? 'Researching…' : research ? 'Refresh research' : 'Run live research'}
         </button>
       </div>
@@ -337,6 +479,137 @@ export function MarketView({ setActiveScreen }) {
           ) : null}
         </>
       )}
+
+      <div className="card" data-testid="apify-website-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ marginTop: 0 }}>Website signals · Apify crawler</h3>
+            <p className="card-body" style={{ margin: 0 }}>
+              Actor <code>apify/website-content-crawler</code> — homepage title, meta, excerpt.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={signalsLoading || apifyStatus?.configured === false}
+            onClick={runWebsiteSignals}
+            data-testid="apify-run-website"
+          >
+            {signalsLoading ? 'Crawling…' : websiteSignals?.ok ? 'Re-crawl site' : 'Crawl website'}
+          </button>
+        </div>
+        {websiteSignals?.ok ? (
+          <div style={{ marginTop: 12 }} data-testid="apify-website-result">
+            <div style={{ fontWeight: 700 }}>{websiteSignals.title || websiteSignals.website}</div>
+            <p className="card-body" style={{ marginTop: 6 }}>
+              {websiteSignals.description || websiteSignals.signal_text || '—'}
+            </p>
+            <div className="text-muted" style={{ fontSize: 12 }}>
+              {websiteSignals.domain} · {websiteSignals.source}
+              {websiteSignals.scrapedAt ? ` · ${new Date(websiteSignals.scrapedAt).toLocaleString()}` : ''}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="card" data-testid="apify-ads-panel">
+        <h3 style={{ marginTop: 0 }}>Competitor ads · Apify libraries</h3>
+        <p className="card-body">
+          LinkedIn · Facebook · Google Transparency actors (Marqq2). Start with Google for a domain; add LinkedIn/Facebook when you have page IDs.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+            Competitor name
+            <input className="input" value={adsCompetitor} onChange={(e) => setAdsCompetitor(e.target.value)} data-testid="apify-ads-name" />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+            Google domain
+            <input className="input" value={adsDomain} onChange={(e) => setAdsDomain(e.target.value)} data-testid="apify-ads-domain" />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+            LinkedIn company slug
+            <input className="input" value={linkedinSlug} onChange={(e) => setLinkedinSlug(e.target.value)} placeholder="acme-corp" data-testid="apify-ads-linkedin" />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+            Facebook page
+            <input className="input" value={facebookPage} onChange={(e) => setFacebookPage(e.target.value)} placeholder="Page name or ID" data-testid="apify-ads-facebook" />
+          </label>
+        </div>
+        <div style={{ display: 'flex', gap: 14, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          {['google', 'linkedin', 'facebook'].map((p) => (
+            <label key={p} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, textTransform: 'capitalize' }}>
+              <input
+                type="checkbox"
+                checked={Boolean(adsPlatforms[p])}
+                onChange={(e) => setAdsPlatforms((prev) => ({ ...prev, [p]: e.target.checked }))}
+                data-testid={`apify-platform-${p}`}
+              />
+              {p}
+            </label>
+          ))}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={adsLoading || apifyStatus?.configured === false}
+            onClick={runCompetitorAds}
+            data-testid="apify-run-ads"
+          >
+            {adsLoading ? 'Scraping ads…' : 'Scrape competitor ads'}
+          </button>
+        </div>
+        {adsError ? <div style={{ color: 'var(--color-accent)', marginTop: 10, fontSize: 13 }}>{adsError}</div> : null}
+        {adsIntel ? (
+          <div style={{ marginTop: 14 }} data-testid="apify-ads-result">
+            <div className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              {adsIntel.total ?? (adsIntel.ads || []).length} ads · {adsIntel.scrapedAt ? new Date(adsIntel.scrapedAt).toLocaleString() : ''}
+            </div>
+            {(adsIntel.results || []).map((r, i) => (
+              <div key={i} style={{ fontSize: 12, marginBottom: 6 }}>
+                <strong>{r.competitor}</strong>:{' '}
+                {(r.platforms || [])
+                  .map((p) =>
+                    p.error
+                      ? `${p.platform} ✗ ${p.error}`
+                      : p.skipped
+                        ? `${p.platform} skipped`
+                        : `${p.platform} ${p.scraped}`
+                  )
+                  .join(' · ')}
+              </div>
+            ))}
+            {(adsIntel.ads || []).length ? (
+              <div className="table-container" style={{ marginTop: 10 }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Platform</th>
+                      <th>Advertiser</th>
+                      <th>Headline / body</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(adsIntel.ads || []).slice(0, 12).map((ad) => (
+                      <tr key={`${ad.platform}-${ad.ad_id}`}>
+                        <td><span className="tag tag-outline">{ad.platform}</span></td>
+                        <td style={{ fontWeight: 600 }}>{ad.advertiser || ad.competitor_name}</td>
+                        <td>
+                          {ad.headline || (ad.body ? String(ad.body).slice(0, 120) : null) || (
+                            ad.destination_url ? (
+                              <a href={ad.destination_url} target="_blank" rel="noreferrer">View creative</a>
+                            ) : '—'
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="card-body" style={{ marginTop: 8 }}>No ad creatives returned — try another domain or enable LinkedIn/Facebook with page IDs.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
 
       {research ? (
         <div className="card">
@@ -1533,6 +1806,7 @@ export function OrchestrationView({ setActiveScreen }) {
   const [activating, setActivating] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+  const [modeBusy, setModeBusy] = useState(false);
 
   const refresh = async () => {
     const [osRes, dep, app] = await Promise.all([
@@ -1540,7 +1814,10 @@ export function OrchestrationView({ setActiveScreen }) {
       fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
     ]);
-    if (osRes?.agentOs) setOs(osRes.agentOs);
+    if (osRes?.agentOs) {
+      saveAgentOs(osRes.agentOs);
+      setOs(osRes.agentOs);
+    }
     setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
     const approvals = Array.isArray(app.approvals) ? app.approvals : [];
     const decided = app.approvedActions || {};
@@ -1553,7 +1830,6 @@ export function OrchestrationView({ setActiveScreen }) {
 
   const loop = os?.control_loop;
   const roster = os?.agent_roster;
-  const checkpoints = loop?.checkpointPlan?.checkpoints || [];
   const high = (roster?.agents || []).filter((a) => a.status === 'high_priority' || a.status === 'activated').slice(0, 6);
   const cadence = Array.isArray(loop?.weeklyCycle) ? loop.weeklyCycle : [
     { day: 'Mon', focus: 'Measure' },
@@ -1565,6 +1841,39 @@ export function OrchestrationView({ setActiveScreen }) {
   const due = deployments.filter((d) => d.status === 'pending' || d.status === 'active' || d.status === 'running');
   const last = os?.last_executed_task;
   const hasOs = Boolean(roster?.agents?.length);
+  const executionMode =
+    os?.execution_mode === 'autonomous' || os?.executionMode === 'autonomous'
+      ? 'autonomous'
+      : 'human_gated';
+
+  const setExecutionMode = async (nextMode) => {
+    setModeBusy(true);
+    setError('');
+    setMsg('');
+    try {
+      const res = await fetch('/api/agent-os/execution-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: ws, executionMode: nextMode }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to update mode');
+      if (json.agentOs) {
+        saveAgentOs(json.agentOs);
+        setOs(json.agentOs);
+      }
+      await refresh();
+      setMsg(
+        nextMode === 'autonomous'
+          ? `Autonomous on${json.autoApproved ? ` · cleared ${json.autoApproved} pending approval(s)` : ''}.`
+          : 'Human-gated on — new runs wait in Approvals.'
+      );
+    } catch (err) {
+      setError(err.message || 'Mode update failed');
+    } finally {
+      setModeBusy(false);
+    }
+  };
 
   const runTick = async () => {
     setTicking(true);
@@ -1577,7 +1886,11 @@ export function OrchestrationView({ setActiveScreen }) {
         body: JSON.stringify({ force: true, workspaceId: ws }),
       });
       await refresh();
-      setMsg('Tick complete — new drafts land in Approvals.');
+      setMsg(
+        executionMode === 'autonomous'
+          ? 'Tick complete — drafts auto-cleared (open studios).'
+          : 'Tick complete — new drafts land in Approvals.'
+      );
     } catch (err) {
       setError(err.message || 'Tick failed');
     } finally {
@@ -1609,6 +1922,10 @@ export function OrchestrationView({ setActiveScreen }) {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || 'Activate failed');
+      if (json.agentOs) {
+        saveAgentOs(json.agentOs);
+        setOs(json.agentOs);
+      }
       setMsg('Strategy activated — deployments + automations seeded.');
       await refresh();
     } catch (err) {
@@ -1630,12 +1947,17 @@ export function OrchestrationView({ setActiveScreen }) {
       {error ? <div className="card" style={{ color: 'var(--color-accent)' }}>{error}</div> : null}
 
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h3 style={{ margin: 0 }}>Scheduler</h3>
-            <p className="card-body" style={{ marginTop: 8 }}>
-              {due.length} active/pending deployments · {pendingApprovals} approval(s) waiting · drafts only (no live spend).
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <h3 style={{ margin: 0 }}>Execution mode</h3>
+            <p className="card-body" style={{ marginTop: 8, marginBottom: 12 }}>
+              {due.length} active/pending deployments · {pendingApprovals} approval(s) waiting · still draft-safe (no live spend).
             </p>
+            <ExecutionModeToggle
+              value={executionMode}
+              disabled={modeBusy}
+              onChange={setExecutionMode}
+            />
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {!hasOs || !deployments.length ? (
@@ -1650,11 +1972,11 @@ export function OrchestrationView({ setActiveScreen }) {
         </div>
       </div>
 
-      {pendingApprovals > 0 ? (
+      {pendingApprovals > 0 && executionMode === 'human_gated' ? (
         <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
           <div>
             <strong>{pendingApprovals} draft(s) need approval</strong>
-            <div className="text-muted" style={{ fontSize: 13 }}>Approve to unlock studio go-live paths.</div>
+            <div className="text-muted" style={{ fontSize: 13 }}>Approve to unlock studio go-live paths — or switch to Autonomous to clear the gate.</div>
           </div>
           <button type="button" className="btn btn-primary" onClick={() => setActiveScreen && setActiveScreen('approvals')}>
             Approvals
@@ -1673,22 +1995,7 @@ export function OrchestrationView({ setActiveScreen }) {
         </div>
       </div>
 
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>North Star checkpoints</h3>
-        {!checkpoints.length ? (
-          <p className="card-body">Lock a GTM strategy to bootstrap checkpoints from the control loop.</p>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
-            {checkpoints.map((c) => (
-              <div key={c.period} style={{ padding: 10, background: 'var(--color-bg)', border: '1px solid var(--color-divider)' }}>
-                <div className="card-kicker">{c.label}</div>
-                <div style={{ fontWeight: 700 }}>{c.target ?? '—'}</div>
-                <span className="tag tag-outline">{c.status}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <GtmControlLoopPanel onOsChange={(next) => setOs(next)} />
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Active agents</h3>

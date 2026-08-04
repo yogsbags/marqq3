@@ -1,6 +1,4 @@
-/**
- * Minimal Composio helpers for Marqq-test outreach (Apollo + Gmail + Instantly/HeyReach/WhatsApp).
- */
+import { resolveComposioEntityIds } from '../lib/composioEntities.js';
 
 const COMPOSIO_V3 = 'https://backend.composio.dev/api/v3';
 
@@ -34,18 +32,9 @@ function apiKey() {
   return process.env.COMPOSIO_API_KEY || '';
 }
 
-/** Marqq2 company UUID + optional COMPOSIO_ENTITY_ALIASES — share active connections. */
+/** Only this workspace's Composio user_id unless demo sharing is enabled. */
 function entityLookupIds(userId) {
-  const ids = new Set([String(userId || '').trim()].filter(Boolean));
-  const raw = process.env.COMPOSIO_ENTITY_ALIASES || '';
-  for (const part of raw.split(',')) {
-    const id = part.trim();
-    if (id) ids.add(id);
-  }
-  if (userId === 'marqq-ws-1' || userId === 'default') {
-    ids.add('b08d3df3-c1a9-4632-96ec-e6e5b703c2a0');
-  }
-  return [...ids];
+  return resolveComposioEntityIds(userId);
 }
 
 function errText(value) {
@@ -81,8 +70,9 @@ export async function resolveConnectedAccountId(toolkit, userId) {
   if (!key) throw new Error('COMPOSIO_API_KEY not configured');
   const raw = String(toolkit || '').toLowerCase();
   const slug = TOOLKIT[raw] || raw;
+  const allowed = new Set(entityLookupIds(userId).map(String));
   const items = [];
-  for (const entityId of entityLookupIds(userId)) {
+  for (const entityId of allowed) {
     const res = await fetch(
       `${COMPOSIO_V3}/connected_accounts?user_id=${encodeURIComponent(entityId)}&limit=100`,
       { headers: { 'x-api-key': key } }
@@ -90,6 +80,10 @@ export async function resolveConnectedAccountId(toolkit, userId) {
     if (!res.ok) continue;
     const data = await res.json();
     for (const a of data.items || []) {
+      const owner = String(a.user_id || a.userId || '').trim();
+      // Composio list often ignores user_id — keep only this workspace's accounts.
+      if (owner && !allowed.has(owner)) continue;
+      if (!owner) continue;
       const t = String(a.toolkit?.slug || a.toolkit_slug || a.appName || '').toLowerCase();
       const status = String(a.status || '').toUpperCase();
       const active = status === 'ACTIVE' || status === 'CONNECTED' || status === 'SUCCESS';

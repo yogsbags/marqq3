@@ -6,6 +6,8 @@
 
 import { getAnalyticsDashboard, buildEmptyDashboard } from './analyticsDashboard.js';
 import { resolveGroqModel, withGroqReasoning } from './groqReasoning.js';
+import { loadAgentOsProfileAsync, loadAgentOsProfile } from './agentOsStore.js';
+import { normalizeGoalSystem, goalSystemToQuantifiedLabel } from '../lib/gtmNorthStar.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
@@ -33,6 +35,71 @@ function numFromValue(value) {
 }
 
 /**
+ * Build Command Center context from durable Agent OS / control loop.
+ * Client-provided fields win when non-null so the UI can still override.
+ */
+export function contextFromAgentOs(os, clientContext = {}) {
+  const loop = os?.control_loop || null;
+  const roster = os?.agent_roster || null;
+  const goalRaw =
+    os?.goal_system ||
+    os?.strategy_document?.goalAlignment ||
+    null;
+  const goal = goalRaw ? normalizeGoalSystem(goalRaw) : null;
+  const diagnosis = loop?.lastDiagnosis || null;
+  const current = loop?.currentPeriod || null;
+  const recovery = loop?.recovery || null;
+  const openInterventions = (loop?.interventions || []).filter((i) =>
+    ['proposed', 'approved', 'executing'].includes(String(i?.status || ''))
+  );
+  const highFromRoster = (roster?.agents || [])
+    .filter((a) => a.status === 'high_priority' || a.status === 'activated')
+    .map((a) => ({ id: a.id, name: a.name, mission: a.mission, status: a.status }));
+
+  const northStarLabel = goal
+    ? goalSystemToQuantifiedLabel(goal)
+    : null;
+
+  const client = clientContext && typeof clientContext === 'object' ? clientContext : {};
+  return {
+    northStar: client.northStar || northStarLabel || goal?.north_star_metric || null,
+    quantifiedTarget:
+      client.quantifiedTarget || goal?.quantified_target || northStarLabel || null,
+    loopStatus: client.loopStatus || loop?.status || null,
+    bottleneck:
+      client.bottleneck ||
+      diagnosis?.bottleneck_stage ||
+      roster?.bottleneck_stage ||
+      null,
+    diagnosisSummary: client.diagnosisSummary || diagnosis?.summary || null,
+    periodLabel: client.periodLabel || current?.label || null,
+    attainmentPct:
+      client.attainmentPct != null
+        ? client.attainmentPct
+        : current?.attainmentPct ?? null,
+    recoveryRecommendation:
+      client.recoveryRecommendation || recovery?.recommendation || null,
+    recoveryShortfall: client.recoveryShortfall ?? recovery?.shortfall ?? null,
+    recoveryRequiredPerPeriod:
+      client.recoveryRequiredPerPeriod ?? recovery?.requiredPerPeriod ?? null,
+    openInterventions:
+      Array.isArray(client.openInterventions) && client.openInterventions.length
+        ? client.openInterventions
+        : openInterventions.slice(0, 6).map((i) => ({
+            id: i.id,
+            status: i.status,
+            intervention: i.intervention || i.problem,
+            affected_metric: i.affected_metric,
+          })),
+    highPriorityAgents:
+      Array.isArray(client.highPriorityAgents) && client.highPriorityAgents.length
+        ? client.highPriorityAgents
+        : highFromRoster,
+    nextBestAction: client.nextBestAction || null,
+  };
+}
+
+/**
  * Deterministic insights from live KPIs + strategy context.
  */
 export function buildRuleInsights({ dashboard, context = {} } = {}) {
@@ -43,6 +110,10 @@ export function buildRuleInsights({ dashboard, context = {} } = {}) {
   const loopStatus = context.loopStatus || null;
   const bottleneck = context.bottleneck || null;
   const highAgents = Array.isArray(context.highPriorityAgents) ? context.highPriorityAgents : [];
+  const openInterventions = Array.isArray(context.openInterventions)
+    ? context.openInterventions
+    : [];
+  const recoveryRec = context.recoveryRecommendation || null;
 
   const sessions = kpiByLabel(kpis, /session/i);
   const organic = kpiByLabel(kpis, /organic\s*click/i);
@@ -179,11 +250,57 @@ export function buildRuleInsights({ dashboard, context = {} } = {}) {
       tag: 'Control loop',
       title: `Loop status: ${loopStatus}`,
       body: context.periodLabel
-        ? `${context.periodLabel} needs course-correction against North Star.`
+        ? `${context.periodLabel} needs course-correction against North Star${
+            context.attainmentPct != null ? ` (${context.attainmentPct}% attainment)` : ''
+          }.`
         : 'Record actuals and re-prioritize high-priority agents.',
       agent: 'Neel',
       screen: 'orchestration',
       cta: 'Course-correct',
+    });
+  }
+
+  if (
+    recoveryRec &&
+    recoveryRec !== 'on_track' &&
+    !insights.some((i) => i.id === 'bottleneck' || i.id === 'loop-behind')
+  ) {
+    insights.push({
+      id: 'recovery',
+      severity: 'warn',
+      tag: 'Recovery',
+      title: `Recovery: ${String(recoveryRec).replace(/_/g, ' ')}`,
+      body: `Shortfall ${context.recoveryShortfall ?? '—'} · need ~${
+        context.recoveryRequiredPerPeriod ?? '—'
+      } / period. Never silently change the North Star.`,
+      agent: 'Neel',
+      screen: 'orchestration',
+      cta: 'Open control loop',
+    });
+  } else if (recoveryRec && recoveryRec !== 'on_track') {
+    // Attach recovery math onto existing off-track insight body if present
+    const idx = insights.findIndex((i) => i.id === 'bottleneck' || i.id === 'loop-behind');
+    if (idx >= 0) {
+      insights[idx] = {
+        ...insights[idx],
+        body: `${insights[idx].body} Recovery: ${String(recoveryRec).replace(/_/g, ' ')} (need ~${
+          context.recoveryRequiredPerPeriod ?? '—'
+        }/period).`,
+      };
+    }
+  }
+
+  if (openInterventions.length) {
+    const top = openInterventions[0];
+    insights.push({
+      id: 'open-interventions',
+      severity: top.status === 'proposed' ? 'warn' : 'info',
+      tag: 'Interventions',
+      title: `${openInterventions.length} open intervention${openInterventions.length > 1 ? 's' : ''}`,
+      body: `${top.intervention || top.affected_metric || 'Pending fix'} · status ${top.status}. Approve or execute in Orchestration.`,
+      agent: 'Neel',
+      screen: 'orchestration',
+      cta: top.status === 'proposed' ? 'Approve fixes' : 'Track interventions',
     });
   }
 
@@ -313,6 +430,7 @@ async function generateBriefing({ dashboard, insights, context }) {
   const prompt = `You are Marqq Command Center for this workspace.
 North Star: ${context.northStar || context.quantifiedTarget || 'not locked'}
 Loop: ${context.loopStatus || 'n/a'} · Bottleneck: ${context.bottleneck || 'none'}
+Recovery: ${context.recoveryRecommendation || 'n/a'} · Open interventions: ${(context.openInterventions || []).length}
 KPIs: ${kpis || 'none'}
 Insights:
 ${insightLines || 'none'}
@@ -360,12 +478,7 @@ No markdown.`;
 
 /**
  * Full Command Center payload.
- * @param {object} opts
- * @param {string} opts.companyId
- * @param {string} opts.period
- * @param {object} opts.preferences
- * @param {object} opts.context — northStar, loopStatus, bottleneck, highPriorityAgents, nextBestAction
- * @param {boolean} opts.withLlm — generate LLM briefing (default true if key present)
+ * Hydrates control-loop context from durable Agent OS, then merges optional client overrides.
  */
 export async function getCommandCenter({
   companyId = 'marqq-ws-1',
@@ -386,10 +499,18 @@ export async function getCommandCenter({
     dashboard = buildEmptyDashboard(period);
   }
 
-  const insights = buildRuleInsights({ dashboard, context });
-  const nextActions = buildNextActions({ insights, context, dashboard });
+  let agentOs = null;
+  try {
+    agentOs = (await loadAgentOsProfileAsync(companyId)) || loadAgentOsProfile(companyId);
+  } catch (err) {
+    console.warn('[command-center] agent OS hydrate failed', err.message);
+  }
+
+  const mergedContext = contextFromAgentOs(agentOs, context);
+  const insights = buildRuleInsights({ dashboard, context: mergedContext });
+  const nextActions = buildNextActions({ insights, context: mergedContext, dashboard });
   const briefing = withLlm
-    ? await generateBriefing({ dashboard, insights, context })
+    ? await generateBriefing({ dashboard, insights, context: mergedContext })
     : {
         headline: insights[0]?.title || 'Command Center',
         summary: insights[0]?.body || '',
@@ -405,7 +526,11 @@ export async function getCommandCenter({
     screen: /ad|spend|ctr/i.test(k.label) ? 'paid' : 'analytics',
   }));
 
+  const loop = agentOs?.control_loop || null;
+  const roster = agentOs?.agent_roster || null;
+
   return {
+    ok: true,
     lastUpdated: dashboard?.lastUpdated || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
     period: dashboard?.period || period,
     connected: Boolean(dashboard?.connected),
@@ -418,5 +543,18 @@ export async function getCommandCenter({
     channels: (dashboard?.channels || []).slice(0, 5),
     topPages: (dashboard?.topPages || []).slice(0, 5),
     prefsUsed: dashboard?.prefsUsed || null,
+    // Durable control-loop snapshot for UI hydrate
+    context: mergedContext,
+    agentOs: agentOs
+      ? {
+          goal_system: agentOs.goal_system || null,
+          control_loop: loop,
+          agent_roster: roster,
+          strategy_document: agentOs.strategy_document || null,
+          updatedAt: agentOs.updatedAt || null,
+        }
+      : null,
+    controlLoop: loop,
+    agentRoster: roster,
   };
 }

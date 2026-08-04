@@ -23,6 +23,7 @@ Set `SUPABASE_SERVICE_ROLE_KEY` on Railway (never expose via `VITE_`).
 | `company_artifacts` | Optional brand file metadata |
 | `outreach_runs`, `outreach_prospects` | Outreach Studio durability |
 | `agent_deployments`, `agent_artifacts`, `draft_approvals` | Agent OS + deployments |
+| `conversations`, `messages` | Ask Marqq chat history (per channel · survives logout/login) |
 
 Isolation: new signups get a **new** workspace; Elevate/Nouriva rows are never auto-attached.
 
@@ -33,6 +34,7 @@ Isolation: new signups get a **new** workspace; Elevate/Nouriva rows are never a
 3. `window.fetch` patches Bearer onto `/api/*`
 4. GTM dual-writes sessionStorage + `gtm_modules`
 5. Brand DNA dual-writes filesystem + `companies`
+6. Ask Marqq appends turns to `conversations`/`messages` (FS fallback for non-UUID workspaces)
 
 ## Rollback
 
@@ -40,8 +42,8 @@ Isolation: new signups get a **new** workspace; Elevate/Nouriva rows are never a
 USE_SUPABASE_PERSISTENCE=0
 ```
 
-App falls back to sessionStorage / `marqq-db.json` / in-memory maps.
+App falls back to sessionStorage / `marqq-db.json` / in-memory maps / `server/data/ask-marqq-chats.json`.
 
 ## Out of scope (still Marqq2-only)
 
-Chat (`conversations`/`messages`), library, competitor intel, full content_drafts mapping.
+Library, competitor intel, full content_drafts mapping.

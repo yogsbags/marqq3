@@ -12,6 +12,9 @@ import {
   listDeploymentsFromSupabase,
 } from './agentSupabase.js';
 import { isUuidWorkspace } from '../lib/persistence.js';
+import { bootstrapControlLoop } from './gtmControlLoop.js';
+import { buildAgentRoster } from './gtmAgentRoster.js';
+import { normalizeExecutionMode, EXECUTION_MODES } from './executionMode.js';
 
 const DEFAULT_WS = 'marqq-ws-1';
 
@@ -259,6 +262,9 @@ export function activateStrategyExecution({
           ...agentOs,
           strategy_document: strategy,
           goal_system: agentOs.goal_system || strategy.goalAlignment || null,
+          execution_mode: normalizeExecutionMode(
+            agentOs.execution_mode ?? agentOs.executionMode ?? EXECUTION_MODES.HUMAN_GATED
+          ),
         }
       : {
           version: 1,
@@ -268,7 +274,23 @@ export function activateStrategyExecution({
           agent_roster: null,
           strategy_document: strategy,
           last_executed_task: null,
+          execution_mode: EXECUTION_MODES.HUMAN_GATED,
         };
+  profile.executionMode = profile.execution_mode;
+
+  const goalSystem = profile.goal_system || strategy.goalAlignment || null;
+  if (goalSystem) {
+    if (!profile.control_loop?.checkpointPlan?.checkpoints?.length) {
+      profile.control_loop = bootstrapControlLoop(goalSystem, profile.control_loop || null);
+    }
+    if (!profile.agent_roster?.agents?.length) {
+      profile.agent_roster = buildAgentRoster({
+        goalSystem,
+        controlLoop: profile.control_loop,
+        previousRoster: null,
+      });
+    }
+  }
 
   const savedOs = saveAgentOsProfile(profile, workspaceId);
   const seeded = seedDeploymentsFromStrategy({
@@ -356,4 +378,69 @@ export function listScheduledAutomations(companyId = DEFAULT_WS) {
   return (db.scheduled_automations || []).filter(
     (a) => !companyId || a.company_id === companyId
   );
+}
+
+/**
+ * Persist human_gated | autonomous on Agent OS.
+ * When switching to autonomous, auto-approve pending agent drafts.
+ */
+export function setAgentExecutionMode(workspaceId = DEFAULT_WS, mode, { approvePending = true } = {}) {
+  const nextMode = normalizeExecutionMode(mode);
+  const existing = loadAgentOsProfile(workspaceId) || {
+    version: 1,
+    workspaceId,
+    goal_system: null,
+    control_loop: null,
+    agent_roster: null,
+    strategy_document: null,
+    last_executed_task: null,
+  };
+  const saved = saveAgentOsProfile(
+    {
+      ...existing,
+      execution_mode: nextMode,
+      executionMode: nextMode,
+    },
+    workspaceId
+  );
+
+  let autoApproved = 0;
+  if (nextMode === EXECUTION_MODES.AUTONOMOUS && approvePending) {
+    const db = ensureAgentCollections(getDb());
+    const pendingIds = (db.approvals || [])
+      .filter((a) => {
+        const decided = db.approvedActions?.[a.id];
+        return a.status !== 'approved' && a.status !== 'rejected' && !decided;
+      })
+      .map((a) => a.id);
+    autoApproved = pendingIds.length;
+    if (pendingIds.length) {
+      updateDb((state) => {
+        const next = ensureAgentCollections(state);
+        const approvedActions = { ...(next.approvedActions || {}) };
+        for (const id of pendingIds) approvedActions[id] = 'approved';
+        const approvals = (next.approvals || []).map((a) => {
+          if (!pendingIds.includes(a.id)) return a;
+          return {
+            ...a,
+            status: 'approved',
+            decidedAt: nowIso(),
+            decidedBy: 'autonomous',
+            executionMode: nextMode,
+            risk: 'Auto-approved',
+            riskClass: 'tag tag-accent',
+            deadline: 'Auto-cleared',
+          };
+        });
+        const tasks = (next.tasks || []).map((t) =>
+          t.status === 'Needs approval'
+            ? { ...t, status: 'Ready', due: 'Autonomous — open studio' }
+            : t
+        );
+        return { ...next, approvals, approvedActions, tasks };
+      });
+    }
+  }
+
+  return { agentOs: saved, executionMode: nextMode, autoApproved };
 }

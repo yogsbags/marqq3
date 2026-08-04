@@ -9,6 +9,7 @@ import {
   parseStrategyRevisionBlock,
   revisionPromptHint,
 } from '../lib/applyStrategySectionRevision';
+import { fetchAskMarqqChat, persistAskMarqqMessages, mergeSeedWithPersisted } from '../lib/askMarqqChat.js';
 import ChatMarkdown from '../components/ChatMarkdown.jsx';
 import {  askMarqqCompound  } from '../services/groqService';
 import {   getActiveWorkspaceId  } from '../lib/brandContext';
@@ -236,6 +237,7 @@ export default function AskMarqq({ setActiveScreen }) {
   const chunksRef = useRef([]);
 
   useEffect(() => {
+    let cancelled = false;
     const seeds = loadStrategySectionsForAskMarqq();
     const focus = consumeAskMarqqContext();
 
@@ -259,6 +261,28 @@ export default function AskMarqq({ setActiveScreen }) {
 
     setSectionContextByChannel(nextContext);
     setMessagesByChannel(nextMessages);
+
+    // Hydrate durable chat history (survives logout/login)
+    (async () => {
+      const channels = Object.keys(nextMessages);
+      if (!channels.length && focus?.channel) channels.push(focus.channel);
+      if (!channels.length) channels.push('executive-summary', 'general');
+      const unique = [...new Set(channels)];
+      const updates = {};
+      await Promise.all(
+        unique.map(async (ch) => {
+          const loaded = await fetchAskMarqqChat(ch);
+          if (!loaded.ok || !loaded.messages?.length) return;
+          updates[ch] = mergeSeedWithPersisted(nextMessages[ch] || emptyWelcome(ch), loaded.messages);
+        })
+      );
+      if (cancelled || !Object.keys(updates).length) return;
+      setMessagesByChannel((prev) => ({ ...prev, ...updates }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -560,42 +584,48 @@ export default function AskMarqq({ setActiveScreen }) {
         'groq/compound-mini',
       ].filter(Boolean);
 
+      const assistantMsg = {
+        id: Date.now() + 2,
+        sender: 'Marqq',
+        confidence: parsed.revision
+          ? 'Revision draft'
+          : result?.usedSearch
+            ? 'Web + strategy'
+            : sectionCtx
+              ? 'Grounded'
+              : 'General',
+        time: 'Just now',
+        text,
+        sources: sourceBits.join(' · '),
+        revision: parsed.revision || null,
+        revisionApplied: false,
+        sectionId: channelToSectionId(channel),
+      };
+
       setMessagesByChannel((prev) => ({
         ...prev,
         [channel]: (prev[channel] || [])
           .filter((m) => m.id !== thinkingId)
-          .concat({
-            id: Date.now() + 2,
-            sender: 'Marqq',
-            confidence: parsed.revision
-              ? 'Revision draft'
-              : result?.usedSearch
-                ? 'Web + strategy'
-                : sectionCtx
-                  ? 'Grounded'
-                  : 'General',
-            time: 'Just now',
-            text,
-            sources: sourceBits.join(' · '),
-            revision: parsed.revision || null,
-            revisionApplied: false,
-            sectionId: channelToSectionId(channel),
-          }),
+          .concat(assistantMsg),
       }));
+
+      void persistAskMarqqMessages(channel, [userMsg, assistantMsg]);
     } catch {
+      const errMsg = {
+        id: Date.now() + 2,
+        sender: 'Marqq',
+        confidence: 'Error',
+        time: 'Just now',
+        text: 'Something went wrong generating a reply. Please try again.',
+        sources: 'Ask Marqq',
+      };
       setMessagesByChannel((prev) => ({
         ...prev,
         [channel]: (prev[channel] || [])
           .filter((m) => m.id !== thinkingId)
-          .concat({
-            id: Date.now() + 2,
-            sender: 'Marqq',
-            confidence: 'Error',
-            time: 'Just now',
-            text: 'Something went wrong generating a reply. Please try again.',
-            sources: 'Ask Marqq',
-          }),
+          .concat(errMsg),
       }));
+      void persistAskMarqqMessages(channel, [userMsg, errMsg]);
     } finally {
       setAsking(false);
     }
@@ -630,14 +660,19 @@ export default function AskMarqq({ setActiveScreen }) {
         if (idx >= 0) {
           list[idx] = { ...list[idx], revisionApplied: true, confidence: 'Locked for agents' };
         }
-        list.push({
+        const lockNote = {
           id: Date.now() + 3,
           sender: 'Marqq',
           confidence: 'Locked',
           time: 'Just now',
           text: `Applied and re-locked **${activeSectionMeta?.title || sectionId.replace(/_/g, ' ')}** into the GTM strategy. Agent deployments for this section were refreshed with the new draft copy (draft mode only — nothing published).`,
           sources: 'Strategy lock · Agent OS',
-        });
+        };
+        list.push(lockNote);
+        void persistAskMarqqMessages(channel, [
+          list[idx] || { ...message, revisionApplied: true },
+          lockNote,
+        ]);
         return { ...prev, [channel]: list };
       });
     } catch (err) {
@@ -659,7 +694,23 @@ export default function AskMarqq({ setActiveScreen }) {
             return (
               <div
                 key={channel}
-                onClick={() => setActiveChannel(channel)}
+                onClick={() => {
+                  setActiveChannel(channel);
+                  // Lazy-hydrate this channel if we only have seeds
+                  void (async () => {
+                    const existing = messagesByChannel[channel] || [];
+                    const hasDurable = existing.some(
+                      (m) => m.persisted || (m.sender === 'You') || (m.sender === 'Marqq' && !['Ready', 'Section context', 'Thinking'].includes(m.confidence))
+                    );
+                    if (hasDurable) return;
+                    const loaded = await fetchAskMarqqChat(channel);
+                    if (!loaded.ok || !loaded.messages?.length) return;
+                    setMessagesByChannel((prev) => ({
+                      ...prev,
+                      [channel]: mergeSeedWithPersisted(prev[channel] || emptyWelcome(channel), loaded.messages),
+                    }));
+                  })();
+                }}
                 style={{
                   padding: '7px 10px',
                   fontSize: '13px',

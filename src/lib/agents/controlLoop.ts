@@ -147,7 +147,7 @@ export function buildCheckpoints(
   };
 }
 
-function classifyVariance(
+export function classifyVariance(
   actual: number | null,
   target: number | null,
   opts: { previousStatuses?: string[] } = {}
@@ -312,4 +312,49 @@ export function bootstrapControlLoop(
     return normalizeControlLoopState(existing, g);
   }
   return normalizeControlLoopState({ checkpointPlan: buildCheckpoints(g) }, g);
+}
+
+/** Apply a period measurement (Marqq2 recordMeasurement). */
+export function recordMeasurement(
+  controlLoop: ControlLoopState | null | undefined,
+  goalSystem: unknown,
+  input: { period?: number | null; actual: number; funnelActuals?: ControlLoopState["funnelActuals"] }
+): ControlLoopState {
+  const loop = normalizeControlLoopState(controlLoop || {}, goalSystem);
+  const nextActual = Number(input.actual);
+  if (!Number.isFinite(nextActual)) {
+    throw new Error("actual must be a number");
+  }
+
+  let targetPeriod = input.period != null ? Number(input.period) : null;
+  if (targetPeriod == null) {
+    const pending = loop.checkpointPlan.checkpoints.find((c) => c.actual == null);
+    targetPeriod = pending?.period ?? loop.currentPeriod?.period ?? 1;
+  }
+
+  const nextCheckpoints = loop.checkpointPlan.checkpoints.map((c) => {
+    if (c.period !== targetPeriod) return c;
+    const variance = classifyVariance(nextActual, c.target, {
+      previousStatuses: loop.checkpointPlan.checkpoints
+        .filter((p) => p.period < c.period)
+        .map((p) => p.status)
+        .filter(Boolean) as string[],
+    });
+    return {
+      ...c,
+      actual: nextActual,
+      status: variance.status,
+      attainment: variance.attainment,
+      attainmentPct: variance.attainmentPct,
+    };
+  });
+
+  return normalizeControlLoopState(
+    {
+      ...loop,
+      checkpointPlan: { ...loop.checkpointPlan, checkpoints: nextCheckpoints },
+      funnelActuals: Array.isArray(input.funnelActuals) ? input.funnelActuals : loop.funnelActuals,
+    },
+    goalSystem
+  );
 }
