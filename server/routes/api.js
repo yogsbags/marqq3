@@ -136,6 +136,13 @@ import { resolveOutreachSpreadsheet } from '../services/googleSheetsLeads.js';
 import { buildCustomer360 } from '../services/customer360.js';
 import { collectTargetAccounts, runApolloSignals } from '../services/apolloSignals.js';
 import {
+  ingestApolloPhoneWebhook,
+  requestApolloPhoneReveal,
+  getPhoneEnrichJob,
+  listPhoneEnrichJobs,
+  listPhoneDeliveries,
+} from '../services/apolloPhoneWebhook.js';
+import {
   getWallet,
   setWalletPlan,
   getUsageSummary,
@@ -2231,6 +2238,38 @@ router.get('/apollo/signals/accounts', async (req, res) => {
   }
 });
 
+/** POST /api/apollo/phone-enrich — bulk reveal phones via Apollo async webhook */
+router.post('/apollo/phone-enrich', async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.body?.workspaceId || '').trim();
+    const people = Array.isArray(req.body?.people) ? req.body.people : [];
+    const webhookBase =
+      String(req.body?.webhookBase || process.env.APP_URL || process.env.PUBLIC_BASE_URL || '').trim() ||
+      'https://marqq3-production.up.railway.app';
+    const result = await requestApolloPhoneReveal({ companyId, people, webhookBase });
+    res.json(result);
+  } catch (err) {
+    console.error('[apollo/phone-enrich]', err);
+    res.status(400).json({ ok: false, error: err.message || 'Phone enrich failed' });
+  }
+});
+
+/** GET /api/apollo/phone-enrich/:jobId — poll async phone webhook job */
+router.get('/apollo/phone-enrich/:jobId', (req, res) => {
+  const job = getPhoneEnrichJob(req.params.jobId);
+  if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
+  res.json({ ok: true, job });
+});
+
+/** GET /api/apollo/phone-enrich — recent jobs + deliveries (debug) */
+router.get('/apollo/phone-enrich', (req, res) => {
+  res.json({
+    ok: true,
+    jobs: listPhoneEnrichJobs(Number(req.query.limit) || 20),
+    deliveries: listPhoneDeliveries(Number(req.query.limit) || 20),
+  });
+});
+
 router.post('/apollo/signals', async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.body?.workspaceId || DEFAULT_WS).trim();
@@ -2474,6 +2513,28 @@ router.post('/voicebot/stt', async (req, res) => {
 });
 
 // ── Outreach provider webhooks (MVP stubs — reply ingest later) ─────────────
+/** Apollo async phone reveal (reveal_phone_number=true → webhook_url) */
+router.post('/webhooks/apollo', (req, res) => {
+  try {
+    const result = ingestApolloPhoneWebhook(req.body || {}, req.query || {});
+    res.status(200).json(result);
+  } catch (err) {
+    console.error('[webhook/apollo]', err);
+    // Always 200 so Apollo does not retry forever on our parse bugs
+    res.status(200).json({ ok: false, error: err.message || 'Apollo webhook failed' });
+  }
+});
+
+router.get('/webhooks/apollo', (req, res) => {
+  const jobId = String(req.query.job || '').trim();
+  if (jobId) {
+    const job = getPhoneEnrichJob(jobId);
+    if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
+    return res.json({ ok: true, job });
+  }
+  res.json({ ok: true, jobs: listPhoneEnrichJobs(20), deliveries: listPhoneDeliveries(20) });
+});
+
 router.post('/webhooks/instantly', (req, res) => {
   console.log('[webhook/instantly]', Object.keys(req.body || {}));
   res.json({ ok: true, received: true });
