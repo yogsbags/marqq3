@@ -4,9 +4,7 @@
  * grounded in company / Brand DNA / draft answers.
  */
 
-import { withGroqReasoning, resolveGroqModel } from "./groqReasoning.js";
-
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+import { meteredStudioChat, assertCanAfford } from "./credits/index.js";
 
 function parseJsonLoose(raw) {
   const text = String(raw || "").trim();
@@ -161,33 +159,17 @@ function contextualFallbacks(question, ctx, draftAnswers) {
   ];
 }
 
-async function callGroq(system, user) {
-  const key = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
-  if (!key) throw new Error("Missing GROQ_API_KEY");
-  const model = resolveGroqModel();
-  const body = withGroqReasoning({
-    model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
+async function callGroq(system, user, workspaceId = "marqq-ws-1") {
+  const result = await meteredStudioChat({
+    workspaceId,
+    feature: "gtm_interview",
+    system,
+    user,
     temperature: 0.35,
     max_tokens: 900,
+    meta: { feature: "gtm_interview" },
   });
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Groq ${res.status}: ${errText.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || "";
+  return result.content || "";
 }
 
 /**
@@ -198,6 +180,8 @@ export async function generateInterviewQuestionOptions(input) {
   const question = input?.question || {};
   const draftAnswers = input?.draftAnswers && typeof input.draftAnswers === "object" ? input.draftAnswers : {};
   const ctx = input?.context && typeof input.context === "object" ? input.context : {};
+  const workspaceId = String(input?.workspaceId || ctx.workspaceId || "marqq-ws-1").trim();
+  assertCanAfford(workspaceId, "gtm_interview");
 
   if (Array.isArray(question.fixedOptions) && question.fixedOptions.length === 4) {
     return question.fixedOptions.map((o, i) => ({
@@ -241,7 +225,7 @@ ${questionOptionGuidance(question)}`;
   });
 
   try {
-    const raw = await callGroq(system, user);
+    const raw = await callGroq(system, user, workspaceId);
     const parsed = parseJsonLoose(raw);
     const options = Array.isArray(parsed?.options) ? parsed.options : [];
     const cleaned = options

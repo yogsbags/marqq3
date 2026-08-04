@@ -1,71 +1,37 @@
 /**
- * Live market / competitor refresh via Groq Compound Mini (web search).
+ * Live market / competitor research via Groq (with credit metering).
  */
-import { withGroqReasoning, resolveGtmAutoSectionModel } from './groqReasoning.js';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
-
-function parseJsonLoose(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(text.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
+import { resolveGtmAutoSectionModel } from './groqReasoning.js';
+import { meteredGroqJson } from './credits/index.js';
 
 function fallbackResearch({ companyName, niche, website }) {
   return {
     ok: true,
     source: 'fallback',
-    summary: `Baseline market scan for ${companyName || 'this company'}${niche ? ` in ${niche}` : ''}. Connect GROQ_API_KEY for live web research.`,
-    competitors: [
-      {
-        name: 'Category incumbents',
-        angle: 'Established players with brand trust and broader distribution',
-        threat: 'medium',
-      },
-      {
-        name: 'Niche challengers',
-        angle: 'Focused ICP messaging and faster iteration',
-        threat: 'high',
-      },
-    ],
-    opportunities: [
-      `Own a sharper ICP wedge${niche ? ` in ${niche}` : ''}`,
-      website ? `Convert ${website} visitors with proof-led content` : 'Publish proof-led content on the company site',
-    ],
-    risks: ['Generic positioning vs specialists', 'Paid CAC inflation if creative fatigues'],
+    summary: `${companyName} operates in ${niche || 'its category'}${website ? ` (${website})` : ''}. Connect Groq for live web-backed research.`,
+    competitors: [],
+    opportunities: ['Clarify ICP triggers', 'Ship one proof asset this week'],
+    risks: ['Thin category differentiation without live research'],
     queries: [],
+    updatedAt: new Date().toISOString(),
   };
 }
 
-/**
- * @param {{ companyName?: string, website?: string, niche?: string, icp?: string, marketBrief?: string }} input
- */
+function parseJsonLoose(raw) {
+  try {
+    return JSON.parse(String(raw || '').replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim());
+  } catch {
+    return null;
+  }
+}
+
 export async function runMarketResearch(input = {}) {
   const companyName = String(input.companyName || '').trim() || 'Company';
   const website = String(input.website || '').trim();
   const niche = String(input.niche || '').trim();
   const icp = String(input.icp || '').trim();
   const marketBrief = String(input.marketBrief || '').trim().slice(0, 1200);
-
-  const key = groqKey();
-  if (!key) return fallbackResearch({ companyName, niche, website });
+  const workspaceId = String(input.workspaceId || input.companyId || 'marqq-ws-1').trim();
 
   const model = resolveGtmAutoSectionModel();
   const system = `You are a B2B market intelligence analyst. Use web search when available.
@@ -89,43 +55,61 @@ ${marketBrief || '(none)'}
 Refresh competitor and category intelligence for GTM planning.`;
 
   try {
-    const body = withGroqReasoning({
+    const result = await meteredGroqJson({
+      workspaceId,
+      feature: 'market_research',
       model,
       temperature: 0.25,
+      max_tokens: 1800,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
+      meta: { companyName, website },
     });
-    // Prefer JSON mode when not compound
-    if (!/compound/i.test(model)) {
-      body.response_format = { type: 'json_object' };
+
+    if (result.insufficientCredits) {
+      return {
+        ...fallbackResearch({ companyName, niche, website }),
+        error: 'insufficient_credits',
+        credits: result.wallet,
+      };
     }
 
-    const res = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      console.warn('[market-research] groq error', res.status, json?.error || json);
-      return { ...fallbackResearch({ companyName, niche, website }), error: json?.error?.message || `Groq ${res.status}` };
+    if (!result.ok) {
+      console.warn('[market-research] groq error', result.error);
+      const parsed = parseJsonLoose(result.content);
+      if (parsed?.summary) {
+        return {
+          ok: true,
+          source: 'groq',
+          model: result.model,
+          summary: String(parsed.summary || '').trim(),
+          competitors: Array.isArray(parsed.competitors) ? parsed.competitors.slice(0, 6) : [],
+          opportunities: Array.isArray(parsed.opportunities) ? parsed.opportunities.slice(0, 6).map(String) : [],
+          risks: Array.isArray(parsed.risks) ? parsed.risks.slice(0, 6).map(String) : [],
+          queries: Array.isArray(parsed.queries) ? parsed.queries.slice(0, 8).map(String) : [],
+          credits: result.credits,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return { ...fallbackResearch({ companyName, niche, website }), error: result.error };
     }
-    const raw = json.choices?.[0]?.message?.content || '';
-    const parsed = parseJsonLoose(raw) || {};
+
+    const parsed = result.json || {};
     return {
       ok: true,
       source: 'groq',
-      model,
-      summary: String(parsed.summary || '').trim() || fallbackResearch({ companyName, niche, website }).summary,
+      model: result.model,
+      summary:
+        String(parsed.summary || '').trim() ||
+        fallbackResearch({ companyName, niche, website }).summary,
       competitors: Array.isArray(parsed.competitors) ? parsed.competitors.slice(0, 6) : [],
       opportunities: Array.isArray(parsed.opportunities) ? parsed.opportunities.slice(0, 6).map(String) : [],
       risks: Array.isArray(parsed.risks) ? parsed.risks.slice(0, 6).map(String) : [],
       queries: Array.isArray(parsed.queries) ? parsed.queries.slice(0, 8).map(String) : [],
+      usage: result.usage,
+      credits: result.credits,
       updatedAt: new Date().toISOString(),
     };
   } catch (err) {

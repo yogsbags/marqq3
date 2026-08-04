@@ -188,6 +188,7 @@ export default function App() {
   });
   const [agentLogs, setAgentLogs] = useState({});
   const [approvals, setApprovals] = useState([]);
+  const [creditBalance, setCreditBalance] = useState(null);
   const [approvedActions, setApprovedActions] = useState({});
   const [prospects, setProspects] = useState([]);
   const [contentItems, setContentItems] = useState([]);
@@ -218,15 +219,23 @@ export default function App() {
       };
 
       try {
-        const [dashRes, analyticsRes, campRes, agRes, appRes, prosRes, taskRes] = await Promise.all([
+        const [dashRes, analyticsRes, campRes, agRes, appRes, prosRes, taskRes, creditRes] = await Promise.all([
           safeFetchJson('/api/dashboard'),
           safeFetchJson(`/api/analytics/dashboard?period=30d&companyId=${encodeURIComponent(getActiveWorkspaceId())}`),
           safeFetchJson('/api/campaigns'),
           safeFetchJson('/api/agents'),
           safeFetchJson('/api/approvals'),
           safeFetchJson('/api/outreach/prospects'),
-          safeFetchJson('/api/tasks')
+          safeFetchJson('/api/tasks'),
+          safeFetchJson(`/api/credits?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
         ]);
+        if (creditRes?.wallet) {
+          setCreditBalance(
+            creditRes.wallet.credits_remaining === -1
+              ? null
+              : creditRes.wallet.credits_remaining
+          );
+        }
 
         if (analyticsRes?.kpis?.length) {
           setKpis(analyticsRes.kpis);
@@ -379,7 +388,7 @@ export default function App() {
           setActiveScreen={setActiveScreen}
           setActiveModal={setActiveModal}
           onLogout={handleLogout}
-          credits={null}
+          credits={creditBalance}
           approvalsCount={Array.isArray(approvals) ? Math.max(0, approvals.length - Object.keys(approvedActions).length) : 0}
           userName={session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || ''}
           userEmail={session?.user?.email || ''}

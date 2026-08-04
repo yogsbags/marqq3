@@ -13,6 +13,7 @@ import {
 } from './agentOsStore.js';
 import { notifyDeploymentResult } from './agentNotifications.js';
 import { executionModeFromAgentOs, isAutonomousMode } from './executionMode.js';
+import { chargeCredits } from './credits/index.js';
 
 const PORT = () => Number(process.env.PORT || 3001);
 const INTERVAL_MS = Math.max(
@@ -173,6 +174,16 @@ export async function executeAgentRun({
     return { ...next, approvals, approvedActions, tasks, agentLogs, agent_os };
   });
 
+  // Meter agent draft run (fixed feature estimate; no LLM tokens on this path yet)
+  const credit = chargeCredits({
+    workspaceId: ws,
+    feature: 'agent_run',
+    provider: 'internal',
+    actualCredits: 5,
+    meta: { agentName: agent.id, deploymentId: depId, triggered_by },
+    allowNegative: true, // soft meter during beta — never block drafts
+  });
+
   return {
     ok: true,
     agentName: agent.id,
@@ -183,6 +194,7 @@ export async function executeAgentRun({
     executionMode: mode,
     autonomous,
     plan,
+    credits: credit?.ok ? { actualCredits: credit.actualCredits, wallet: credit.wallet } : credit,
     openScreen: autonomous ? openScreen : 'approvals',
     message: autonomous
       ? 'Autonomous draft ready (no live spend/publish).'

@@ -44,9 +44,8 @@ import {
   inventsPaidBudgetOnZeroCash,
   looksAspirationalHollow,
 } from "./gtmBriefQuality.js";
-import { withGroqReasoning, resolveGtmAutoSectionModel } from "./groqReasoning.js";
-
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+import { resolveGtmAutoSectionModel } from "./groqReasoning.js";
+import { meteredGroqJson, assertCanAfford } from "./credits/index.js";
 
 const MARKET_ANALYSIS_TACTICAL_RE =
   /\b(roi calculator|case[- ]study library|sales script|objection[- ]handling|landing page|webinar|outreach cadence|ad budget|linkedin ads|content calendar|pilot onboarding|equip the sales|create a rapid|launch a \d+-week)\b/i;
@@ -104,59 +103,44 @@ function genericFallback(def, company, site) {
   };
 }
 
-async function callGroq(system, user, { temperature = 0.4, max_tokens = 2200 } = {}) {
-  const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
-  if (!apiKey) return null;
+async function callGroq(system, user, { temperature = 0.4, max_tokens = 2200, workspaceId = "marqq-ws-1" } = {}) {
+  const key = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
+  if (!key) return null;
   const model = resolveGtmAutoSectionModel();
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(
-      withGroqReasoning({
-        model,
-        temperature,
-        max_tokens: Math.min(max_tokens, 8192),
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      })
-    ),
+  const result = await meteredGroqJson({
+    workspaceId,
+    feature: "gtm_auto_section",
+    model,
+    temperature,
+    max_tokens: Math.min(max_tokens, 8192),
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    meta: { feature: "gtm_auto_section" },
+    looseJson: true,
   });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Groq HTTP ${res.status}${errText ? `: ${errText.slice(0, 200)}` : ""}`);
+  if (result.insufficientCredits) {
+    const err = new Error("insufficient_credits");
+    err.code = "insufficient_credits";
+    err.status = 402;
+    err.wallet = result.wallet;
+    err.estimatedCredits = result.estimatedCredits;
+    throw err;
   }
-  const data = await res.json();
-  const message = data.choices?.[0]?.message || {};
-  const raw = message.content || "";
-  const executedTools = message.executed_tools || data.executed_tools || [];
+  if (!result.ok) throw new Error(result.error || "Groq failed");
+  const message = result.raw?.choices?.[0]?.message || {};
+  const executedTools = message.executed_tools || result.raw?.executed_tools || [];
   const usedSearch = Array.isArray(executedTools)
     ? executedTools.some((t) => /search|browser/i.test(String(t?.type || t?.name || "")))
     : false;
-  try {
-    return { parsed: JSON.parse(raw), model: data.model || model, usedSearch, executedTools };
-  } catch {
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return {
-          parsed: JSON.parse(raw.slice(start, end + 1)),
-          model: data.model || model,
-          usedSearch,
-          executedTools,
-        };
-      } catch {
-        return { parsed: null, model: data.model || model, usedSearch, executedTools };
-      }
-    }
-    return { parsed: null, model: data.model || model, usedSearch, executedTools };
-  }
+  return {
+    parsed: result.json,
+    model: result.model || model,
+    usedSearch,
+    executedTools,
+    credits: result.credits,
+  };
 }
 
 /**
@@ -173,7 +157,11 @@ export async function generateAutoSection(body = {}) {
     onboarding,
     priorSections,
     businessMotion: businessMotionOverride,
+    workspaceId: workspaceIdIn,
   } = body;
+
+  const workspaceId = String(workspaceIdIn || body.companyId || "marqq-ws-1").trim();
+  assertCanAfford(workspaceId, "gtm_auto_section");
 
   const def = GTM_AUTO_SECTION_DEFS.find((s) => s.id === sectionId);
   if (!def) {
@@ -306,9 +294,10 @@ Global rules:
         null,
         2
       ).slice(0, 18000),
-      { temperature: isMarket ? 0.25 : 0.35, max_tokens: isMarket ? 4096 : 3200 }
+      { temperature: isMarket ? 0.25 : 0.35, max_tokens: isMarket ? 4096 : 3200, workspaceId }
     );
   } catch (err) {
+    if (err?.code === "insufficient_credits" || err?.status === 402) throw err;
     console.warn("[auto-sections] groq failed:", err.message);
     return {
       section: fallback,

@@ -4,13 +4,7 @@
  */
 
 import { normalizeGoalSystem, goalSystemToQuantifiedLabel } from '../lib/gtmNorthStar.js';
-import { resolveGroqModel, withGroqReasoning } from './groqReasoning.js';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
 function parseJsonLooseLocal(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -30,35 +24,22 @@ function parseJsonLooseLocal(raw) {
   }
 }
 
-/** Fetch-based Groq JSON completion (Marqq-test pattern; no SDK). */
-async function groqJsonCompletion({ system, user, temperature = 0.3, max_tokens = 1800 }) {
-  const key = groqKey();
-  if (!key) return null;
-  const model = resolveGroqModel();
-  const body = withGroqReasoning({
-    model,
-    temperature,
-    max_tokens,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-  });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Groq ${res.status}: ${errText.slice(0, 200)}`);
+async function groqJsonCompletion({ system, user, temperature = 0.3, max_tokens = 1800, workspaceId = 'marqq-ws-1' }) {
+  try {
+    return await meteredStudioJson({
+      workspaceId,
+      feature: 'control_loop',
+      system,
+      user,
+      temperature,
+      max_tokens,
+      meta: { feature: 'control_loop' },
+    });
+  } catch (err) {
+    if (err?.code === 'insufficient_credits') throw err;
+    console.warn('[control-loop] groq:', err?.message || err);
+    return null;
   }
-  const data = await res.json();
-  return parseJsonLooseLocal(data.choices?.[0]?.message?.content || '');
 }
 
 export const CONTROL_LOOP_PRINCIPLES = `You are Marqq's GTM control-loop engine.
@@ -552,7 +533,7 @@ function parseJsonLoose(raw) {
  * LLM: diagnose bottleneck from metric tree + actuals.
  * First arg kept for Marqq2 call-site compat; ignored (uses env GROQ key).
  */
-export async function diagnoseBottleneck(_groq, { goalSystem, controlLoop, notes }) {
+export async function diagnoseBottleneck(_groq, { goalSystem, controlLoop, notes, workspaceId = 'marqq-ws-1' }) {
   const g = normalizeGoalSystem(goalSystem);
   const loop = normalizeControlLoopState(controlLoop || {}, g);
   const fallback = {
@@ -564,10 +545,10 @@ export async function diagnoseBottleneck(_groq, { goalSystem, controlLoop, notes
     diagnosedAt: new Date().toISOString(),
   };
 
-  if (!groqKey()) return fallback;
-
   try {
+    assertCanAfford(workspaceId, 'control_loop');
     const parsed = await groqJsonCompletion({
+      workspaceId,
       temperature: 0.3,
       max_tokens: 1800,
       system: `${CONTROL_LOOP_PRINCIPLES}
@@ -606,6 +587,7 @@ Return STRICT JSON:
       diagnosedAt: new Date().toISOString(),
     };
   } catch (err) {
+    if (err?.code === 'insufficient_credits') throw err;
     console.warn("[gtm-control-loop] diagnose failed:", err.message);
     return fallback;
   }
@@ -614,7 +596,7 @@ Return STRICT JSON:
 /**
  * LLM: propose quantified interventions for the bottleneck.
  */
-export async function proposeInterventions(_groq, { goalSystem, controlLoop, diagnosis }) {
+export async function proposeInterventions(_groq, { goalSystem, controlLoop, diagnosis, workspaceId = 'marqq-ws-1' }) {
   const g = normalizeGoalSystem(goalSystem);
   const loop = normalizeControlLoopState(controlLoop || {}, g);
 
@@ -635,10 +617,10 @@ export async function proposeInterventions(_groq, { goalSystem, controlLoop, dia
     }),
   ];
 
-  if (!groqKey()) return deterministic;
-
   try {
+    assertCanAfford(workspaceId, 'control_loop');
     const parsed = await groqJsonCompletion({
+      workspaceId,
       temperature: 0.35,
       max_tokens: 2200,
       system: `${CONTROL_LOOP_PRINCIPLES}
@@ -679,6 +661,7 @@ Return STRICT JSON:
       normalizeIntervention({ ...item, id: `int_${Date.now()}_${i}` })
     );
   } catch (err) {
+    if (err?.code === 'insufficient_credits') throw err;
     console.warn("[gtm-control-loop] proposeInterventions failed:", err.message);
     return deterministic;
   }

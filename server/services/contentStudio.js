@@ -5,12 +5,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { withGroqReasoning, resolveGroqModel, resolveGtmAutoSectionModel } from './groqReasoning.js';
+import { resolveGtmAutoSectionModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishBlogPackage } from './blogPublish.js';
 import { apifyToken, researchKeywordsFromSeeds, classifyKeywordIntent, scoreKeywordForContent } from './apifyKeywords.js';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+import { meteredStudioJson, meteredStudioChat, assertCanAfford } from './credits/index.js';
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
@@ -41,29 +40,6 @@ function draftPackForMarket(marketType) {
   return String(marketType || '').toLowerCase() === 'b2c' ? DRAFT_PACK_B2C : DRAFT_PACK_B2B;
 }
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
-
-function parseJsonLoose(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(text.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
-
 function slugify(value) {
   return String(value || '')
     .toLowerCase()
@@ -72,31 +48,19 @@ function slugify(value) {
     .slice(0, 80);
 }
 
-async function groqJson({ system, user, model, temperature = 0.35 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for content studio');
-  const resolved = model || resolveGroqModel();
-  const body = withGroqReasoning({
-    model: resolved,
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'content_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    max_tokens,
+    meta: { studio: 'content_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const text = data?.choices?.[0]?.message?.content || '{}';
-  const parsed = parseJsonLoose(text);
-  if (!parsed) throw new Error('Model returned non-JSON content');
-  return parsed;
 }
+
 
 function publicRun(run) {
   return {
@@ -339,6 +303,7 @@ function finalizeArticleQueue(modelQueue, liveKeywords, year, marketType) {
 export async function runContentResearch(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Content run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'content_studio');
 
   const year = currentCalendarYear();
   const marketType = String(run.marketType || 'b2b').toLowerCase();
@@ -383,6 +348,7 @@ export async function runContentResearch(runId) {
 
   const model = resolveGtmAutoSectionModel();
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     model,
     temperature: 0.3,
     system: [
@@ -498,6 +464,7 @@ export async function runContentResearch(runId) {
 export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Content run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'content_studio');
   if (!run.plan?.article_queue?.length && !keyword && !topic) {
     throw new Error('Run research first, or pass keyword/topic');
   }
@@ -527,6 +494,7 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
 
   const year = currentCalendarYear();
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
     system: [
       'You are Maya, Marqq SEO agent writing a brief for Riya (content).',
@@ -583,6 +551,7 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
 export async function runContentDraft(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Content run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'content_studio');
   if (!run.brief?.keyword) throw new Error('Create a brief before drafting');
 
   const isB2c = String(run.marketType || '').toLowerCase() === 'b2c';
@@ -606,6 +575,7 @@ export async function runContentDraft(runId) {
     : 'B2B voice: clear, expert, decision-maker friendly. No invented claims.';
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: isB2c ? 0.5 : 0.4,
     system: [
       'You are Riya, Marqq content agent writing a page-1 / AEO-ready SEO blog article.',
@@ -672,6 +642,7 @@ export async function runContentDraft(runId) {
       keyword: run.brief.keyword,
       audience: run.brief.audience,
       brandContext: run.brandContext,
+      workspaceId: run.workspaceId || run.companyId,
     });
     if (humanized.html) {
       html = humanized.html;
@@ -774,7 +745,7 @@ function ensureFaqSection(html, { keyword = '', faqQuestions = [], company = 'ou
 }
 
 /** Second-pass humanizer (Marqq2 B2C create_seo_article parity). */
-async function humanizeArticleHtml(html, { title, keyword, audience, brandContext } = {}) {
+async function humanizeArticleHtml(html, { title, keyword, audience, brandContext, workspaceId } = {}) {
   const pack = await buildPlaybookFromPack(
     { primary: ['humanizer', 'copy-editing'], secondary: ['copywriting'] },
     { label: 'humanizer_pass' }
@@ -783,46 +754,32 @@ async function humanizeArticleHtml(html, { title, keyword, audience, brandContex
     return { html, applied: false, reason: 'humanizer_skill_missing' };
   }
   try {
-    const key = groqKey();
-    if (!key) return { html, applied: false, reason: 'no_groq' };
-    const body = withGroqReasoning({
-      model: resolveGroqModel(),
+    const result = await meteredStudioChat({
+      workspaceId: workspaceId || 'marqq-ws-1',
+      feature: 'content_studio',
       temperature: 0.45,
-      messages: [
+      max_tokens: 6000,
+      system: [
+        'You are the blader/humanizer + copy-editing pass for a B2C SEO blog.',
+        'Rewrite the HTML article body so it sounds human. Preserve ALL HTML tags, ids, and structure (h1/h2/aside/details/faq).',
+        'Keep <section id="faq"> and every <details>/<summary> pair intact — never remove or empty the FAQ block.',
+        'Never invent facts, stats, quotes, or citations. Output HTML fragment only — no markdown fences.',
+        pack.playbook || '',
+      ].join('\n'),
+      user: JSON.stringify(
         {
-          role: 'system',
-          content: [
-            'You are the blader/humanizer + copy-editing pass for a B2C SEO blog.',
-            'Rewrite the HTML article body so it sounds human. Preserve ALL HTML tags, ids, and structure (h1/h2/aside/details/faq).',
-            'Keep <section id="faq"> and every <details>/<summary> pair intact — never remove or empty the FAQ block.',
-            'Never invent facts, stats, quotes, or citations. Output HTML fragment only — no markdown fences.',
-            pack.playbook || '',
-          ].join('\n'),
+          title,
+          keyword,
+          audience,
+          brand_context: brandContext,
+          html,
         },
-        {
-          role: 'user',
-          content: JSON.stringify(
-            {
-              title,
-              keyword,
-              audience,
-              brand_context: brandContext,
-              html,
-            },
-            null,
-            2
-          ),
-        },
-      ],
+        null,
+        2
+      ),
+      meta: { pass: 'humanizer' },
     });
-    const res = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { html, applied: false, reason: data?.error?.message || `HTTP ${res.status}` };
-    let out = String(data?.choices?.[0]?.message?.content || '').trim();
+    let out = String(result.content || '').trim();
     out = out.replace(/^```html?\n?/i, '').replace(/\n?```$/i, '').trim();
     if (!out || out.length < 200) return { html, applied: false, reason: 'empty_rewrite' };
     return { html: out, applied: true, reason: 'ok' };

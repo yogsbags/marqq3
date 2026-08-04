@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { executeComposioAction, executeComposioProxy, resolveConnectedAccountId } from './composio.js';
-import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 import {
   launchInstantlyCampaign,
   launchHeyReachCampaign,
@@ -38,7 +38,6 @@ import { syncProspectsToCrm, syncProspectToCrm } from './crmLeads.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const APOLLO_PEOPLE_API = 'https://api.apollo.io/api/v1/mixed_people/api_search';
 
 /** @type {Map<string, object>} */
@@ -505,38 +504,21 @@ export function patchProspect(runId, prospectId, patch = {}) {
   return prospect;
 }
 
-async function groqJson(system, user) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for cold-email copy');
-  const model = resolveGroqModel();
-  const body = withGroqReasoning({
-    model,
+async function groqJson(system, user, workspaceId = 'marqq-ws-1') {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'outreach_copy',
+    system,
+    user,
     temperature: 0.4,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    meta: { studio: 'outreach' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const text = data?.choices?.[0]?.message?.content || '{}';
-  try {
-    return JSON.parse(text);
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/);
-    return m ? JSON.parse(m[0]) : { subject: 'Quick idea', body: text };
-  }
 }
 
 export async function generateProspectCopy(runId, prospectId, { channels } = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Outreach run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'outreach_copy');
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
 
@@ -549,7 +531,8 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
     const firstName = resolveProspectFirstName(prospect) || 'there';
     const parsed = await groqJson(
       `You are Sam, Marqq copy agent. Follow the cold-email skill playbook strictly. Return JSON: {"subject":"...","body":"..."}. Never use placeholders like [Your Name], [Name], {{name}}, or {{first_name}} — always use real names. Body MUST open with "Hi ${firstName}," on its own line.`,
-      `${playbook}\n\n---\nWrite a first-touch cold email for:\nCompany sending: ${run.companyName}\nSender full name (sign-off MUST use this exact name): ${senderName}\nProspect first name (salutation MUST be "Hi ${firstName},"): ${firstName}\nProspect: ${prospect.full_name}, ${prospect.title} at ${prospect.company}\nBrief: ${run.question || 'Book a short intro call about lab-personalized nutrition for their patients / org.'}\nOpen with: Hi ${firstName},\nSign off as:\nThanks,\n${senderName}\n${run.companyName}\nReturn only JSON.`
+      `${playbook}\n\n---\nWrite a first-touch cold email for:\nCompany sending: ${run.companyName}\nSender full name (sign-off MUST use this exact name): ${senderName}\nProspect first name (salutation MUST be "Hi ${firstName},"): ${firstName}\nProspect: ${prospect.full_name}, ${prospect.title} at ${prospect.company}\nBrief: ${run.question || 'Book a short intro call about lab-personalized nutrition for their patients / org.'}\nOpen with: Hi ${firstName},\nSign off as:\nThanks,\n${senderName}\n${run.companyName}\nReturn only JSON.`,
+      run.workspaceId || run.companyId || 'marqq-ws-1'
     );
     const rawBody = String(parsed.body || '').trim();
     channelCopies.email = {
@@ -564,7 +547,8 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
   if (wanted.includes('linkedin')) {
     const parsed = await groqJson(
       `You are Sam. Write a short LinkedIn DM (under 300 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].`,
-      `Prospect: ${prospect.full_name}, ${prospect.title} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Goal: reply / short call. Return JSON.`
+      `Prospect: ${prospect.full_name}, ${prospect.title} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Goal: reply / short call. Return JSON.`,
+      run.workspaceId || run.companyId || 'marqq-ws-1'
     );
     channelCopies.linkedin_dm = {
       subject: '',
@@ -576,7 +560,8 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
   if (wanted.includes('whatsapp') || wanted.includes('phone')) {
     const parsed = await groqJson(
       `You are Sam. Write a concise WhatsApp outreach (under 280 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].`,
-      `Prospect: ${prospect.full_name} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Return JSON.`
+      `Prospect: ${prospect.full_name} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Return JSON.`,
+      run.workspaceId || run.companyId || 'marqq-ws-1'
     );
     channelCopies.whatsapp_dm = {
       subject: '',
@@ -1088,7 +1073,8 @@ export async function draftAutoReplyForRecordedReply(run, prospect, reply) {
       },
       null,
       2
-    )
+    ),
+    run.workspaceId || run.companyId || 'marqq-ws-1'
   );
 
   const classification = String(parsed.classification || 'other')

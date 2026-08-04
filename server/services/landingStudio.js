@@ -4,11 +4,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishStaticHtmlPage } from './blogPublish.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const runsById = new Map();
 
 const LANDING_PACK = {
@@ -16,9 +15,6 @@ const LANDING_PACK = {
   secondary: ['marketing-psychology'],
 };
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
 
 function parseJsonLoose(raw) {
   const text = String(raw || '').trim();
@@ -47,30 +43,19 @@ function slugify(value) {
     .slice(0, 80);
 }
 
-async function groqJson({ system, user, temperature = 0.35 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for landing studio');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'landing_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    max_tokens: 7000,
+    max_tokens,
+    meta: { studio: 'landing_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content || '{}');
-  if (!parsed) throw new Error('Model returned non-JSON landing page');
-  return parsed;
 }
+
 
 function publicRun(run) {
   return {
@@ -125,6 +110,7 @@ export function getLandingRun(runId) {
 export async function generateLandingPage(runId, patch = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Landing run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'landing_studio');
 
   Object.assign(run, {
     product: patch.product ?? run.product,
@@ -137,6 +123,7 @@ export async function generateLandingPage(runId, patch = {}) {
 
   const pack = await buildPlaybookFromPack(LANDING_PACK, { label: 'create_landing_page' });
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
       'You are Tara (page structure) + Sam (conversion copy). Apply page-cro, copywriting, and form-cro. Return JSON only. Never invent fake testimonials, review scores, or case-study numbers — use honest placeholders.',
     user: `Build a conversion-ready landing page for website publish.

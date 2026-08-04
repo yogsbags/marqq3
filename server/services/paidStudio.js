@@ -8,8 +8,8 @@
 import { randomUUID } from 'node:crypto';
 import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 /** @type {Map<string, object>} */
 const runsById = new Map();
 
@@ -36,9 +36,6 @@ const WORKSPACE_DEFAULTS = {
   deliveryMode: 'draft',
 };
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
 
 function parseJsonLoose(raw) {
   const text = String(raw || '').trim();
@@ -59,29 +56,19 @@ function parseJsonLoose(raw) {
   return null;
 }
 
-async function groqJson({ system, user, temperature = 0.35 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for paid studio');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'paid_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    max_tokens,
+    meta: { studio: 'paid_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content || '{}');
-  if (!parsed) throw new Error('Model returned non-JSON paid plan');
-  return parsed;
 }
+
 
 function publicRun(run) {
   return {
@@ -167,11 +154,13 @@ export function patchPaidGoals(runId, patch = {}) {
 export async function runPaidPlan(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Paid run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'paid_studio');
 
   const playbook = await buildPlaybookFromPack(PLAN_PACK, { label: 'paid_ads_strategy' });
   run.skills.plan = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
     system: [
       'You are Zara, Marqq channel / paid strategist.',
@@ -244,7 +233,7 @@ export async function runPaidPlan(runId) {
 }
 
 /** @see https://fal.ai/models/fal-ai/nano-banana-2 */
-async function tryFalImage(prompt, aspectRatio = '1:1') {
+async function tryFalImage(prompt, aspectRatio = '1:1', { workspaceId = 'marqq-ws-1' } = {}) {
   const key = process.env.FAL_KEY || process.env.FAL_API_KEY;
   if (!key) return null;
   const model = process.env.FAL_IMAGE_MODEL || 'fal-ai/nano-banana-2';
@@ -252,31 +241,44 @@ async function tryFalImage(prompt, aspectRatio = '1:1') {
     'auto', '21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16', '4:1', '1:4', '8:1', '1:8',
   ]);
   const ar = allowed.has(String(aspectRatio || '').trim()) ? String(aspectRatio).trim() : '1:1';
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90000);
-    const res = await fetch(`https://fal.run/${model}`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Key ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: String(prompt).slice(0, 4000),
-        num_images: 1,
-        aspect_ratio: ar,
-        output_format: 'png',
-        resolution: process.env.FAL_IMAGE_RESOLUTION || '1K',
-      }),
-    });
-    clearTimeout(timer);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return null;
-    return data?.images?.[0]?.url || data?.image?.url || null;
-  } catch {
-    return null;
-  }
+
+  const { withFalCredits } = await import('./credits/falMeter.js');
+  const metered = await withFalCredits({
+    workspaceId,
+    feature: 'fal_image',
+    falKind: 'image',
+    model,
+    run: async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 90000);
+        const res = await fetch(`https://fal.run/${model}`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Key ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt: String(prompt).slice(0, 4000),
+            num_images: 1,
+            aspect_ratio: ar,
+            output_format: 'png',
+            resolution: process.env.FAL_IMAGE_RESOLUTION || '1K',
+          }),
+        });
+        clearTimeout(timer);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return { ok: false, error: `Fal ${res.status}` };
+        const url = data?.images?.[0]?.url || data?.image?.url || null;
+        if (!url) return { ok: false, error: 'no image' };
+        return { ok: true, imageUrl: url };
+      } catch (err) {
+        return { ok: false, error: err.message || String(err) };
+      }
+    },
+  });
+  return metered?.imageUrl || null;
 }
 
 /**
@@ -285,12 +287,14 @@ async function tryFalImage(prompt, aspectRatio = '1:1') {
 export async function runPaidCreativeDraft(runId, { generateImage = true } = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Paid run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'paid_studio');
   if (!run.plan) throw new Error('Run Zara plan before creative draft');
 
   const playbook = await buildPlaybookFromPack(CREATIVE_PACK, { label: 'paid_creative_draft' });
   run.skills.creative = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.4,
     system: [
       'You are Zara + Sam drafting Meta ad creative for a PAUSED/draft campaign.',

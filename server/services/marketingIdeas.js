@@ -3,10 +3,9 @@
  * Selects from the 139-idea catalog (cite ideaNumber). Does not invent a new ICP/strategy.
  */
 
-import { withGroqReasoning, resolveGroqModel, isCompoundModel } from "./groqReasoning.js";
+import { resolveGroqModel, isCompoundModel } from "./groqReasoning.js";
 import { buildPlaybookFromPack } from "./gtmStrategySkills.js";
-
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+import { meteredGroqJson, assertCanAfford } from "./credits/index.js";
 
 const MARKETING_IDEAS_PACK = {
   primary: ["marketing-ideas"],
@@ -154,6 +153,7 @@ function fallbackIdeas(ctx, company) {
  */
 export async function generateMarketingIdeas(input = {}) {
   const company = String(input.companyName || "Your company").trim();
+  const workspaceId = String(input.workspaceId || input.companyId || "marqq-ws-1").trim();
   const digest = strategyDigest(input.strategy || {});
   const hasStrategy = Boolean(
     digest.executiveSummary ||
@@ -170,6 +170,8 @@ export async function generateMarketingIdeas(input = {}) {
     const fb = fallbackIdeas(digest, company);
     return { ...fb, skillLoaded: Boolean(playbookResult.loaded), model: null, usedSearch: false };
   }
+
+  assertCanAfford(workspaceId, "marketing_ideas");
 
   const model = process.env.GROQ_MARKETING_IDEAS_MODEL || resolveGroqModel();
   const system = `You are Marqq executing the marketing-ideas skill for ${company}.
@@ -225,36 +227,32 @@ JSON schema:
   );
 
   try {
-    const body = withGroqReasoning({
+    const result = await meteredGroqJson({
+      workspaceId,
+      feature: "marketing_ideas",
       model,
       temperature: 0.45,
       max_tokens: 4096,
+      json: !isCompoundModel(model),
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ],
+      meta: { company },
+      looseJson: true,
     });
-    // Compound models may not honor json_object; prefer it for non-compound
-    if (!isCompoundModel(model)) {
-      body.response_format = { type: "json_object" };
+    if (result.insufficientCredits) {
+      const err = new Error("insufficient_credits");
+      err.code = "insufficient_credits";
+      err.status = 402;
+      err.wallet = result.wallet;
+      throw err;
     }
+    if (!result.ok) throw new Error(result.error || "Groq failed");
 
-    const res = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Groq HTTP ${res.status}${errText ? `: ${errText.slice(0, 180)}` : ""}`);
-    }
-    const data = await res.json();
-    const message = data.choices?.[0]?.message || {};
-    const parsed = parseJsonLoose(message.content);
-    const executedTools = message.executed_tools || data.executed_tools || [];
+    const parsed = result.json;
+    const message = result.raw?.choices?.[0]?.message || {};
+    const executedTools = message.executed_tools || result.raw?.executed_tools || [];
     const usedSearch = Array.isArray(executedTools)
       ? executedTools.some((t) => /search|browser|web/i.test(String(t?.type || t?.name || "")))
       : false;
@@ -264,30 +262,31 @@ JSON schema:
       return {
         ...fb,
         skillLoaded: Boolean(playbookResult.loaded),
-        model: data.model || model,
+        model: result.model || model,
         usedSearch,
         warning: "Model returned incomplete ideas — used fallback catalog picks.",
+        credits: result.credits,
       };
     }
 
     return {
-      ...parsed,
-      ideas: parsed.ideas.slice(0, 6).map((idea) => ({
-        ...idea,
-        ideaNumber: Number(idea.ideaNumber) || null,
-        hooks: Array.isArray(idea.hooks) ? idea.hooks : [],
-        angles: Array.isArray(idea.angles) ? idea.angles : [],
-        howToStart: Array.isArray(idea.howToStart) ? idea.howToStart : [],
-      })),
-      hooksToTest: Array.isArray(parsed.hooksToTest) ? parsed.hooksToTest.slice(0, 8) : [],
+      ok: true,
+      scores: parsed.scores || {},
+      summary: String(parsed.summary || "").trim(),
+      stageFit: parsed.stageFit || null,
+      budgetBand: parsed.budgetBand || null,
+      northStar: parsed.northStar || digest.northStar,
+      ideas: parsed.ideas.slice(0, 8),
+      hooksToTest: Array.isArray(parsed.hooksToTest) ? parsed.hooksToTest.slice(0, 6) : [],
       anglesToTest: Array.isArray(parsed.anglesToTest) ? parsed.anglesToTest.slice(0, 6) : [],
       skillLoaded: Boolean(playbookResult.loaded),
       skillIds: playbookResult.skillIds || ["marketing-ideas"],
-      model: data.model || model,
+      model: result.model || model,
       usedSearch,
-      fallback: false,
+      credits: result.credits,
     };
   } catch (err) {
+    if (err?.code === "insufficient_credits") throw err;
     console.warn("[marketing-ideas]", err.message);
     const fb = fallbackIdeas(digest, company);
     return {
@@ -295,7 +294,7 @@ JSON schema:
       skillLoaded: Boolean(playbookResult.loaded),
       model: null,
       usedSearch: false,
-      warning: err.message || "Generation failed",
+      warning: err.message,
     };
   }
 }

@@ -4,11 +4,65 @@ const MODEL = 'llama-3.3-70b-versatile';
 /** Ask Marqq / agentic chat — Compound Mini has built-in web search. */
 const CHAT_MODEL = import.meta.env.VITE_GROQ_CHAT_MODEL || 'groq/compound-mini';
 
+function resolveWorkspaceId(explicit) {
+  if (explicit) return String(explicit).trim();
+  try {
+    return localStorage.getItem('marqq_workspace_id') || 'marqq-ws-1';
+  } catch {
+    return 'marqq-ws-1';
+  }
+}
+
 /**
- * Ask Marqq chat: groq/compound-mini (server-side web search when useful).
- * Returns { content, model, usedSearch } or null on failure.
+ * Ask Marqq chat via metered server endpoint (falls back to direct Groq if API down).
+ * Returns { content, model, usedSearch, credits?, insufficientCredits? } or null on failure.
  */
-export async function askMarqqCompound(messages, systemPrompt = '') {
+export async function askMarqqCompound(messages, systemPrompt = '', opts = {}) {
+  const workspaceId = resolveWorkspaceId(opts.workspaceId);
+  const channel = opts.channel || null;
+
+  try {
+    const response = await fetch('/api/ask-marqq/chat/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId,
+        channel,
+        systemPrompt,
+        messages,
+        model: CHAT_MODEL,
+        temperature: 0.6,
+        max_tokens: 2048,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 402 || data?.error === 'insufficient_credits') {
+      return {
+        content: '',
+        model: CHAT_MODEL,
+        usedSearch: false,
+        insufficientCredits: true,
+        estimatedCredits: data?.estimatedCredits,
+        wallet: data?.wallet,
+        credits: null,
+      };
+    }
+    if (response.ok && data?.ok !== false && (data.content != null || data.ok)) {
+      return {
+        content: data.content || '',
+        model: data.model || CHAT_MODEL,
+        usedSearch: Boolean(data.usedSearch),
+        executedTools: data.executedTools || [],
+        credits: data.credits || null,
+      };
+    }
+    console.warn('Ask Marqq metered API error:', data?.error || response.status);
+  } catch (error) {
+    console.warn('Ask Marqq metered API failed, trying direct Groq:', error?.message || error);
+  }
+
+  // Legacy direct Groq fallback (unmetered) when server unavailable
+  if (!GROQ_API_KEY) return null;
   try {
     const payloadMessages = [];
     if (systemPrompt) {
@@ -19,15 +73,15 @@ export async function askMarqqCompound(messages, systemPrompt = '') {
     const response = await fetch(GROQ_API_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json'
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: CHAT_MODEL,
         messages: payloadMessages,
         temperature: 0.6,
-        max_tokens: 2048
-      })
+        max_tokens: 2048,
+      }),
     });
 
     if (!response.ok) {
@@ -66,15 +120,15 @@ export async function askGroqAI(messages, systemPrompt = '') {
     const response = await fetch(GROQ_API_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json'
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: MODEL,
         messages: payloadMessages,
         temperature: 0.7,
-        max_tokens: 2048
-      })
+        max_tokens: 2048,
+      }),
     });
 
     if (!response.ok) {
@@ -125,7 +179,6 @@ Return JSON strictly matching this structure:
     );
 
     if (rawResult) {
-      // Clean JSON formatting if markdown wraps it
       const cleanJson = rawResult.replace(/```json/g, '').replace(/```/g, '').trim();
       return JSON.parse(cleanJson);
     }
@@ -133,12 +186,11 @@ Return JSON strictly matching this structure:
     console.warn('Groq onboarding parsing fallback used:', e);
   }
 
-  // Resilient Fallback
   return {
     brandSummary: `${companyInfo.companyName || 'This company'} — ${companyInfo.niche || 'B2B'} for ${companyInfo.icp || 'target buyers'}.`,
     positioningTags: ['Clear', 'Credible', 'Execution-focused'],
     primaryValueProp: `Drive ${companyInfo.target || 'the North Star'} in ${companyInfo.timeWindow || '90 days'}.`,
     recommendedChannels: ['LinkedIn', 'Owned content', 'Outbound'],
-    topPillarStrategy: `${companyInfo.companyName || 'Company'} GTM acceleration`
+    topPillarStrategy: `${companyInfo.companyName || 'Company'} GTM acceleration`,
   };
 }

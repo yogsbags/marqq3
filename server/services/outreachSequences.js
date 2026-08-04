@@ -9,16 +9,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { executeComposioAction } from './composio.js';
+import { meteredStudioJson } from './credits/index.js';
 
 /** Cadence from cold-email follow-up-sequences skill: day 0 / 3 / 7 / 14 */
 export const DEFAULT_SEQUENCE_DELAYS = [0, 3, 7, 14];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
-
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
 
 function escapeRegExp(s) {
   return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -120,25 +117,6 @@ export function ensureEmailGreeting(body, prospect) {
   return `Hi ${firstName},\n\n${stripped}`;
 }
 
-function parseJsonLoose(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(text.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
-
 export function normalizeSequenceEmails(emails, { max = 5 } = {}) {
   return (Array.isArray(emails) ? emails : [])
     .map((step, i) => ({
@@ -185,66 +163,46 @@ export async function generateFollowUpEmails({
   firstSubject,
   firstBody,
   brandContext = '',
+  workspaceId = 'marqq-ws-1',
 } = {}) {
   const firstName = resolveProspectFirstName(prospect) || 'there';
   const skillPlaybook = loadFollowUpSkillPlaybook();
-  const key = groqKey();
-  if (!key) {
-    return fallbackFollowUps({ firstSubject, companyName, senderName, firstName });
-  }
   try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        temperature: 0.45,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: [
-              'You write B2B cold-email follow-ups. Follow the skill playbooks strictly.',
-              'Return ONLY JSON:',
-              '{"follow_ups":[{"subject":"...","body":"...","delay_days":3,"angle":"..."},{"subject":"...","body":"...","delay_days":7,"angle":"..."},{"subject":"...","body":"...","delay_days":14,"angle":"..."}]}',
-              'Rules: exactly 3 follow-ups; each shorter than the first email; one fresh angle each; one low-friction CTA; never "just checking in" / "just following up";',
-              'Cadence delays MUST be 3, 7, and 14 days (skill cadence). Third follow-up may be a breakup that leaves the door open.',
-              `Every body MUST open with "Hi ${firstName}," (exact first name — never omit the salutation);`,
-              `sign as "Best,\\n${senderName}\\n${companyName}"; never invent proof, metrics, customers, or fake stats.`,
-              '',
-              '=== Marketing skill playbooks (authoritative) ===',
-              skillPlaybook,
-            ].join('\n'),
+    const parsed = await meteredStudioJson({
+      workspaceId: workspaceId || 'marqq-ws-1',
+      feature: 'outreach_sequences',
+      temperature: 0.45,
+      system: [
+        'You write B2B cold-email follow-ups. Follow the skill playbooks strictly.',
+        'Return ONLY JSON:',
+        '{"follow_ups":[{"subject":"...","body":"...","delay_days":3,"angle":"..."},{"subject":"...","body":"...","delay_days":7,"angle":"..."},{"subject":"...","body":"...","delay_days":14,"angle":"..."}]}',
+        'Rules: exactly 3 follow-ups; each shorter than the first email; one fresh angle each; one low-friction CTA; never "just checking in" / "just following up";',
+        'Cadence delays MUST be 3, 7, and 14 days (skill cadence). Third follow-up may be a breakup that leaves the door open.',
+        `Every body MUST open with "Hi ${firstName}," (exact first name — never omit the salutation);`,
+        `sign as "Best,\\n${senderName}\\n${companyName}"; never invent proof, metrics, customers, or fake stats.`,
+        '',
+        '=== Marketing skill playbooks (authoritative) ===',
+        skillPlaybook,
+      ].join('\n'),
+      user: JSON.stringify(
+        {
+          company: companyName,
+          sender: senderName,
+          brand_context: brandContext,
+          skills: ['copywriting-follow-up', 'cold-email'],
+          prospect: {
+            first_name: firstName,
+            name: prospect?.full_name,
+            title: prospect?.title,
+            company: prospect?.company,
           },
-          {
-            role: 'user',
-            content: JSON.stringify(
-              {
-                company: companyName,
-                sender: senderName,
-                brand_context: brandContext,
-                skills: ['copywriting-follow-up', 'cold-email'],
-                prospect: {
-                  first_name: firstName,
-                  name: prospect?.full_name,
-                  title: prospect?.title,
-                  company: prospect?.company,
-                },
-                first_email: { subject: firstSubject, body: firstBody },
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      }),
+          first_email: { subject: firstSubject, body: firstBody },
+        },
+        null,
+        2
+      ),
+      meta: { studio: 'outreach_sequences' },
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
-    const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content);
     const followUps = Array.isArray(parsed?.follow_ups) ? parsed.follow_ups : [];
     const normalized = normalizeSequenceEmails(
       followUps.map((f, i) => ({
@@ -292,6 +250,7 @@ export async function ensureEmailSequence(run, prospect, { subject, body } = {})
       prospect,
       firstSubject,
       firstBody,
+      workspaceId: run.workspaceId || run.companyId,
     });
     steps = [{ subject: firstSubject, body: firstBody, delay_days: 0 }, ...followUps].slice(0, 5);
   }

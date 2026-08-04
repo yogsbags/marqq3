@@ -5,15 +5,9 @@
  */
 
 import { getAnalyticsDashboard, buildEmptyDashboard } from './analyticsDashboard.js';
-import { resolveGroqModel, withGroqReasoning } from './groqReasoning.js';
 import { loadAgentOsProfileAsync, loadAgentOsProfile } from './agentOsStore.js';
 import { normalizeGoalSystem, goalSystemToQuantifiedLabel } from '../lib/gtmNorthStar.js';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
+import { meteredGroqJson } from './credits/index.js';
 
 function parseDeltaPct(delta) {
   if (delta == null || delta === '—') return null;
@@ -405,8 +399,8 @@ function buildNextActions({ insights, context = {}, dashboard }) {
   }).slice(0, 6);
 }
 
-async function generateBriefing({ dashboard, insights, context }) {
-  const key = groqKey();
+async function generateBriefing({ dashboard, insights, context, workspaceId = 'marqq-ws-1' }) {
+  const key = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
   if (!key) {
     const top = insights[0];
     return {
@@ -441,27 +435,24 @@ Write a JSON object with:
 No markdown.`;
 
   try {
-    const body = withGroqReasoning({
-      model: resolveGroqModel(),
+    const result = await meteredGroqJson({
+      workspaceId,
+      feature: 'command_center',
       temperature: 0.3,
       max_tokens: 400,
-      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: 'Return only valid JSON.' },
         { role: 'user', content: prompt },
       ],
+      meta: { feature: 'command_center' },
+      looseJson: true,
     });
-    const res = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.error?.message || `Groq HTTP ${res.status}`);
-    const text = json?.choices?.[0]?.message?.content || '{}';
-    const parsed = JSON.parse(text);
+    if (result.insufficientCredits || !result.ok || !result.json) {
+      throw new Error(result.error || 'briefing_unavailable');
+    }
+    const parsed = result.json;
     return {
-      headline: String(parsed.headline || 'Today\'s briefing').slice(0, 120),
+      headline: String(parsed.headline || "Today's briefing").slice(0, 120),
       summary: String(parsed.summary || '').slice(0, 400),
       source: 'llm',
     };
@@ -510,7 +501,12 @@ export async function getCommandCenter({
   const insights = buildRuleInsights({ dashboard, context: mergedContext });
   const nextActions = buildNextActions({ insights, context: mergedContext, dashboard });
   const briefing = withLlm
-    ? await generateBriefing({ dashboard, insights, context: mergedContext })
+    ? await generateBriefing({
+        dashboard,
+        insights,
+        context: mergedContext,
+        workspaceId: companyId,
+      })
     : {
         headline: insights[0]?.title || 'Command Center',
         summary: insights[0]?.body || '',

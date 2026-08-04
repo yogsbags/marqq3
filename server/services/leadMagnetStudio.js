@@ -8,8 +8,8 @@ import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishStaticHtmlPage } from './blogPublish.js';
 import { syncProspectsToCrm } from './crmLeads.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const runsById = new Map();
 
 const CONCEPT_PACK = {
@@ -22,9 +22,6 @@ const PAGE_PACK = {
   secondary: ['lead-magnets'],
 };
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
 
 function parseJsonLoose(raw) {
   const text = String(raw || '').trim();
@@ -61,30 +58,19 @@ function escapeAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
-async function groqJson({ system, user, temperature = 0.35 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for lead magnet studio');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'lead_magnet_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    max_tokens: 7000,
+    max_tokens,
+    meta: { studio: 'lead_magnet_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content || '{}');
-  if (!parsed) throw new Error('Model returned non-JSON');
-  return parsed;
 }
+
 
 function publicRun(run) {
   return {
@@ -160,6 +146,7 @@ export function getLeadMagnetRun(runId) {
 export async function designLeadMagnet(runId, patch = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Lead magnet run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'lead_magnet_studio');
   Object.assign(run, {
     audience: patch.audience ?? run.audience,
     goal: patch.goal ?? run.goal,
@@ -169,6 +156,7 @@ export async function designLeadMagnet(runId, patch = {}) {
 
   const pack = await buildPlaybookFromPack(CONCEPT_PACK, { label: 'lead_magnets' });
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
       'You are Riya designing a high-converting lead magnet. Apply the lead-magnets skill. Return JSON only. No invented conversion rates.',
     user: `Design one lead magnet for ${run.companyName}.
@@ -218,6 +206,7 @@ Return ONLY JSON:
 export async function generateLeadMagnetPage(runId, patch = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Lead magnet run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'lead_magnet_studio');
   if (!run.concept && !patch.concept) {
     await designLeadMagnet(runId, patch);
   }
@@ -227,6 +216,7 @@ export async function generateLeadMagnetPage(runId, patch = {}) {
   const captureUrl = captureEndpoint(run.companyId);
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
       'You are Tara + Sam building a gated lead-magnet landing page. Apply page-cro and form-cro. Return JSON only. Never invent fake social proof metrics.',
     user: `Build a gated landing page for this lead magnet.

@@ -291,6 +291,7 @@ export function MarketView({ setActiveScreen }) {
           niche: intel.niche || audience.niche || '',
           icp: audience.icp || '',
           marketBrief: intel.marketBody || '',
+          workspaceId: wsId,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -1415,7 +1416,8 @@ export function LandingPagesView({ setActiveScreen }) {
 
 export function BillingView({ setActiveScreen }) {
   const company = getCompanyName();
-  const planKey = `marqq_billing_plan_${getActiveWorkspaceId()}`;
+  const ws = getActiveWorkspaceId();
+  const planKey = `marqq_billing_plan_${ws}`;
   const [plan, setPlan] = useState(() => {
     try {
       return localStorage.getItem(planKey) || 'workspace';
@@ -1431,15 +1433,30 @@ export function BillingView({ setActiveScreen }) {
     approvals: 0,
     loading: true,
   });
+  const [credits, setCredits] = useState(null);
+  const [creditsLoading, setCreditsLoading] = useState(true);
+
+  const refreshCredits = async () => {
+    setCreditsLoading(true);
+    try {
+      const res = await fetch(`/api/credits?workspaceId=${encodeURIComponent(ws)}`);
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) setCredits(json);
+    } catch {
+      /* ignore */
+    } finally {
+      setCreditsLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const [dep, files, intRes, appRes] = await Promise.all([
-          fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
           fetchKnowledgeFiles().catch(() => []),
-          fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/integrations?companyId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
           fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
         ]);
         if (cancelled) return;
@@ -1458,20 +1475,31 @@ export function BillingView({ setActiveScreen }) {
         if (!cancelled) setStats((s) => ({ ...s, loading: false }));
       }
     })();
+    refreshCredits().catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [ws]);
 
   const plans = [
-    { id: 'workspace', label: 'Workspace', note: 'Unmetered beta · soft caps', soft: { agents: 12, deployments: 40, files: 50, connectors: 8 } },
-    { id: 'growth', label: 'Growth', note: 'Higher soft caps · metering soon', soft: { agents: 24, deployments: 120, files: 200, connectors: 16 } },
-    { id: 'scale', label: 'Scale', note: 'Team seats + priority · coming', soft: { agents: 48, deployments: 400, files: 500, connectors: 32 } },
+    { id: 'workspace', label: 'Workspace', note: '99,999 credits / mo · soft caps', soft: { agents: 12, deployments: 40, files: 50, connectors: 8 }, allotment: 99999 },
+    { id: 'growth', label: 'Growth', note: '5,000 credits / mo', soft: { agents: 24, deployments: 120, files: 200, connectors: 16 }, allotment: 5000 },
+    { id: 'scale', label: 'Scale', note: '20,000 credits / mo', soft: { agents: 48, deployments: 400, files: 500, connectors: 32 }, allotment: 20000 },
   ];
   const activePlan = plans.find((p) => p.id === plan) || plans[0];
 
-  const choosePlan = (id) => {
+  const choosePlan = async (id) => {
     setPlan(id);
     try {
       localStorage.setItem(planKey, id);
+    } catch {
+      /* ignore */
+    }
+    try {
+      await fetch('/api/credits/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: ws, plan: id }),
+      });
+      await refreshCredits();
     } catch {
       /* ignore */
     }
@@ -1484,11 +1512,19 @@ export function BillingView({ setActiveScreen }) {
     { key: 'connectors', label: 'Live connectors', value: stats.connectors, cap: activePlan.soft.connectors },
   ];
 
+  const wallet = credits?.wallet;
+  const remaining = wallet?.credits_remaining;
+  const recent = Array.isArray(credits?.recent) ? credits.recent : [];
+  const byProvider = credits?.byProvider || {};
+  const tokens = credits?.tokens || {};
+
   const copyUsage = async () => {
     const lines = [
       `${company} · billing usage`,
       `Plan: ${activePlan.label}`,
-      `Workspace: ${getActiveWorkspaceId()}`,
+      `Workspace: ${ws}`,
+      `Credits remaining: ${remaining === -1 ? 'unlimited' : remaining ?? '—'}`,
+      `Groq tokens: ${tokens.prompt || 0} in / ${tokens.completion || 0} out`,
       `North Star: ${northStarLabel()}`,
       ...rows.map((r) => `- ${r.label}: ${r.value} / soft ${r.cap}`),
       `- Approvals logged: ${stats.approvals}`,
@@ -1506,15 +1542,42 @@ export function BillingView({ setActiveScreen }) {
         <div>
           <h1 style={{ margin: 0 }}>Billing &amp; Usage</h1>
           <p className="text-muted" style={{ marginTop: 6 }}>
-            Live activity for {company}. Soft caps only — Stripe metering not enabled yet.
+            Credits meter Groq tokens and Fal AI costs (1 credit = $0.001). Estimate → reserve → settle on actual usage.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className="btn btn-secondary" onClick={() => refreshCredits()}>Refresh credits</button>
           <button type="button" className="btn btn-secondary" onClick={copyUsage}>Copy usage</button>
           <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('integrations')}>
             Connectors
           </button>
         </div>
+      </div>
+
+      <div className="card" data-testid="credits-wallet">
+        <div className="text-muted">Credit balance</div>
+        {creditsLoading && !wallet ? (
+          <p className="text-muted">Loading…</p>
+        ) : (
+          <>
+            <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--color-text)', marginTop: 4 }}>
+              {remaining === -1 ? 'Unlimited' : `${Number(remaining || 0).toLocaleString()} credits`}
+            </div>
+            <div className="card-meta" style={{ marginTop: 6 }}>
+              Plan {wallet?.plan || activePlan.id}
+              {wallet?.credits_total != null && wallet.credits_total !== -1
+                ? ` · ${Number(wallet.credits_total).toLocaleString()} / month`
+                : ''}
+              {wallet?.credits_reserved ? ` · ${wallet.credits_reserved} reserved` : ''}
+              {wallet?.lifetime_usd != null ? ` · $${Number(wallet.lifetime_usd).toFixed(4)} lifetime API` : ''}
+            </div>
+            <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap', fontSize: 13 }}>
+              <span>Groq: {byProvider.groq || 0} cr · {tokens.total || 0} tokens</span>
+              <span>Fal: {byProvider.fal || 0} cr</span>
+              <span>Agents: {byProvider.internal || 0} cr</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
@@ -1541,9 +1604,23 @@ export function BillingView({ setActiveScreen }) {
       </div>
 
       <div className="card">
-        <div className="text-muted">Current plan</div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-text)' }}>{activePlan.label}</div>
-        <div className="card-meta" style={{ marginTop: 4 }}>North Star: {northStarLabel()}</div>
+        <h3 style={{ marginTop: 0 }}>Recent deductions</h3>
+        {!recent.length ? (
+          <p className="card-body">No metered calls yet — run Market research, Creative, or an agent deployment.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {recent.slice(0, 12).map((e) => (
+              <div key={e.id} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <span>
+                  <strong>{e.feature}</strong> · {e.provider}
+                  {e.tokens?.total ? ` · ${e.tokens.total} tok` : ''}
+                  <span className="text-muted"> · est {e.estimatedCredits} → act {e.actualCredits}</span>
+                </span>
+                <span className="text-muted">{e.at ? new Date(e.at).toLocaleString() : ''}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -1561,7 +1638,7 @@ export function BillingView({ setActiveScreen }) {
                     <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{u.value} / {u.cap}</span>
                   </div>
                   <div style={{ width: '100%', height: '8px', background: 'var(--color-bg)', overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: pct >= 90 ? 'var(--color-accent)' : 'var(--color-accent)' }} />
+                    <div style={{ width: `${pct}%`, height: '100%', background: 'var(--color-accent)' }} />
                   </div>
                 </div>
               );

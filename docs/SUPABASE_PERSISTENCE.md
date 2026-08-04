@@ -24,6 +24,7 @@ Set `SUPABASE_SERVICE_ROLE_KEY` on Railway (never expose via `VITE_`).
 | `outreach_runs`, `outreach_prospects` | Outreach Studio durability |
 | `agent_deployments`, `agent_artifacts`, `draft_approvals` | Agent OS + deployments |
 | `conversations`, `messages` | Ask Marqq chat history (per channel · survives logout/login) |
+| `credit_wallets`, `credit_ledger` | Workspace credit balance + usage ledger (UUID workspaces) |
 
 Isolation: new signups get a **new** workspace; Elevate/Nouriva rows are never auto-attached.
 

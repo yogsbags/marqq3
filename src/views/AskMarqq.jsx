@@ -564,8 +564,27 @@ export default function AskMarqq({ setActiveScreen }) {
       ]);
       const result = await askMarqqCompound(
         history,
-        buildSystemPrompt(channel, sectionCtx, northStarBrief)
+        buildSystemPrompt(channel, sectionCtx, northStarBrief),
+        { channel }
       );
+
+      if (result?.insufficientCredits) {
+        const assistantMsg = {
+          id: Date.now() + 2,
+          sender: 'Marqq',
+          confidence: 'Credits',
+          time: 'Just now',
+          text: 'Your workspace is out of credits for Ask Marqq. Top up or upgrade the plan on Billing, then try again.',
+          sources: 'Billing · credits',
+        };
+        setMessagesByChannel((prev) => ({
+          ...prev,
+          [channel]: (prev[channel] || [])
+            .filter((m) => m.id !== thinkingId)
+            .concat(assistantMsg),
+        }));
+        return;
+      }
 
       const rawText =
         (result?.content && String(result.content).trim()) ||

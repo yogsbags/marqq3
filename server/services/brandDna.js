@@ -1,4 +1,4 @@
-import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
+import { meteredGroqJson } from './credits/index.js';
 
 const TITLE_RE = /<title[^>]*>([^<]+)<\/title>/i;
 const META_DESC_RE = /<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i;
@@ -188,7 +188,7 @@ export async function scrapeBrandSignals(websiteUrl) {
   }
 }
 
-export async function synthesizeBrandDnaWithAi({ companyName, websiteUrl, industry, icp, signals }) {
+export async function synthesizeBrandDnaWithAi({ companyName, websiteUrl, industry, icp, signals, workspaceId = 'marqq-ws-1' }) {
   const apiKey = process.env.VITE_GROQ_API_KEY || process.env.GROQ_API_KEY;
   const compName = companyName || signals?.siteName || signals?.title || 'Your Company';
   const descriptionSignal = signals?.description || '';
@@ -249,30 +249,25 @@ Return JSON matching this EXACT structure (no extra keys):
 }
 `;
 
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(
-        withGroqReasoning({
-          model: resolveGroqModel(),
-          messages: [
-            { role: 'system', content: 'You are a Brand DNA extractor. Prefer scraped site wording for taglines. Never confuse the company\'s industry peers with its buyers. Return valid JSON only.' },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.25,
-          response_format: { type: 'json_object' },
-        })
-      )
+    const result = await meteredGroqJson({
+      workspaceId,
+      feature: 'brand_dna',
+      temperature: 0.25,
+      messages: [
+        {
+          role: 'system',
+          content:
+            "You are a Brand DNA extractor. Prefer scraped site wording for taglines. Never confuse the company's industry peers with its buyers. Return valid JSON only.",
+        },
+        { role: 'user', content: prompt },
+      ],
+      meta: { companyName: compName, websiteUrl },
+      looseJson: true,
     });
-
-    if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
-
-    const data = await res.json();
-    const rawContent = data.choices?.[0]?.message?.content || '{}';
-    const parsed = JSON.parse(rawContent);
+    if (result.insufficientCredits || !result.ok || !result.json) {
+      throw new Error(result.error || 'brand_dna_unavailable');
+    }
+    const parsed = result.json;
 
     // Prefer a short on-page tagline if AI drifted
     const pageHint = `${signals?.pageTagline || ''} ${signals?.h1 || ''} ${signals?.title || ''} ${descriptionSignal}`;

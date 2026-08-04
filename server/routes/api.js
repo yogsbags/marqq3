@@ -135,6 +135,21 @@ import { resolveCrmDestination } from '../services/crmLeads.js';
 import { resolveOutreachSpreadsheet } from '../services/googleSheetsLeads.js';
 import { buildCustomer360 } from '../services/customer360.js';
 import { collectTargetAccounts, runApolloSignals } from '../services/apolloSignals.js';
+import {
+  getWallet,
+  setWalletPlan,
+  getUsageSummary,
+  listLedger,
+  estimateFeatureCredits,
+  FEATURE_ESTIMATES,
+  PLAN_CREDITS,
+  PLAN_LABELS,
+  CREDIT_USD,
+  hydrateWalletFromSupabase,
+  meteredGroqChat,
+  isInsufficientCredits,
+  sendCreditsError,
+} from '../services/credits/index.js';
 import workspacesRouter from './workspaces.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { useSupabasePersistence } from '../lib/persistence.js';
@@ -166,6 +181,13 @@ import { getSupabaseWriteClient } from '../lib/supabase.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
+
+function handleStudioError(res, err, label, fallback) {
+  if (isInsufficientCredits(err)) return sendCreditsError(res, err);
+  console.error(label, err);
+  return res.status(500).json({ ok: false, error: err?.message || fallback });
+}
+
 
 // Attach user when Bearer present (non-blocking for legacy routes)
 router.use(optionalAuth);
@@ -317,12 +339,66 @@ router.post('/ask-marqq/chat/messages', async (req, res) => {
   res.json(result);
 });
 
+/** POST /api/ask-marqq/chat/complete — metered Groq compound chat (server-side) */
+router.post('/ask-marqq/chat/complete', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const systemPrompt = String(req.body?.systemPrompt || req.body?.system || '').trim();
+    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const payloadMessages = [];
+    if (systemPrompt) payloadMessages.push({ role: 'system', content: systemPrompt });
+    for (const m of messages) {
+      if (!m?.role || m.content == null) continue;
+      payloadMessages.push({ role: m.role, content: String(m.content) });
+    }
+    if (!payloadMessages.length) {
+      return res.status(400).json({ ok: false, error: 'messages required' });
+    }
+    const model = req.body?.model || process.env.GROQ_CHAT_MODEL || 'groq/compound-mini';
+    const result = await meteredGroqChat({
+      workspaceId,
+      feature: 'ask_marqq',
+      model,
+      messages: payloadMessages,
+      temperature: Number(req.body?.temperature) || 0.6,
+      max_tokens: Number(req.body?.max_tokens) || 2048,
+      json: false,
+      meta: { channel: req.body?.channel || null },
+    });
+    if (result.insufficientCredits) {
+      return sendCreditsError(res, result);
+    }
+    if (!result.ok) {
+      return res.status(502).json({ ok: false, error: result.error || 'Groq failed' });
+    }
+    const executedTools = result.raw?.choices?.[0]?.message?.executed_tools || result.raw?.executed_tools || [];
+    const usedSearch = Array.isArray(executedTools)
+      ? executedTools.some((t) => /search|browser|web/i.test(String(t?.type || t?.name || '')))
+      : false;
+    res.json({
+      ok: true,
+      content: result.content,
+      model: result.model,
+      usedSearch,
+      executedTools,
+      credits: result.credits,
+      usage: result.usage,
+    });
+  } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
+    console.error('[ask-marqq/complete]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Ask Marqq failed' });
+  }
+});
+
+
 /** POST /api/gtm/strategy/generate — full 16-section doc with Marqq2 skill playbooks */
 router.post('/gtm/strategy/generate', async (req, res) => {
   try {
     const result = await generateFullStrategyDocument(req.body || {});
     res.json(result);
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[gtm/strategy/generate]', err);
     res.status(500).json({ ok: false, error: err.message || 'Strategy generation failed' });
   }
@@ -383,6 +459,7 @@ router.post('/gtm/marketing-ideas/generate', async (req, res) => {
     });
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[gtm/marketing-ideas/generate]', err);
     res.status(500).json({ ok: false, error: err.message || 'Marketing ideas generation failed' });
   }
@@ -398,6 +475,7 @@ router.post('/market/research', async (req, res) => {
       niche: body.niche || '',
       icp: body.icp || '',
       marketBrief: body.marketBrief || body.brief || '',
+      workspaceId: body.workspaceId || body.companyId || DEFAULT_WS,
     });
     res.json({ ok: true, ...result });
   } catch (err) {
@@ -769,6 +847,60 @@ router.patch('/agent-os/execution-mode', (req, res) => {
   }
 });
 
+/** ── Credits / metering (Groq tokens + Fal USD → credits) ── */
+router.get('/credits', async (req, res) => {
+  const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+  try {
+    await hydrateWalletFromSupabase(workspaceId);
+  } catch {
+    /* local wallet fallback */
+  }
+  const summary = getUsageSummary(workspaceId);
+  res.json({
+    ok: true,
+    workspaceId,
+    creditUsd: CREDIT_USD,
+    plans: PLAN_CREDITS,
+    planLabels: PLAN_LABELS,
+    featureEstimates: FEATURE_ESTIMATES,
+    ...summary,
+  });
+});
+
+router.get('/credits/ledger', (req, res) => {
+  const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+  const limit = Number(req.query?.limit || 50);
+  res.json({ ok: true, workspaceId, ledger: listLedger(workspaceId, { limit }) });
+});
+
+router.post('/credits/plan', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const plan = req.body?.plan || 'workspace';
+    const wallet = setWalletPlan(workspaceId, plan);
+    res.json({ ok: true, wallet });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Failed to set plan' });
+  }
+});
+
+router.post('/credits/estimate', (req, res) => {
+  const feature = req.body?.feature || 'groq_chat';
+  const estimatedCredits = estimateFeatureCredits(feature, {
+    estimatedCredits: req.body?.estimatedCredits,
+  });
+  const wallet = getWallet(String(req.body?.workspaceId || DEFAULT_WS).trim());
+  res.json({
+    ok: true,
+    feature,
+    estimatedCredits,
+    wallet,
+    canAfford:
+      wallet.credits_remaining === -1 ||
+      wallet.credits_remaining - (wallet.credits_reserved || 0) >= estimatedCredits,
+  });
+});
+
 /** ── Control loop: Measure → Diagnose → Recommend → Approve → Execute (Marqq2) ── */
 router.get('/control-loop', async (req, res) => {
   try {
@@ -958,6 +1090,7 @@ router.post('/outreach/runs', async (req, res) => {
       crm_sync: run.crm_sync || null,
     });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/runs]', err);
     res.status(500).json({ ok: false, error: err.message || 'Fetch prospects failed' });
   }
@@ -1004,6 +1137,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/copy', async (req, res)
     });
     res.json({ ok: true, prospect });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/copy]', err);
     res.status(500).json({ ok: false, error: err.message || 'Copy generation failed' });
   }
@@ -1014,6 +1148,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/gmail-draft', async (re
     const result = await saveGmailDraft(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/gmail-draft]', err);
     res.status(500).json({ ok: false, error: err.message || 'Gmail draft failed' });
   }
@@ -1028,6 +1163,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', async (req, 
     });
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/send-now]', err);
     res.status(500).json({ ok: false, error: err.message || 'Send failed' });
   }
@@ -1071,6 +1207,7 @@ router.post('/outreach/process-due', async (req, res) => {
     const result = await processDueOutreachSends();
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/process-due]', err);
     res.status(500).json({ ok: false, error: err.message || 'Process-due failed' });
   }
@@ -1111,6 +1248,7 @@ router.post('/outreach/runs/:runId/poll-gmail-replies', async (req, res) => {
     const result = await pollGmailReplies(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/poll-gmail-replies]', err);
     res.status(500).json({ ok: false, error: err.message || 'Poll failed' });
   }
@@ -1121,6 +1259,7 @@ router.post('/outreach/runs/:runId/replies/:replyId/regenerate-draft', async (re
     const result = await regenerateReplyDraft(req.params.runId, req.params.replyId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/regenerate-draft]', err);
     res.status(500).json({ ok: false, error: err.message || 'Regenerate failed' });
   }
@@ -1152,6 +1291,7 @@ router.post('/outreach/runs/:runId/replies/:replyId/approve', async (req, res) =
     });
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/approve-reply]', err);
     res.status(500).json({ ok: false, error: err.message || 'Approve/send failed' });
   }
@@ -1168,6 +1308,7 @@ router.post('/content/runs', async (req, res) => {
     const run = await createContentRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[content/runs]', err);
     res.status(500).json({ ok: false, error: err.message || 'Create content run failed' });
   }
@@ -1203,6 +1344,7 @@ router.post('/content/runs/:runId/research', async (req, res) => {
     const result = await runContentResearch(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[content/research]', err);
     res.status(500).json({ ok: false, error: err.message || 'Research failed' });
   }
@@ -1213,6 +1355,7 @@ router.post('/content/runs/:runId/brief', async (req, res) => {
     const result = await runContentBrief(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[content/brief]', err);
     res.status(500).json({ ok: false, error: err.message || 'Brief failed' });
   }
@@ -1223,6 +1366,7 @@ router.post('/content/runs/:runId/draft', async (req, res) => {
     const result = await runContentDraft(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[content/draft]', err);
     res.status(500).json({ ok: false, error: err.message || 'Draft failed' });
   }
@@ -1413,6 +1557,7 @@ router.post('/social/runs', async (req, res) => {
     const run = await createSocialRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[social/runs]', err);
     res.status(500).json({ ok: false, error: err.message || 'Create social run failed' });
   }
@@ -1429,6 +1574,7 @@ router.post('/social/runs/:runId/brief', async (req, res) => {
     const result = await runSocialBrief(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[social/brief]', err);
     res.status(500).json({ ok: false, error: err.message || 'Brief failed' });
   }
@@ -1439,6 +1585,7 @@ router.post('/social/runs/:runId/compose', async (req, res) => {
     const result = await runSocialCompose(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[social/compose]', err);
     res.status(500).json({ ok: false, error: err.message || 'Compose failed' });
   }
@@ -1517,6 +1664,7 @@ router.post('/creative/runs', async (req, res) => {
     const run = await createCreativeRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[creative/runs]', err);
     res.status(500).json({ ok: false, error: err.message || 'Create creative run failed' });
   }
@@ -1533,6 +1681,7 @@ router.post('/creative/runs/:runId/concept', async (req, res) => {
     const result = await runCreativeConcept(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[creative/concept]', err);
     res.status(500).json({ ok: false, error: err.message || 'Concept failed' });
   }
@@ -1543,6 +1692,7 @@ router.post('/creative/runs/:runId/image', async (req, res) => {
     const result = await runCreativeImage(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[creative/image]', err);
     res.status(500).json({ ok: false, error: err.message || 'Image failed' });
   }
@@ -1555,6 +1705,7 @@ router.post('/creative/runs/:runId/video', async (req, res) => {
     });
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[creative/video]', err);
     res.status(500).json({ ok: false, error: err.message || 'Video failed' });
   }
@@ -1565,6 +1716,7 @@ router.post('/creative/runs/:runId/video/poll', async (req, res) => {
     const result = await pollCreativeVideo(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[creative/video/poll]', err);
     res.status(500).json({ ok: false, error: err.message || 'Video poll failed' });
   }
@@ -1586,6 +1738,7 @@ router.post('/paid/runs', async (req, res) => {
     const run = await createPaidRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[paid/runs]', err);
     res.status(500).json({ ok: false, error: err.message || 'Create paid run failed' });
   }
@@ -1611,6 +1764,7 @@ router.post('/paid/runs/:runId/plan', async (req, res) => {
     const result = await runPaidPlan(req.params.runId);
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[paid/plan]', err);
     res.status(500).json({ ok: false, error: err.message || 'Plan failed' });
   }
@@ -1623,6 +1777,7 @@ router.post('/paid/runs/:runId/creative-draft', async (req, res) => {
     });
     res.json({ ok: true, ...result });
   } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[paid/creative-draft]', err);
     res.status(500).json({ ok: false, error: err.message || 'Creative draft failed' });
   }

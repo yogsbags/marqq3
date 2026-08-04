@@ -9,9 +9,7 @@ import {
   buildPlaybookFromPack,
   TASK_SKILL_PACKS,
 } from './gtmStrategySkills.js';
-import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
 /** Sections not covered by GTM_AUTO_SECTION_DEFS — still need skillful generation. */
 const EXTRA_SECTIONS = [
@@ -43,32 +41,17 @@ const EXTRA_LANES = {
 - Weekly operating cadence, owners, handoffs between marketing/sales/CS, tooling.`,
 };
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
+async function callGroq(system, user, workspaceId = 'marqq-ws-1') {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'gtm_strategy',
+    system,
+    user,
+    temperature: 0.35,
+    meta: { feature: 'gtm_strategy' },
+  });
 }
 
-async function callGroq(system, user) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
-    temperature: 0.35,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-  });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 240)}`);
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(text);
-}
 
 function answerLabel(answers, id) {
   const a = answers?.[id];
@@ -78,6 +61,7 @@ function answerLabel(answers, id) {
 }
 
 async function generateExtraSection(def, ctx) {
+  const workspaceId = ctx.workspaceId || 'marqq-ws-1';
   const skill =
     def.id === 'executive_summary'
       ? await buildPlaybookFromPack(TASK_SKILL_PACKS.gtm_strategy_doc, { label: def.id })
@@ -112,7 +96,7 @@ Rules: specific to THIS company; no hollow "develop a UVP" advice; ground in web
   });
 
   try {
-    const raw = await callGroq(system, user);
+    const raw = await callGroq(system, user, workspaceId);
     return {
       id: def.id,
       title: def.title,
@@ -141,6 +125,8 @@ Rules: specific to THIS company; no hollow "develop a UVP" advice; ground in web
  * Generate all strategy sections with skills, then assemble a document payload.
  */
 export async function generateFullStrategyDocument(input = {}) {
+  const workspaceId = String(input.workspaceId || input.companyId || 'marqq-ws-1').trim();
+  assertCanAfford(workspaceId, 'gtm_strategy');
   const companyName = String(input.companyName || 'Company').trim();
   const website = String(input.website || input.websiteUrl || '').trim();
   const niche = String(input.niche || input.industry || '').trim();
@@ -178,6 +164,7 @@ export async function generateFullStrategyDocument(input = {}) {
     try {
       const result = await generateAutoSection({
         sectionId: def.id,
+        workspaceId,
         companyName,
         websiteUrl: website,
         niche,
@@ -226,6 +213,7 @@ export async function generateFullStrategyDocument(input = {}) {
   const extraResults = [];
   for (const def of EXTRA_SECTIONS) {
     const section = await generateExtraSection(def, {
+      workspaceId,
       companyName,
       website,
       niche,

@@ -85,6 +85,7 @@ export async function diagnoseControlLoop(workspaceId, { notes } = {}) {
     goalSystem,
     controlLoop: loop,
     notes: notes || null,
+    workspaceId,
   });
   const next = {
     ...loop,
@@ -111,6 +112,7 @@ export async function proposeControlLoopInterventions(workspaceId, { diagnosis }
     goalSystem,
     controlLoop: loop,
     diagnosis: diag,
+    workspaceId,
   });
   const next = {
     ...loop,

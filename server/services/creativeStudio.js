@@ -16,8 +16,8 @@ import { readFile } from 'node:fs/promises';
 import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { readBrandContext, readBrandDnaManifest } from './brandStore.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 /** @type {Map<string, object>} */
 const runsById = new Map();
 
@@ -84,9 +84,6 @@ function channelVideoDefaults(platform) {
   return CHANNEL_VIDEO_DEFAULTS[key] || CHANNEL_VIDEO_DEFAULTS.instagram;
 }
 
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-}
 
 function parseJsonLoose(raw) {
   const text = String(raw || '').trim();
@@ -107,29 +104,19 @@ function parseJsonLoose(raw) {
   return null;
 }
 
-async function groqJson({ system, user, temperature = 0.4 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for creative studio');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'creative_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    max_tokens,
+    meta: { studio: 'creative_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content || '{}');
-  if (!parsed) throw new Error('Model returned non-JSON creative output');
-  return parsed;
 }
+
 
 function publicRun(run) {
   const assets = run.brandAssets || null;
@@ -322,6 +309,7 @@ export async function createCreativeRun(input = {}) {
 export async function runCreativeConcept(runId, patch = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Creative run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'creative_studio');
   if (patch.topic) run.topic = String(patch.topic).trim();
   if (patch.platform) run.platform = String(patch.platform).toLowerCase();
   if (patch.aspectRatio || patch.aspect_ratio) {
@@ -342,6 +330,7 @@ export async function runCreativeConcept(runId, patch = {}) {
   const refCount = run.brandAssets?.referenceUrls?.length || 0;
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.5,
     system: [
       'You are Riya, Marqq creative agent for organic social growth.',
@@ -528,40 +517,56 @@ function mapFalAspectRatio(aspectRatio) {
   return '1:1';
 }
 
-async function generateFalImage(prompt, aspectRatio, { imageUrls = [] } = {}) {
+async function generateFalImage(prompt, aspectRatio, { imageUrls = [], workspaceId = null } = {}) {
   const key = process.env.FAL_KEY || process.env.FAL_API_KEY;
   if (!key) return { error: 'FAL_KEY not set' };
   const refs = (imageUrls || []).filter((u) => /^https?:\/\//i.test(String(u || '')));
   const model = refs.length ? FAL_IMAGE_EDIT_MODEL : FAL_IMAGE_MODEL;
-  try {
-    const body = {
-      prompt,
-      num_images: 1,
-      aspect_ratio: mapFalAspectRatio(aspectRatio),
-      output_format: 'png',
-      resolution: process.env.FAL_IMAGE_RESOLUTION || '1K',
-    };
-    if (refs.length) body.image_urls = refs.slice(0, 14);
+  const falKind = refs.length ? 'image_edit' : 'image';
 
-    const res = await fetch(`https://fal.run/${model}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Key ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const detail = data?.detail || data?.error || `Fal HTTP ${res.status}`;
-      return { error: typeof detail === 'string' ? detail : JSON.stringify(detail) };
-    }
-    const imageUrl = data?.images?.[0]?.url || data?.image?.url || null;
-    if (!imageUrl) return { error: 'Fal returned no image url' };
-    return { imageUrl, model, referenceCount: refs.length };
-  } catch (err) {
-    return { error: err.message || String(err) };
-  }
+  const { withFalCredits } = await import('./credits/falMeter.js');
+  return withFalCredits({
+    workspaceId: workspaceId || 'marqq-ws-1',
+    feature: refs.length ? 'fal_image_edit' : 'fal_image',
+    falKind,
+    model,
+    meta: { aspectRatio },
+    skipCredits: !workspaceId && process.env.CREDITS_REQUIRE_WORKSPACE === '1',
+    run: async () => {
+      try {
+        const body = {
+          prompt,
+          num_images: 1,
+          aspect_ratio: mapFalAspectRatio(aspectRatio),
+          output_format: 'png',
+          resolution: process.env.FAL_IMAGE_RESOLUTION || '1K',
+        };
+        if (refs.length) body.image_urls = refs.slice(0, 14);
+
+        const res = await fetch(`https://fal.run/${model}`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Key ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = data?.detail || data?.error || `Fal HTTP ${res.status}`;
+          return { ok: false, error: typeof detail === 'string' ? detail : JSON.stringify(detail) };
+        }
+        const imageUrl = data?.images?.[0]?.url || data?.image?.url || null;
+        if (!imageUrl) return { ok: false, error: 'Fal returned no image url' };
+        return { ok: true, imageUrl, model, referenceCount: refs.length };
+      } catch (err) {
+        return { ok: false, error: err.message || String(err) };
+      }
+    },
+  }).then((r) => {
+    if (r.ok === false || r.error) return { error: r.error || 'Fal failed', insufficientCredits: r.insufficientCredits };
+    return { imageUrl: r.imageUrl, model: r.model, referenceCount: r.referenceCount };
+  });
 }
 
 /**

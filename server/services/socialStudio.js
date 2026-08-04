@@ -5,11 +5,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { executeSocialGoLive, getSocialPublishReadiness } from './socialGoLive.js';
+import { meteredStudioJson, assertCanAfford } from './credits/index.js';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 /** @type {Map<string, object>} */
 const runsById = new Map();
 
@@ -26,9 +25,6 @@ function channelKind(channel) {
   const c = String(channel || '').toLowerCase();
   if (c === 'x') return 'twitter';
   return c;
-}
-function groqKey() {
-  return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
 }
 
 function parseJsonLoose(raw) {
@@ -50,29 +46,19 @@ function parseJsonLoose(raw) {
   return null;
 }
 
-async function groqJson({ system, user, temperature = 0.4 }) {
-  const key = groqKey();
-  if (!key) throw new Error('GROQ_API_KEY required for social studio');
-  const body = withGroqReasoning({
-    model: resolveGroqModel(),
+async function groqJson({ system, user, model, temperature = 0.35, max_tokens = 4000, workspaceId = 'marqq-ws-1' }) {
+  return meteredStudioJson({
+    workspaceId,
+    feature: 'social_studio',
+    system,
+    user,
+    model: model || undefined,
     temperature,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
+    max_tokens,
+    meta: { studio: 'social_studio' },
   });
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Groq HTTP ${res.status}`);
-  const parsed = parseJsonLoose(data?.choices?.[0]?.message?.content || '{}');
-  if (!parsed) throw new Error('Model returned non-JSON social copy');
-  return parsed;
 }
+
 
 function publicRun(run) {
   return {
@@ -126,6 +112,7 @@ export async function createSocialRun(input = {}) {
 export async function runSocialBrief(runId, patch = {}) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Social run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'social_studio');
   if (patch.topic) run.topic = String(patch.topic).trim();
   if (patch.audience) run.audience = String(patch.audience).trim();
   if (Array.isArray(patch.channels) && patch.channels.length) {
@@ -139,6 +126,7 @@ export async function runSocialBrief(runId, patch = {}) {
   run.skills.brief = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
     system: [
       'You are Kiran, Marqq social agent.',
@@ -173,12 +161,14 @@ export async function runSocialBrief(runId, patch = {}) {
 export async function runSocialCompose(runId) {
   const run = runsById.get(runId);
   if (!run) throw new Error('Social run not found');
+  assertCanAfford(run.workspaceId || run.companyId, 'social_studio');
   if (!run.brief) throw new Error('Create a brief before composing posts');
 
   const playbook = await buildPlaybookFromPack(PACK_PACK, { label: 'social_pack' });
   run.skills.compose = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
   const parsed = await groqJson({
+    workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.45,
     system: [
       'You are Kiran + Sam writing organic social posts.',
