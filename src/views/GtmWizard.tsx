@@ -11,6 +11,7 @@ import {
   sectionAnswersComplete,
   firstUnansweredIndex,
   firstIncompleteInterviewSection,
+  isAnswerFilled,
   type GtmAnswers,
   type GtmInterviewQuestion,
   type GtmInterviewSectionId,
@@ -1371,9 +1372,13 @@ function QuestionPanel({
   return (
     <div>
       <h4 style={{ marginBottom: 4 }}>{question.question}</h4>
-      {question.helperText ? (
+      {question.type === "multi_select" || question.helperText ? (
         <p className="text-muted" style={{ fontSize: 12, marginBottom: 16 }}>
-          {question.helperText}
+          {question.type === "multi_select"
+            ? question.helperText
+              ? `${question.helperText} Select all that apply, then Continue.`
+              : "Select all that apply, then Continue."
+            : question.helperText}
         </p>
       ) : null}
 
@@ -2163,13 +2168,21 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
     }
   }, [state, ctx]);
 
-  // Keep interview cursor on the first unanswered question (skip onboarding-prefilled)
+  // Keep interview cursor on the first unanswered question (skip onboarding-prefilled).
+  // Multi-select is special: the first click fills the answer, but the user must stay
+  // on that question to pick more options and press Continue.
   useEffect(() => {
     if (!isInterviewStage(state.stage)) return;
     const section = getInterviewSection(state.stage);
     if (!section) return;
+
+    const current = section.questions[state.questionIndex];
+    const stayingOnMultiSelect =
+      current?.type === "multi_select" && isAnswerFilled(state.answers[current.id]);
+
     // Fully prefilled from onboarding → advance once per stage to the next section / strategy
     if (sectionAnswersComplete(section.questions, state.answers) && !state.review) {
+      if (stayingOnMultiSelect) return;
       if (autoAdvancedStage.current !== state.stage) {
         autoAdvancedStage.current = state.stage;
         advanceAfterAnswer(state.stage, state.answers);
@@ -2179,7 +2192,10 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
     const firstOpen = firstUnansweredIndex(section.questions, state.answers);
     const maxIdx = Math.max(section.questions.length - 1, 0);
     if (firstOpen > maxIdx) return;
-    const current = section.questions[state.questionIndex];
+
+    // Selecting a multi_select option marks it answered — do not jump forward until Continue.
+    if (stayingOnMultiSelect && firstOpen > state.questionIndex) return;
+
     const currentFilled = current
       ? firstUnansweredIndex([current], state.answers) === 1
       : false;

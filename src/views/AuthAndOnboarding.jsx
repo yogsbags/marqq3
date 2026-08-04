@@ -470,6 +470,7 @@ export function OnboardingView({ setActiveScreen }) {
     { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' }
   ]);
   const [connectingConnectorId, setConnectingConnectorId] = useState(null);
+  const [connectError, setConnectError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -498,6 +499,7 @@ export function OnboardingView({ setActiveScreen }) {
 
   const handleConnectConnector = async (connectorId) => {
     setConnectingConnectorId(connectorId);
+    setConnectError('');
     try {
       const res = await connectComposioConnector({
         companyId: getActiveWorkspaceId(),
@@ -516,10 +518,11 @@ export function OnboardingView({ setActiveScreen }) {
           prev.map(c => c.id === connectorId ? { ...c, connected: true, status: 'active' } : c)
         );
       }
-      // 'fallback' or 'closed' → popup was blocked or user closed it — do nothing, no picker.
+      // 'closed' / 'redirect' → user dismissed popup or same-tab OAuth started.
     } catch (err) {
-      console.warn('Connect notice:', formatConnectorError(err));
-      // Do NOT open the account picker on error — just log and let user retry.
+      const msg = formatConnectorError(err);
+      console.warn('Connect notice:', msg);
+      setConnectError(msg);
     } finally {
       setConnectingConnectorId(null);
     }
@@ -751,6 +754,11 @@ export function OnboardingView({ setActiveScreen }) {
             <div>
               <h1 style={{ marginBottom: '6px' }}>Connect the data Marqq should use</h1>
               <p className="text-muted" style={{ marginBottom: '28px' }}>Optional — skip and Marqq will flag missing data as it works.</p>
+              {connectError ? (
+                <p className="text-muted" role="alert" style={{ marginBottom: '16px', color: '#c45c26', fontSize: 13 }}>
+                  {connectError}
+                </p>
+              ) : null}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '24px' }}>
                 {integrationsState.map((ing, i) => {
                   const active = isConnectorActive(ing);

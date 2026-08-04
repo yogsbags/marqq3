@@ -334,7 +334,7 @@ export function answerLabel(answer: GtmSectionAnswer | undefined): string {
   return String(answer.label || answer.value || "").trim();
 }
 
-function isAnswerFilled(answer: GtmSectionAnswer | undefined): boolean {
+export function isAnswerFilled(answer: GtmSectionAnswer | undefined): boolean {
   if (!answer) return false;
   if (Array.isArray(answer.values) && answer.values.length > 0) return true;
   return Boolean(String(answer.value || "").trim() || String(answer.label || "").trim());

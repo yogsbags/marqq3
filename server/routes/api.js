@@ -2032,9 +2032,21 @@ router.post('/integrations/connect', async (req, res) => {
   const { companyId, connectorId } = req.body;
   const apiKey = process.env.COMPOSIO_API_KEY;
   const authConfigId = getAuthConfigId(connectorId);
+  const authEnvKey =
+    AUTH_CONFIG_ENV_KEYS[connectorId] ||
+    `COMPOSIO_${String(connectorId || '').toUpperCase()}_AUTH_CONFIG_ID`;
 
-  if (!companyId || !connectorId || !apiKey || !authConfigId) {
-    return res.json({ ok: false, error: 'Composio configuration missing' });
+  if (!companyId || !connectorId) {
+    return res.json({ ok: false, error: 'companyId and connectorId are required' });
+  }
+  if (!apiKey) {
+    return res.json({ ok: false, error: 'COMPOSIO_API_KEY is not configured' });
+  }
+  if (!authConfigId) {
+    return res.json({
+      ok: false,
+      error: `${authEnvKey} is not configured — set it in the server environment to enable ${connectorId} OAuth`,
+    });
   }
 
   const appUrl = process.env.APP_URL || 'http://localhost:3000';

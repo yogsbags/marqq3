@@ -544,25 +544,63 @@ async function main() {
     if (await startResearch.isVisible().catch(() => false)) {
       await startResearch.click();
       note("Content research started…");
-      const cont = await waitForButtonEnabled(page, /Continue to brief/i, { timeoutMs: 180_000 });
-      if (cont) {
-        ok("content:research");
-        evidence.lanes.content = "research_ready";
-        await cont.click();
-        await page.waitForTimeout(600);
+      // Prod Apify keyword research can exceed 3 minutes — wait for any brief-ready signal
+      const researchTimeoutMs = Number(process.env.CONTENT_RESEARCH_TIMEOUT_MS || 420_000);
+      const researchStart = Date.now();
+      let researchReady = false;
+      while (Date.now() - researchStart < researchTimeoutMs) {
+        const cont = page.getByRole("button", { name: /Continue to brief/i }).first();
+        if (await cont.isVisible().catch(() => false)) {
+          const disabled = await cont.isDisabled().catch(() => true);
+          if (!disabled) {
+            researchReady = true;
+            ok("content:research", `Continue to brief (~${Math.round((Date.now() - researchStart) / 1000)}s)`);
+            evidence.lanes.content = "research_ready";
+            await cont.click();
+            await page.waitForTimeout(600);
+            break;
+          }
+        }
+        const body = await page.locator("body").innerText().catch(() => "");
+        // Avoid matching the always-visible stepper label "2 · Brief"
+        if (
+          /Generate brief|researched \d+|Pick a queue keyword|article queue|topic clusters|LLMO/i.test(body) &&
+          !/Maya researching/i.test(body)
+        ) {
+          researchReady = true;
+          ok("content:research", `brief/keywords ready (~${Math.round((Date.now() - researchStart) / 1000)}s)`);
+          evidence.lanes.content = "research_ready";
+          break;
+        }
+        if (/Research failed|GROQ_API_KEY|insufficient_credits/i.test(body)) {
+          fail("content:research", body.match(/Research failed[^\n]{0,80}|insufficient_credits|GROQ_API_KEY[^\n]{0,40}/i)?.[0] || "error in UI");
+          researchReady = false;
+          break;
+        }
+        await page.waitForTimeout(2500);
+      }
+      if (!researchReady && !results.some((r) => r.name === "content:research" && r.status === "fail")) {
+        fail("content:research", `timed out after ${Math.round(researchTimeoutMs / 1000)}s`);
+      } else if (researchReady) {
         const genBrief = page.getByRole("button", { name: /Generate brief/i }).first();
         if (await genBrief.isVisible().catch(() => false)) {
           await genBrief.click();
-          const toDraft = await waitForButtonEnabled(page, /Continue to Riya draft/i, {
-            timeoutMs: 120_000,
+          const toDraft = await waitForButtonEnabled(page, /Continue to Riya draft|Generate draft/i, {
+            timeoutMs: 180_000,
           });
           if (toDraft) {
             ok("content:brief");
             evidence.lanes.content = "brief_ready";
             // Stop before publish — do not continue to live distribute
-          } else fail("content:brief", "timed out");
+          } else {
+            const body = await page.locator("body").innerText().catch(() => "");
+            if (/Maya briefed|status briefed|Riya · Draft|ready for Riya/i.test(body)) {
+              ok("content:brief", "briefed (UI signals)");
+              evidence.lanes.content = "brief_ready";
+            } else fail("content:brief", "timed out");
+          }
         }
-      } else fail("content:research", "timed out");
+      }
     } else ok("content:view-only", "no start research CTA");
     await assertNoPublishClicked(page);
     await shot("08-content");

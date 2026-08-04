@@ -113,12 +113,20 @@ export async function connectComposioConnector({
     }
   }
 
-  const response = await fetch('/api/integrations/connect', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ companyId, connectorId }),
-  });
-  const json = await response.json().catch(() => ({}));
+  let response;
+  let json = {};
+  try {
+    response = await fetch('/api/integrations/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ companyId, connectorId }),
+    });
+    json = await response.json().catch(() => ({}));
+  } catch (networkErr) {
+    const notice = formatConnectorError(networkErr, 'Could not reach integrations API');
+    try { popup?.close(); } catch (_) {}
+    throw new Error(notice);
+  }
 
   // Debug: log exactly what the server returned
   console.log('[composio] /api/integrations/connect response:', JSON.stringify(json));
@@ -126,9 +134,19 @@ export async function connectComposioConnector({
   const redirectUrl = json?.redirectUrl || json?.redirect_url;
 
   if (!json?.ok || !redirectUrl) {
-    console.warn('[composio] No OAuth URL — closing popup. Reason:', json?.error || 'missing redirectUrl');
-    try { popup?.close(); } catch (e) {}
-    return { status: 'fallback', connectorId, notice: json?.error || 'Direct account configuration' };
+    const notice = formatConnectorError(json?.error, 'OAuth URL missing — connector not configured');
+    console.warn('[composio] No OAuth URL — closing popup. Reason:', notice);
+    if (popup && !popup.closed) {
+      try {
+        popup.document.title = 'Connect failed';
+        popup.document.body.innerHTML = `<div style="font-family: system-ui, -apple-system, sans-serif; padding: 24px; color: #fff; background: #0c0b0a; height: 100vh;"><strong>Could not open connector</strong><p style="opacity:.85;line-height:1.45">${notice}</p><p style="opacity:.6;font-size:12px">You can close this window.</p></div>`;
+      } catch (e) {
+        try { popup.close(); } catch (_) {}
+      }
+    }
+    const err = new Error(notice);
+    err.code = 'COMPOSIO_CONNECT_CONFIG';
+    throw err;
   }
 
   console.log('[composio] Opening OAuth popup →', redirectUrl);
@@ -145,7 +163,9 @@ export async function connectComposioConnector({
   };
 
   if (!popup) {
-    return { status: 'fallback', connectorId };
+    // Popup blocked — fall back to same-tab navigation so Connect still works.
+    window.location.assign(redirectUrl);
+    return { status: 'redirect', connectorId };
   }
 
   try {

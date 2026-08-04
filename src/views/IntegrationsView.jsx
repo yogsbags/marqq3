@@ -30,6 +30,7 @@ export function IntegrationsView({ setActiveScreen }) {
   const [preferences, setPreferences] = useState({});
   const [connectingId, setConnectingId] = useState(null);
   const [pickerConnectorId, setPickerConnectorId] = useState(null);
+  const [connectError, setConnectError] = useState('');
 
   const fetchPreferences = () => {
     fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
@@ -57,6 +58,7 @@ export function IntegrationsView({ setActiveScreen }) {
 
   const handleConnect = async (connectorId) => {
     setConnectingId(connectorId);
+    setConnectError('');
     try {
       const res = await connectComposioConnector({
         companyId: getActiveWorkspaceId(),
@@ -71,7 +73,9 @@ export function IntegrationsView({ setActiveScreen }) {
         setPickerConnectorId(connectorId);
       }
     } catch (err) {
-      console.warn('Connect notice:', formatConnectorError(err));
+      const msg = formatConnectorError(err);
+      console.warn('Connect notice:', msg);
+      setConnectError(msg);
     } finally {
       setConnectingId(null);
     }
@@ -102,6 +106,11 @@ export function IntegrationsView({ setActiveScreen }) {
         <div>
           <h1>Integrations &amp; Connectors</h1>
           <p className="text-muted" style={{ marginTop: '4px' }}>Manage ad platform OAuth tokens, CRM syncs, and web analytics connectors.</p>
+          {connectError ? (
+            <p className="text-muted" role="alert" style={{ marginTop: 8, color: '#c45c26', fontSize: 13 }}>
+              {connectError}
+            </p>
+          ) : null}
         </div>
         {setActiveScreen ? (
           <button
