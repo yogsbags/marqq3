@@ -1208,27 +1208,89 @@ function StageChips({
   );
 }
 
-function GeneratingView() {
-  const [width, setWidth] = useState(18);
+/** Typical skillful 16-section generate: ~80–120s API + goal enrichment. */
+const STRATEGY_DOC_EXPECTED_MS = 120_000;
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m <= 0) return `${s}s`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function strategyDocProgressPct(elapsedMs: number): number {
+  const expected = STRATEGY_DOC_EXPECTED_MS;
+  if (elapsedMs <= expected) {
+    // Linear to 90% over the expected window so the bar matches real wait time.
+    return Math.min(90, Math.round((elapsedMs / expected) * 90));
+  }
+  // Past estimate: creep slowly toward 97% so it never looks stuck at 100%.
+  const over = elapsedMs - expected;
+  return Math.min(97, 90 + Math.round(Math.min(7, (over / expected) * 7)));
+}
+
+function GeneratingView({
+  companyName,
+  mode = "generate",
+}: {
+  companyName?: string;
+  mode?: "generate" | "regenerate";
+}) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [sectionIdx, setSectionIdx] = useState(0);
+  const sections = GTM_FULL_STRATEGY_SECTION_ORDER;
+  const currentSection = sections[sectionIdx % sections.length];
+  const pct = strategyDocProgressPct(elapsedMs);
+  const remainingMs = Math.max(0, STRATEGY_DOC_EXPECTED_MS - elapsedMs);
+  const company = String(companyName || "").trim() || "your company";
+
   useEffect(() => {
-    const t = setInterval(() => setWidth((w) => Math.min(w + 4, 92)), 180);
-    return () => clearInterval(t);
-  }, []);
+    const t0 = Date.now();
+    const tick = window.setInterval(() => setElapsedMs(Date.now() - t0), 250);
+    // ~16 sections over ~2 min ≈ 7.5s each; rotate a bit faster for motion.
+    const rotate = window.setInterval(
+      () => setSectionIdx((i) => (i + 1) % Math.max(sections.length, 1)),
+      7000
+    );
+    return () => {
+      window.clearInterval(tick);
+      window.clearInterval(rotate);
+    };
+  }, [sections.length]);
+
   return (
-    <div style={{ maxWidth: 480, textAlign: "center", padding: "40px 0" }}>
+    <div style={{ maxWidth: 520, margin: "0 auto", textAlign: "center", padding: "40px 0" }}>
       <div className="card-kicker" style={{ marginBottom: 10 }}>
         Assembling document
       </div>
-      <p className="card-body" style={{ marginBottom: 16 }}>
-        Generating GTM strategy document from your locked interview answers — all strategy
-        sections assemble here with a quantified north-star.
+      <p className="card-body" style={{ marginBottom: 8 }}>
+        {mode === "regenerate"
+          ? `Regenerating GTM strategy document for ${company} — all 16 sections rebuild with a quantified north-star.`
+          : `Generating GTM strategy document from your locked interview answers — all strategy sections assemble here with a quantified north-star.`}
       </p>
+      <p className="text-muted" style={{ fontSize: 13, marginBottom: 20 }}>
+        Usually takes about <strong>1½–2 minutes</strong>
+        {elapsedMs > STRATEGY_DOC_EXPECTED_MS
+          ? " — still finishing the last sections…"
+          : remainingMs > 0
+            ? ` · ~${formatDuration(remainingMs)} remaining`
+            : ""}
+      </p>
+
       <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        aria-label="Strategy document generation progress"
         style={{
-          height: 8,
+          height: 10,
           background: "var(--color-surface)",
           position: "relative",
           border: "1px solid var(--color-divider)",
+          borderRadius: 999,
+          overflow: "hidden",
         }}
       >
         <div
@@ -1238,10 +1300,45 @@ function GeneratingView() {
             top: 0,
             bottom: 0,
             background: "var(--color-accent)",
-            width: `${width}%`,
-            transition: "width .2s ease",
+            width: `${pct}%`,
+            transition: "width .35s ease",
+            borderRadius: 999,
           }}
         />
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          marginTop: 10,
+          fontSize: 12,
+          color: "var(--color-muted, #888)",
+        }}
+      >
+        <span>{pct}%</span>
+        <span>
+          Elapsed {formatDuration(elapsedMs)} · est. {formatDuration(STRATEGY_DOC_EXPECTED_MS)}
+        </span>
+      </div>
+
+      <div
+        className="card"
+        style={{
+          marginTop: 20,
+          textAlign: "left",
+          padding: "14px 16px",
+          borderLeft: "3px solid var(--color-accent)",
+        }}
+      >
+        <div className="card-kicker" style={{ marginBottom: 4 }}>
+          Writing section {Math.min(sectionIdx + 1, sections.length)} of {sections.length}
+        </div>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{currentSection?.title || "Strategy section"}</div>
+        <p className="text-muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+          Skill playbooks + North Star alignment for {company}
+        </p>
       </div>
     </div>
   );
@@ -2651,9 +2748,14 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
         </div>
       ) : null}
 
-      {stage === "generating" ? <GeneratingView /> : null}
+      {stage === "generating" || regenerating ? (
+        <GeneratingView
+          companyName={ctx.companyName}
+          mode={regenerating ? "regenerate" : "generate"}
+        />
+      ) : null}
 
-      {stage === "document" && state.strategy ? (
+      {stage === "document" && state.strategy && !regenerating ? (
         <GtmDocumentView
           doc={state.strategy}
           answers={state.answers}
