@@ -227,7 +227,10 @@ router.post('/gtm/modules', async (req, res) => {
     sourceContext: req.body?.sourceContext || req.body?.source_context || {},
     active: req.body?.active !== false,
   });
-  if (!result.ok) return res.status(503).json(result);
+  if (!result.ok) {
+    const status = result.error === 'Module not found' ? 404 : 503;
+    return res.status(status).json(result);
+  }
   res.status(201).json(result);
 });
 
@@ -247,7 +250,10 @@ router.put('/gtm/modules', async (req, res) => {
     sourceContext: req.body?.sourceContext || req.body?.source_context || {},
     active: req.body?.active === true,
   });
-  if (!result.ok) return res.status(503).json(result);
+  if (!result.ok) {
+    const status = result.error === 'Module not found' ? 404 : 503;
+    return res.status(status).json(result);
+  }
   res.json(result);
 });
 

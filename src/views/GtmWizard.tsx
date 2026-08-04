@@ -39,7 +39,7 @@ import {
   GTM_AUTO_STRATEGY_SECTIONS,
   type GtmAutoSectionDraft,
 } from "../lib/gtmAutoSections";
-import GtmModuleSwitcher, { getStoredActiveModuleId } from "../components/GtmModuleSwitcher.jsx";
+import GtmModuleSwitcher, { getStoredActiveModuleId, setStoredActiveModuleId } from "../components/GtmModuleSwitcher.jsx";
 import {
   buildAgentOs,
   clearAgentOs,
@@ -47,6 +47,7 @@ import {
 } from "../lib/agents";
 import { getActiveWorkspaceId, loadLocalBrandContext } from "../lib/brandContext";
 import { formatStrategySectionForChat, stashAskMarqqContext } from "../lib/askMarqqContext";
+import { apiFetch } from "../lib/apiFetch.js";
 
 const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -2113,7 +2114,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
         if (activatedStrategyKey.current !== strategyKey) {
           activatedStrategyKey.current = strategyKey;
           const workspaceId = getActiveWorkspaceId();
-          void fetch("/api/strategy/activate", {
+          void apiFetch("/api/strategy/activate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -2122,7 +2123,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
               agentOs: os,
             }),
           }).catch((err) => console.warn("[gtm] strategy activate failed:", err));
-          void fetch("/api/gtm/modules/lock", {
+          void apiFetch("/api/gtm/modules/lock", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -2134,7 +2135,15 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
                 website: ctx.website,
               },
             }),
-          }).catch((err) => console.warn("[gtm] module lock failed:", err));
+          })
+            .then(async (res) => {
+              const data = await res.json().catch(() => ({}));
+              if (data?.module?.id) setStoredActiveModuleId(data.module.id);
+              else if (!res.ok && /not found/i.test(String(data?.error || ""))) {
+                setStoredActiveModuleId("");
+              }
+            })
+            .catch((err) => console.warn("[gtm] module lock failed:", err));
         }
       } catch (err) {
         console.warn("[gtm] agent OS build failed:", err);
@@ -2143,7 +2152,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
       // Optimistic draft sync to gtm_modules (sessionStorage remains primary cache)
       const workspaceId = getActiveWorkspaceId();
       if (workspaceId) {
-        void fetch("/api/gtm/modules", {
+        void apiFetch("/api/gtm/modules", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2163,7 +2172,15 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
             },
             sourceContext: { website: ctx.website || "" },
           }),
-        }).catch(() => {});
+        })
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            if (data?.module?.id) setStoredActiveModuleId(data.module.id);
+            else if (!res.ok && /not found/i.test(String(data?.error || ""))) {
+              setStoredActiveModuleId("");
+            }
+          })
+          .catch(() => {});
       }
     }
   }, [state, ctx]);

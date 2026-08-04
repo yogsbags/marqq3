@@ -82,6 +82,38 @@ function publicModule(row) {
   };
 }
 
+/** Prefer explicit userId; else workspace owner / first member (service-role writes). */
+async function resolveModuleUserId(workspaceId, userId = null) {
+  if (userId) return userId;
+  const db = writeClient();
+  if (!db || !isUuidWorkspace(workspaceId)) return null;
+  try {
+    const { data: owner } = await db
+      .from('workspace_members')
+      .select('user_id')
+      .eq('workspace_id', workspaceId)
+      .eq('role', 'owner')
+      .limit(1)
+      .maybeSingle();
+    if (owner?.user_id) return owner.user_id;
+
+    const { data, error } = await db
+      .from('workspace_members')
+      .select('user_id')
+      .eq('workspace_id', workspaceId)
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      console.warn('[gtm_modules] resolve owner:', error.message);
+      return null;
+    }
+    return data?.user_id || null;
+  } catch (err) {
+    console.warn('[gtm_modules] resolve owner failed:', err.message);
+    return null;
+  }
+}
+
 /** Deactivate siblings (app-side; Postgres trigger also does this when present). */
 async function deactivateOthers(workspaceId, exceptId) {
   const db = writeClient();
@@ -198,13 +230,14 @@ export async function createGtmModule({
   if (row.active) await deactivateOthers(workspaceId, id);
 
   const db = writeClient();
-  if (db && isUuidWorkspace(workspaceId) && userId) {
+  const ownerId = await resolveModuleUserId(workspaceId, userId);
+  if (db && isUuidWorkspace(workspaceId) && ownerId) {
     try {
       const { data, error } = await db
         .from('gtm_modules')
         .insert({
           workspace_id: workspaceId,
-          user_id: userId,
+          user_id: ownerId,
           company_id: companyId,
           name: title,
           module_type: type,
@@ -225,6 +258,11 @@ export async function createGtmModule({
     } catch (err) {
       console.warn('[gtm_modules] create supabase failed, using FS:', err.message);
     }
+  } else if (db && isUuidWorkspace(workspaceId) && !ownerId) {
+    console.warn(
+      '[gtm_modules] create skipped Supabase — no userId / workspace member for',
+      workspaceId
+    );
   }
 
   const list = loadFs().workspaces?.[workspaceId] || [];
@@ -374,9 +412,9 @@ export async function upsertGtmModule({
     String(name || profile?.companyName || profile?.module_name || profile?.module?.name || 'GTM Strategy').trim() ||
     'GTM Strategy';
 
-  // Explicit module update
+  // Explicit module update — if stale/missing id, fall through to active or create
   if (moduleId) {
-    return patchGtmModule({
+    const patched = await patchGtmModule({
       workspaceId,
       moduleId,
       name: title,
@@ -390,6 +428,8 @@ export async function upsertGtmModule({
       sectionState,
       sourceContext,
     });
+    if (patched.ok) return patched;
+    console.warn('[gtm_modules] upsert moduleId miss, recreating:', moduleId, patched.error);
   }
 
   const existing = await getActiveGtmModule(workspaceId);
