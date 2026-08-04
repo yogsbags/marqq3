@@ -545,11 +545,13 @@ router.post('/agents/plan', (req, res) => {
 router.post('/strategy/activate', (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
+    const revisedSectionId = String(req.body?.revisedSectionId || '').trim() || null;
     const result = activateStrategyExecution({
       strategy: req.body?.strategy,
       agentOs: req.body?.agentOs || null,
       workspaceId,
       companyId: workspaceId,
+      revisedSectionId,
     });
     // Kick an immediate tick so drafts appear without waiting a full minute
     processDeploymentQueueTick({ force: true, workspaceId }).catch(() => {});

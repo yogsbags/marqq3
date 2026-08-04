@@ -105,14 +105,17 @@ function agentMeta(agentId) {
 }
 
 /**
- * Seed recurring + immediate draft deployments from locked strategy sections.
- * Idempotent: skips if an active/pending deployment already exists for section+agent.
+ * Seed / sync deployments from locked strategy sections.
+ * - Creates missing section→agent deployments (idempotent).
+ * - When revisedSectionId is set, updates that section's live deployments with new
+ *   summary/bullets and re-queues them as pending drafts (strategy_revise).
  */
 export function seedDeploymentsFromStrategy({
   strategy,
   workspaceId = DEFAULT_WS,
   companyId = DEFAULT_WS,
   runImmediately = true,
+  revisedSectionId = null,
 } = {}) {
   const sections = Array.isArray(strategy?.sections)
     ? strategy.sections
@@ -122,7 +125,9 @@ export function seedDeploymentsFromStrategy({
       ];
   const byId = new Map(sections.map((s) => [s.id, s]));
   const created = [];
+  const updated = [];
   const scheduledFor = runImmediately ? nowIso() : new Date(Date.now() + 60_000).toISOString();
+  const reviseId = revisedSectionId ? String(revisedSectionId) : null;
 
   updateDb((state) => {
     const next = ensureAgentCollections(state);
@@ -133,14 +138,44 @@ export function seedDeploymentsFromStrategy({
       const section = byId.get(own.sectionId);
       if (!section) continue;
       const { summary, bullets } = sectionBlob(section);
-      const existing = queue.find(
+      const existingIdx = queue.findIndex(
         (d) =>
           d.sectionId === own.sectionId &&
           d.agentName === own.primaryAgent &&
           d.workspaceId === workspaceId &&
           ['pending', 'active', 'running'].includes(String(d.status || ''))
       );
-      if (existing) continue;
+      const existing = existingIdx >= 0 ? queue[existingIdx] : null;
+
+      if (existing) {
+        const patch = {
+          ...existing,
+          sectionTitle: section.title || own.sectionId,
+          summary: summary.slice(0, 400) || existing.summary,
+          bullets: bullets.slice(0, 6),
+          tasks: bullets.slice(0, 4),
+          updatedAt: nowIso(),
+        };
+        if (reviseId && own.sectionId === reviseId) {
+          patch.status = 'pending';
+          patch.scheduledFor = scheduledFor;
+          patch.triggeredBy = 'strategy_revise';
+          patch.deliveryMode = 'draft';
+        }
+        queue[existingIdx] = patch;
+        updated.push(patch);
+
+        const taskIdx = tasks.findIndex((t) => t.deploymentId === existing.id);
+        if (taskIdx >= 0) {
+          tasks[taskIdx] = {
+            ...tasks[taskIdx],
+            title: `${patch.agentDisplayName || own.primaryAgent}: ${patch.sectionTitle}`,
+            status: reviseId && own.sectionId === reviseId ? 'Scheduled' : tasks[taskIdx].status,
+            due: reviseId && own.sectionId === reviseId ? 'Next scheduler tick' : tasks[taskIdx].due,
+          };
+        }
+        continue;
+      }
 
       const meta = agentMeta(own.primaryAgent);
       const plan = planAgentTask({
@@ -168,7 +203,7 @@ export function seedDeploymentsFromStrategy({
         createdAt: nowIso(),
         scheduledFor,
         runCount: 0,
-        triggeredBy: 'strategy_activate',
+        triggeredBy: reviseId && own.sectionId === reviseId ? 'strategy_revise' : 'strategy_activate',
       };
       queue.push(entry);
       created.push(entry);
@@ -192,11 +227,17 @@ export function seedDeploymentsFromStrategy({
     return { ...next, agent_deployments: queue, tasks: tasks.slice(0, 80) };
   });
 
-  for (const entry of created) {
+  for (const entry of [...created, ...updated]) {
     void persistDeploymentToSupabase(entry);
   }
 
-  return { created, count: created.length };
+  return {
+    created,
+    updated,
+    count: created.length + updated.length,
+    deploymentsCreated: created.length,
+    deploymentsUpdated: updated.length,
+  };
 }
 
 /**
@@ -207,6 +248,7 @@ export function activateStrategyExecution({
   agentOs,
   workspaceId = DEFAULT_WS,
   companyId = DEFAULT_WS,
+  revisedSectionId = null,
 } = {}) {
   if (!strategy || typeof strategy !== 'object') {
     throw new Error('strategy required');
@@ -229,7 +271,13 @@ export function activateStrategyExecution({
         };
 
   const savedOs = saveAgentOsProfile(profile, workspaceId);
-  const seeded = seedDeploymentsFromStrategy({ strategy, workspaceId, companyId, runImmediately: true });
+  const seeded = seedDeploymentsFromStrategy({
+    strategy,
+    workspaceId,
+    companyId,
+    runImmediately: true,
+    revisedSectionId,
+  });
 
   // Seed lightweight scheduled_automations mirrors for Workflows UI
   updateDb((state) => {
@@ -279,8 +327,10 @@ export function activateStrategyExecution({
     ok: true,
     workspaceId,
     agentOs: savedOs,
-    deploymentsCreated: seeded.count,
-    deployments: seeded.created,
+    deploymentsCreated: seeded.deploymentsCreated ?? seeded.created?.length ?? 0,
+    deploymentsUpdated: seeded.deploymentsUpdated ?? seeded.updated?.length ?? 0,
+    deployments: [...(seeded.created || []), ...(seeded.updated || [])],
+    revisedSectionId: revisedSectionId || null,
   };
 }
 

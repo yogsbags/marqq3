@@ -4,6 +4,11 @@ import {
   consumeAskMarqqContext,
   loadStrategySectionsForAskMarqq,
  } from '../lib/askMarqqContext';
+import {
+  applyStrategySectionRevision,
+  parseStrategyRevisionBlock,
+  revisionPromptHint,
+} from '../lib/applyStrategySectionRevision';
 import ChatMarkdown from '../components/ChatMarkdown.jsx';
 import {  askMarqqCompound  } from '../services/groqService';
 import {   getActiveWorkspaceId  } from '../lib/brandContext';
@@ -151,7 +156,7 @@ ${sectionCtx
 
 Rules:
 - Answer the user's question directly. If they ask to explain, explain the section clearly in plain language.
-- If they ask to change or rewrite something, propose concrete revised copy they can paste back into the strategy.
+- ${revisionPromptHint(channel)}
 - Stay grounded in the section context and North Star; do not invent unrelated metrics or markets.
 - You have built-in web search. Use it when the user asks about market facts, competitors, the company website, or anything that needs current public information. Prefer evidence from search over guesses.
 - When the user attaches documents or voice notes, use that content as primary evidence for this channel.
@@ -215,6 +220,7 @@ export default function AskMarqq({ setActiveScreen }) {
   const [sectionContextByChannel, setSectionContextByChannel] = useState({});
   const [attachmentsByChannel, setAttachmentsByChannel] = useState({});
   const [asking, setAsking] = useState(false);
+  const [applyingRevisionId, setApplyingRevisionId] = useState(null);
   const [recording, setRecording] = useState(false);
   const [voiceWorking, setVoiceWorking] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -537,16 +543,20 @@ export default function AskMarqq({ setActiveScreen }) {
         buildSystemPrompt(channel, sectionCtx, northStarBrief)
       );
 
-      const text =
+      const rawText =
         (result?.content && String(result.content).trim()) ||
         (sectionCtx
           ? `I could not reach the model just now. Based on the loaded #${channel} section, ask again in a moment — or tell me whether you want an explanation, a rewrite, or a specific change.`
           : `I could not reach the model just now. Try again in a moment.`);
 
+      const parsed = parseStrategyRevisionBlock(rawText);
+      const text = parsed.displayText || rawText;
+
       const sourceBits = [
         sectionCtx ? `GTM Strategy · #${channel}` : null,
         attachments.length ? 'Uploaded docs' : null,
         result?.usedSearch ? 'Web search' : null,
+        parsed.revision ? 'Revision ready' : null,
         'groq/compound-mini',
       ].filter(Boolean);
 
@@ -557,10 +567,19 @@ export default function AskMarqq({ setActiveScreen }) {
           .concat({
             id: Date.now() + 2,
             sender: 'Marqq',
-            confidence: result?.usedSearch ? 'Web + strategy' : sectionCtx ? 'Grounded' : 'General',
+            confidence: parsed.revision
+              ? 'Revision draft'
+              : result?.usedSearch
+                ? 'Web + strategy'
+                : sectionCtx
+                  ? 'Grounded'
+                  : 'General',
             time: 'Just now',
             text,
             sources: sourceBits.join(' · '),
+            revision: parsed.revision || null,
+            revisionApplied: false,
+            sectionId: channelToSectionId(channel),
           }),
       }));
     } catch {
@@ -579,6 +598,52 @@ export default function AskMarqq({ setActiveScreen }) {
       }));
     } finally {
       setAsking(false);
+    }
+  };
+
+  const handleApplyRevision = async (message) => {
+    if (!message?.revision || message.revisionApplied || applyingRevisionId) return;
+    const channel = activeChannel;
+    const sectionId = message.sectionId || channelToSectionId(channel);
+    setApplyingRevisionId(message.id);
+    setComposerError('');
+    try {
+      const result = await applyStrategySectionRevision({
+        sectionId,
+        revision: message.revision,
+      });
+      if (!result.ok) {
+        setComposerError(result.error || 'Failed to apply revision');
+        return;
+      }
+
+      if (result.channelText) {
+        setSectionContextByChannel((prev) => ({
+          ...prev,
+          [channel]: result.channelText,
+        }));
+      }
+
+      setMessagesByChannel((prev) => {
+        const list = [...(prev[channel] || [])];
+        const idx = list.findIndex((m) => m.id === message.id);
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], revisionApplied: true, confidence: 'Locked for agents' };
+        }
+        list.push({
+          id: Date.now() + 3,
+          sender: 'Marqq',
+          confidence: 'Locked',
+          time: 'Just now',
+          text: `Applied and re-locked **${activeSectionMeta?.title || sectionId.replace(/_/g, ' ')}** into the GTM strategy. Agent deployments for this section were refreshed with the new draft copy (draft mode only — nothing published).`,
+          sources: 'Strategy lock · Agent OS',
+        });
+        return { ...prev, [channel]: list };
+      });
+    } catch (err) {
+      setComposerError(err?.message || 'Failed to apply revision');
+    } finally {
+      setApplyingRevisionId(null);
     }
   };
 
@@ -656,6 +721,26 @@ export default function AskMarqq({ setActiveScreen }) {
                 <div className="card-meta" style={{ fontSize: '11px', color: 'color-mix(in srgb, var(--color-text) 50%, transparent)' }}>
                   Sources: {m.sources}
                 </div>
+                ) : null}
+                {m.revision && !m.revisionApplied ? (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={Boolean(applyingRevisionId)}
+                      onClick={() => handleApplyRevision(m)}
+                    >
+                      {applyingRevisionId === m.id ? 'Applying…' : 'Apply to strategy & re-lock'}
+                    </button>
+                    <span className="text-muted" style={{ fontSize: 11, alignSelf: 'center' }}>
+                      Updates this section for agents (drafts only)
+                    </span>
+                  </div>
+                ) : null}
+                {m.revisionApplied ? (
+                  <div style={{ fontSize: 11, color: 'var(--color-accent)', marginTop: 6, fontWeight: 700 }}>
+                    Applied · locked for agents
+                  </div>
                 ) : null}
                 {m.hasAction && (
                   <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>

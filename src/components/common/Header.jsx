@@ -128,6 +128,7 @@ export default function Header({
           type="button"
           className="btn btn-secondary btn-icon"
           title="Notifications"
+          aria-label="Notifications"
           onClick={() => setShowNotifications(!showNotifications)}
           style={{ position: 'relative', borderRadius: '0px' }}
         >

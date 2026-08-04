@@ -228,7 +228,7 @@ export async function createOutreachRun(input = {}) {
   const workspaceId = String(input.workspaceId || input.companyId || 'marqq-ws-1').trim();
   const companyId = String(input.companyId || workspaceId).trim();
   const companyName = String(input.companyName || 'Your company').trim();
-  const limit = Math.min(Math.max(Number(input.limit) || 10, 1), 25);
+  const limit = Math.min(Math.max(Number(input.limit) || 5, 1), 100);
   const titles = Array.isArray(input.titles)
     ? input.titles.map(String).filter(Boolean).slice(0, 8)
     : String(input.titles || '')
@@ -244,12 +244,13 @@ export async function createOutreachRun(input = {}) {
     .map((c) => String(c).toLowerCase())
     .filter((c) => c === 'email' || c === 'linkedin' || c === 'phone' || c === 'whatsapp');
 
+  // Apollo people search typically caps at 100 per page — request enough to fill after filters
+  const perPage = Math.min(100, Math.max(limit, Math.min(limit * 2, 100)));
+  const DEFAULT_TITLES = ['Founder', 'CEO', 'Head of Marketing', 'VP Sales', 'Managing Director', 'Chief Strategy Officer'];
   const searchBody = {
     page: 1,
-    per_page: Math.min(limit * 2, 25),
-    person_titles: titles.length
-      ? titles
-      : ['Founder', 'CEO', 'Head of Marketing', 'VP Sales', 'Managing Director'],
+    per_page: perPage,
+    person_titles: titles.length ? titles : DEFAULT_TITLES,
     person_locations: [country],
     contact_email_status: contactChannels.includes('email') || !contactChannels.length ? ['verified', 'likely to engage'] : undefined,
   };
@@ -257,66 +258,155 @@ export async function createOutreachRun(input = {}) {
     searchBody.q_organization_keyword_tags = industries;
   }
 
+  // Drop titles that look like company ICP prose (not job titles) — they return 0 Apollo hits
+  const looksLikeJobTitle = (t) =>
+    /\b(founder|ceo|cto|cmo|coo|cso|vp|vice president|head|director|manager|partner|principal|owner|chief)\b/i.test(
+      String(t || '')
+    ) && String(t || '').length <= 50;
+  if (
+    Array.isArray(searchBody.person_titles) &&
+    searchBody.person_titles.length &&
+    !searchBody.person_titles.some(looksLikeJobTitle)
+  ) {
+    searchBody.person_titles = DEFAULT_TITLES;
+  }
+
   let people = [];
   let source = 'apollo';
 
-  const proxy = await executeComposioProxy({
-    toolkit: 'apollo',
-    userId: companyId,
-    method: 'POST',
-    endpoint: APOLLO_PEOPLE_API,
-    body: searchBody,
-  });
+  async function apolloSearch(body) {
+    const proxy = await executeComposioProxy({
+      toolkit: 'apollo',
+      userId: companyId,
+      method: 'POST',
+      endpoint: APOLLO_PEOPLE_API,
+      body,
+    });
+    if (!proxy.error) {
+      return { people: extractPeople(proxy.result), source: 'apollo_people_api_search', error: null };
+    }
+    const tool = await executeComposioAction('APOLLO_PEOPLE_SEARCH', body, companyId, 'apollo');
+    if (!tool.error) {
+      return { people: extractPeople(tool.result), source: 'apollo_people_search', error: null };
+    }
+    const broad = { ...body };
+    delete broad.contact_email_status;
+    const tool2 = await executeComposioAction('APOLLO_PEOPLE_SEARCH', broad, companyId, 'apollo');
+    if (!tool2.error) {
+      return { people: extractPeople(tool2.result), source: 'apollo_people_search_broad', error: null };
+    }
+    return { people: [], source: null, error: proxy.error || tool.error || tool2.error };
+  }
 
-  if (!proxy.error) {
-    people = extractPeople(proxy.result);
-    source = 'apollo_people_api_search';
-  } else {
-    const tool = await executeComposioAction('APOLLO_PEOPLE_SEARCH', searchBody, companyId, 'apollo');
-    if (tool.error) {
-      // Retry without email status filter (broader)
-      const broad = { ...searchBody };
-      delete broad.contact_email_status;
-      const tool2 = await executeComposioAction('APOLLO_PEOPLE_SEARCH', broad, companyId, 'apollo');
-      if (tool2.error) {
-        throw new Error(proxy.error || tool.error || tool2.error || 'Apollo search failed');
-      }
-      people = extractPeople(tool2.result);
-      source = 'apollo_people_search_broad';
-    } else {
-      people = extractPeople(tool.result);
-      source = 'apollo_people_search';
+  let search = await apolloSearch(searchBody);
+  people = search.people;
+  source = search.source || source;
+
+  // Retry: drop industry tags + email filter, use default decision-maker titles
+  if (!people.length) {
+    const retryBody = {
+      page: 1,
+      per_page: perPage,
+      person_titles: DEFAULT_TITLES,
+      person_locations: [country],
+    };
+    search = await apolloSearch(retryBody);
+    if (search.people.length) {
+      people = search.people;
+      source = `${search.source || 'apollo'}_fallback_titles`;
+      searchBody.person_titles = DEFAULT_TITLES;
+      delete searchBody.q_organization_keyword_tags;
+      delete searchBody.contact_email_status;
+    } else if (search.error) {
+      throw new Error(search.error || 'Apollo search failed');
     }
   }
 
-  // Enrich first N people for emails when missing
+  // Last resort: India founders/CEOs without email status requirement
+  if (!people.length) {
+    search = await apolloSearch({
+      page: 1,
+      per_page: perPage,
+      person_titles: ['Founder', 'CEO', 'Managing Director'],
+      person_locations: [country],
+    });
+    people = search.people;
+    source = search.source ? `${search.source}_last_resort` : source;
+    if (!people.length && search.error) {
+      throw new Error(search.error || 'Apollo search failed');
+    }
+  }
+
+  // Enrich first N people for emails when missing; apply channel filters progressively
   const prospects = [];
-  for (let i = 0; i < people.length && prospects.length < limit; i++) {
-    let person = people[i];
-    if (!person.email && person.id) {
+  const requireEmail = contactChannels.includes('email') || !contactChannels.length;
+  const requireLinkedin = contactChannels.includes('linkedin');
+  const requirePhone = contactChannels.includes('phone') || contactChannels.includes('whatsapp');
+
+  function matchesChannels(mapped, { email = requireEmail, linkedin = requireLinkedin, phone = requirePhone } = {}) {
+    if (email && !mapped.email) return false;
+    if (linkedin && !mapped.linkedin_url) return false;
+    if (phone && !mapped.phone_e164) return false;
+    return true;
+  }
+
+  async function enrichPerson(person) {
+    let next = person;
+    const needsEnrich =
+      (!next.email && requireEmail) ||
+      (!next.linkedin_url && requireLinkedin) ||
+      (!next.phone_e164 && requirePhone);
+    if (needsEnrich && next.id) {
       const enrich = await executeComposioAction(
         'APOLLO_PEOPLE_ENRICHMENT',
-        { id: person.id },
+        { id: next.id },
         companyId,
         'apollo'
       );
       if (!enrich.error) {
         const data = enrich.result?.person || enrich.result?.data?.person || enrich.result || {};
-        if (data && typeof data === 'object') person = { ...person, ...data };
+        if (data && typeof data === 'object') next = { ...next, ...data };
       }
     }
+    return next;
+  }
+
+  for (let i = 0; i < people.length && prospects.length < limit; i++) {
+    const person = await enrichPerson(people[i]);
     const mapped = mapPerson(person, i);
-    if (contactChannels.includes('email') && !mapped.email) continue;
-    if (contactChannels.includes('linkedin') && !mapped.linkedin_url) continue;
-    if ((contactChannels.includes('phone') || contactChannels.includes('whatsapp')) && !mapped.phone_e164) {
-      continue;
+    if (matchesChannels(mapped)) prospects.push(mapped);
+  }
+
+  // Soften filters if too strict (phone especially is sparse in Apollo)
+  if (!prospects.length && people.length && requirePhone) {
+    for (let i = 0; i < people.length && prospects.length < limit; i++) {
+      const person = await enrichPerson(people[i]);
+      const mapped = mapPerson(person, i);
+      if (matchesChannels(mapped, { phone: false })) prospects.push(mapped);
     }
-    prospects.push(mapped);
+    if (prospects.length) source = `${source}_phone_optional`;
+  }
+
+  if (!prospects.length && people.length && requireLinkedin) {
+    for (let i = 0; i < people.length && prospects.length < limit; i++) {
+      const person = await enrichPerson(people[i]);
+      const mapped = mapPerson(person, i);
+      if (matchesChannels(mapped, { linkedin: false, phone: false })) prospects.push(mapped);
+    }
+    if (prospects.length) source = `${source}_linkedin_optional`;
+  }
+
+  // If email filter emptied the list, accept people without revealed emails (draft outreach still works)
+  if (!prospects.length && people.length) {
+    for (let i = 0; i < people.length && prospects.length < limit; i++) {
+      prospects.push(mapPerson(people[i], i));
+    }
+    source = `${source}_no_email_filter`;
   }
 
   if (!prospects.length) {
     throw new Error(
-      `No prospects matched Apollo filters (${titles.join(', ') || 'default titles'}). Try broader titles or ensure Apollo reveals emails.`
+      `No prospects matched Apollo filters (${(searchBody.person_titles || []).join(', ') || 'default titles'}). Try broader titles or ensure Apollo reveals emails.`
     );
   }
 

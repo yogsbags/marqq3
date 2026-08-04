@@ -18,19 +18,67 @@ const STEPS = [
   { id: 'inbox', label: '4 · Sent & replies' },
 ];
 
+/** Prospecting channel presets — filters Apollo results + Sam copy channels. */
+export const CONTACT_CHANNEL_PRESETS = [
+  {
+    id: 'email',
+    label: 'Email only',
+    channels: ['email'],
+  },
+  {
+    id: 'email_linkedin',
+    label: 'Email + LinkedIn',
+    channels: ['email', 'linkedin'],
+  },
+  {
+    id: 'email_linkedin_phone',
+    label: 'Email + LinkedIn + Phone',
+    channels: ['email', 'linkedin', 'phone'],
+  },
+];
+
+function channelsForPreset(presetId) {
+  const preset = CONTACT_CHANNEL_PRESETS.find((p) => p.id === presetId) || CONTACT_CHANNEL_PRESETS[0];
+  return [...preset.channels];
+}
+
 /** Derive Apollo person titles from ICP / persona free text. */
 function titlesFromAudience(icp = '', persona = '') {
+  const DEFAULT_TITLES = [
+    'Founder',
+    'CEO',
+    'Managing Director',
+    'Chief Strategy Officer',
+    'VP Strategy',
+    'Head of Digital Transformation',
+    'VP Sales',
+    'Head of Marketing',
+  ];
   const blob = `${persona} ${icp}`.trim();
-  if (!blob) return ['Founder', 'CEO', 'Head of Marketing', 'VP Sales', 'Managing Director'];
+  if (!blob) return DEFAULT_TITLES;
+
+  // Prefer explicit role phrases inside the ICP/persona text
+  const ROLE_RE =
+    /\b((?:Chief\s+\w+(?:\s+\w+)?)|(?:VP|Vice\s+President)(?:\s+of)?\s+[\w &/-]{2,40}|(?:Head|Director|Manager)\s+of\s+[\w &/-]{2,40}|Founder|Co-?Founder|CEO|COO|CMO|CTO|CSO|Managing Director)\b/gi;
+  const roleHits = [...blob.matchAll(ROLE_RE)].map((m) => m[1].replace(/\s+/g, ' ').trim());
+  const uniqueRoles = [...new Set(roleHits.map((r) => r.slice(0, 60)))].slice(0, 6);
+  if (uniqueRoles.length) return uniqueRoles;
+
+  // Split on separators only when chunks look like job titles (not company descriptors)
   const parts = blob
     .split(/[,;/|]| and | & |\n/i)
-    .map((s) => s.replace(/^(vp|head of|chief|director of)\s+/i, (m) => m).trim())
     .map((s) => s.replace(/^[^a-zA-Z]+/, '').trim())
-    .filter((s) => s.length >= 3 && s.length <= 60)
+    .filter((s) => s.length >= 3 && s.length <= 40)
+    .filter((s) =>
+      /\b(founder|ceo|cto|cmo|coo|cso|vp|vice president|head|director|manager|partner|principal|owner)\b/i.test(
+        s
+      )
+    )
     .slice(0, 6);
   if (parts.length) return parts;
-  // Fallback: use first meaningful phrase as a single title search term
-  return [blob.slice(0, 48)];
+
+  // ICP described the buyer company, not roles — use consulting/B2B decision-maker titles
+  return DEFAULT_TITLES;
 }
 
 function liveOutreachDefaults() {
@@ -48,8 +96,10 @@ function liveOutreachDefaults() {
     ? niche
         .split(/[,;/]/)
         .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 4)
+        .filter((s) => s.length >= 3 && s.length <= 40)
+        // Skip long consulting blurbs — they break Apollo keyword tags
+        .filter((s) => !/consulting|solutions|transformation/i.test(s) || s.split(/\s+/).length <= 3)
+        .slice(0, 3)
     : [];
 
   return {
@@ -69,12 +119,28 @@ function liveOutreachDefaults() {
     industries,
     contactChannels: ['email'],
     country: localStorage.getItem('marqq_ob_country') || 'India',
-    limit: 8,
+    limit: 5,
   };
+}
+
+function loadSavedChannelPreset() {
+  try {
+    const saved = localStorage.getItem('marqq_outreach_channel_preset');
+    if (CONTACT_CHANNEL_PRESETS.some((p) => p.id === saved)) return saved;
+  } catch {
+    /* ignore */
+  }
+  return 'email';
 }
 
 export default function OutreachStudio({ setActiveScreen }) {
   const [outreachDefaults] = useState(() => liveOutreachDefaults());
+  const [prospectLimit, setProspectLimit] = useState(() => {
+    const saved = Number(localStorage.getItem('marqq_outreach_prospect_limit'));
+    if (Number.isFinite(saved) && saved >= 1 && saved <= 100) return Math.floor(saved);
+    return 5;
+  });
+  const [channelPreset, setChannelPreset] = useState(loadSavedChannelPreset);
   const [step, setStep] = useState('prospects');
   const [runId, setRunId] = useState(null);
   const [prospects, setProspects] = useState([]);
@@ -184,15 +250,42 @@ export default function OutreachStudio({ setActiveScreen }) {
     setError(null);
   };
 
+  const clampProspectLimit = (n) => Math.min(100, Math.max(1, Math.floor(Number(n) || 5)));
+
+  const updateProspectLimit = (next) => {
+    const n = clampProspectLimit(next);
+    setProspectLimit(n);
+    try {
+      localStorage.setItem('marqq_outreach_prospect_limit', String(n));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const updateChannelPreset = (id) => {
+    if (!CONTACT_CHANNEL_PRESETS.some((p) => p.id === id)) return;
+    setChannelPreset(id);
+    try {
+      localStorage.setItem('marqq_outreach_channel_preset', id);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const fetchProspects = async () => {
     setBusy('fetch');
     setError(null);
     setNotice(null);
     try {
+      const channels = channelsForPreset(channelPreset);
       const res = await fetch('/api/outreach/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(outreachDefaults),
+        body: JSON.stringify({
+          ...outreachDefaults,
+          limit: clampProspectLimit(prospectLimit),
+          contactChannels: channels,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -201,8 +294,10 @@ export default function OutreachStudio({ setActiveScreen }) {
       setSelectedId(null);
       setReplies([]);
       setSent([]);
+      const presetLabel =
+        CONTACT_CHANNEL_PRESETS.find((p) => p.id === channelPreset)?.label || channels.join(' + ');
       setNotice(
-        `Loaded ${(data.prospects || []).length} Apollo prospects · ${data.run?.source || 'apollo'}${
+        `Loaded ${(data.prospects || []).length} Apollo prospects · ${presetLabel} · ${data.run?.source || 'apollo'}${
           data.crm_sync?.ok
             ? ` · CRM → ${data.crm_sync.destination}${data.crm_sync.url ? ` (${data.crm_sync.count || ''} leads)` : ''}`
             : data.crm_sync?.skipped
@@ -225,9 +320,12 @@ export default function OutreachStudio({ setActiveScreen }) {
     setBusy('copy');
     setError(null);
     try {
-      const channels = ['email'];
-      if (selected.linkedin_url) channels.push('linkedin');
-      if (selected.phone_e164) channels.push('whatsapp');
+      const channels = channelsForPreset(channelPreset);
+      // Also include channels that have contact data even if not in preset
+      if (selected.linkedin_url && !channels.includes('linkedin')) channels.push('linkedin');
+      if (selected.phone_e164 && !channels.includes('phone') && !channels.includes('whatsapp')) {
+        channels.push('phone');
+      }
       const res = await fetch(`/api/outreach/runs/${runId}/prospects/${selected.id}/copy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -245,7 +343,7 @@ export default function OutreachStudio({ setActiveScreen }) {
             : p.channel_copies?.email || { subject: p.subject, body: p.body };
       setSubject(copy?.subject || '');
       setBody(copy?.body || '');
-      setNotice('Sam drafted copy with cold-email skill');
+      setNotice(`Sam drafted ${channels.join(' + ')} copy`);
       if (composeChannel === 'email' && (copy?.subject || copy?.body)) {
         // Auto-build 4-step sequence after first-touch copy
         try {
@@ -628,14 +726,99 @@ export default function OutreachStudio({ setActiveScreen }) {
                   : ' (set ICP in Audience / Brand DNA)'}
               </p>
             </div>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy === 'fetch' || !apolloOk}
-              onClick={() => void fetchProspects()}
-            >
-              {busy === 'fetch' ? 'Searching Apollo…' : runId ? 'Refresh prospects' : 'Fetch prospects'}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 12,
+                  color: 'var(--color-muted)',
+                  fontWeight: 600,
+                }}
+              >
+                Channels
+                <select
+                  className="input"
+                  value={channelPreset}
+                  disabled={busy === 'fetch'}
+                  aria-label="Prospecting contact channels"
+                  onChange={(e) => updateChannelPreset(e.target.value)}
+                  style={{ minWidth: 200, fontWeight: 700, fontSize: 12, padding: '8px 10px' }}
+                >
+                  {CONTACT_CHANNEL_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 12,
+                  color: 'var(--color-muted)',
+                  fontWeight: 600,
+                }}
+              >
+                Count
+                <span style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--color-divider)' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    aria-label="Decrease prospect count"
+                    disabled={busy === 'fetch' || prospectLimit <= 1}
+                    onClick={() => updateProspectLimit(prospectLimit - 1)}
+                    style={{ border: 'none', borderRadius: 0, minWidth: 36, padding: '6px 10px' }}
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={prospectLimit}
+                    disabled={busy === 'fetch'}
+                    onChange={(e) => updateProspectLimit(e.target.value)}
+                    onBlur={(e) => updateProspectLimit(e.target.value)}
+                    aria-label="Number of prospects to fetch"
+                    style={{
+                      width: 52,
+                      textAlign: 'center',
+                      border: 'none',
+                      borderLeft: '1px solid var(--color-divider)',
+                      borderRight: '1px solid var(--color-divider)',
+                      background: 'var(--color-bg)',
+                      color: 'var(--color-text)',
+                      fontWeight: 800,
+                      fontSize: 13,
+                      padding: '8px 4px',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    aria-label="Increase prospect count"
+                    disabled={busy === 'fetch' || prospectLimit >= 100}
+                    onClick={() => updateProspectLimit(prospectLimit + 1)}
+                    style={{ border: 'none', borderRadius: 0, minWidth: 36, padding: '6px 10px' }}
+                  >
+                    +
+                  </button>
+                </span>
+                <span style={{ fontWeight: 500 }}>/ 100</span>
+              </label>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy === 'fetch' || !apolloOk}
+                onClick={() => void fetchProspects()}
+              >
+                {busy === 'fetch' ? 'Searching Apollo…' : runId ? 'Refresh prospects' : 'Fetch prospects'}
+              </button>
+            </div>
           </div>
           {!apolloOk ? (
             <p className="text-muted" style={{ fontSize: 13 }}>
