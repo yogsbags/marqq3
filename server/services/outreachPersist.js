@@ -86,6 +86,12 @@ function prospectFromRow(row) {
 }
 
 function runFromRows(runRow, prospectRows = []) {
+  const targetConfig = runRow.target_config || null;
+  const contactChannels = Array.isArray(targetConfig?.contactChannels)
+    ? targetConfig.contactChannels
+    : runRow.channel
+      ? [runRow.channel]
+      : ['email'];
   return {
     id: runRow.id,
     workspaceId: runRow.workspace_id,
@@ -93,16 +99,19 @@ function runFromRows(runRow, prospectRows = []) {
     companyName: runRow.company_name,
     question: runRow.question,
     channel: runRow.channel,
+    contactChannels,
     target: runRow.target,
     goal: runRow.goal,
-    source: runRow.source,
+    source: runRow.source || targetConfig?.source || null,
     campaigns: runRow.campaigns || [],
     replies: runRow.replies || [],
+    sequence_emails: runRow.sequence_emails || [],
     senderName: runRow.sender_name,
     prospects: (prospectRows || []).map(prospectFromRow),
     createdAt: runRow.created_at,
     updatedAt: runRow.updated_at,
-    apollo: runRow.target_config,
+    apollo: targetConfig,
+    target_config: targetConfig,
   };
 }
 

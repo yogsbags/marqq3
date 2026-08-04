@@ -425,6 +425,14 @@ export async function createOutreachRun(input = {}) {
     prospects,
     replies: [],
     campaigns: [],
+    // Persisted via target_config so other instances can restore filters/channels
+    target_config: {
+      titles: searchBody.person_titles,
+      industries,
+      country,
+      contactChannels: contactChannels.length ? contactChannels : ['email'],
+      source,
+    },
   };
   cacheRun(run);
 
@@ -458,6 +466,13 @@ export async function getOutreachRun(runId) {
   return null;
 }
 
+/** Load from memory or Supabase — required on multi-instance / after restarts. */
+async function requireRun(runId) {
+  const run = await getOutreachRun(runId);
+  if (!run) throw new Error('Outreach run not found');
+  return run;
+}
+
 async function touchRun(run) {
   if (!run?.id) return;
   cacheRun(run);
@@ -467,9 +482,8 @@ export function listOutreachRuns(workspaceId) {
   return [...runsById.values()].filter((r) => !workspaceId || r.workspaceId === workspaceId);
 }
 
-export function patchProspect(runId, prospectId, patch = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+export async function patchProspect(runId, prospectId, patch = {}) {
+  const run = await requireRun(runId);
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
   const allowed = [
@@ -500,7 +514,7 @@ export function patchProspect(runId, prospectId, patch = {}) {
       );
     }
   }
-  void persistOutreachRun(run);
+  await touchRun(run);
   return prospect;
 }
 
@@ -516,13 +530,12 @@ async function groqJson(system, user, workspaceId = 'marqq-ws-1') {
 }
 
 export async function generateProspectCopy(runId, prospectId, { channels } = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   assertCanAfford(run.workspaceId || run.companyId, 'outreach_copy');
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
 
-  const wanted = (channels || run.contactChannels || ['email']).map(String);
+  const wanted = (channels || run.contactChannels || run.target_config?.contactChannels || ['email']).map(String);
   const playbook = loadColdEmailPlaybook();
   const channelCopies = { ...(prospect.channel_copies || {}) };
   const senderName = resolveSenderName(run.senderName);
@@ -572,12 +585,12 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
 
   prospect.channel_copies = channelCopies;
   prospect.status = 'copy_ready';
+  await touchRun(run);
   return prospect;
 }
 
 export async function saveGmailDraft(runId, prospectId, { subject, body, buildSequence = true } = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
   if (subject != null) prospect.subject = String(subject);
@@ -650,8 +663,7 @@ export async function sendProspectEmail(
   prospectId,
   { subject, body, testTo, advanceSequence = true } = {}
 ) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
   if (prospect.status === 'replied' || prospect.gmail_sequence_status === 'stopped_reply') {
@@ -817,8 +829,7 @@ function matchReplyToSentProspect(run, msg) {
 }
 
 export async function pollGmailReplies(runId) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
 
   const sent = sentProspects(run);
   const sentList = listSentEmails(run);
@@ -1174,8 +1185,7 @@ export async function draftAutoReplyForRecordedReply(run, prospect, reply) {
 }
 
 export async function regenerateReplyDraft(runId, replyId) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const found = findReplyInRun(run, replyId);
   if (!found?.reply) throw new Error('Reply not found');
   if (!found.prospect) throw new Error('Prospect not found for reply');
@@ -1183,8 +1193,7 @@ export async function regenerateReplyDraft(runId, replyId) {
 }
 
 export async function updateReplyDraft(runId, replyId, patch = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const found = findReplyInRun(run, replyId);
   if (!found?.reply) throw new Error('Reply not found');
   const { prospect, reply } = found;
@@ -1223,8 +1232,7 @@ export async function updateReplyDraft(runId, replyId, patch = {}) {
 }
 
 export async function rejectReplyDraft(runId, replyId) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const found = findReplyInRun(run, replyId);
   if (!found?.reply) throw new Error('Reply not found');
 
@@ -1241,8 +1249,7 @@ export async function rejectReplyDraft(runId, replyId) {
  * Explicit approve → send drafted reply via Gmail. Never auto-fires on poll.
  */
 export async function approveReplyDraft(runId, replyId, { send = true, testTo } = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const found = findReplyInRun(run, replyId);
   if (!found?.reply) throw new Error('Reply not found');
   const { prospect, reply } = found;
@@ -1379,8 +1386,7 @@ async function connectorActive(companyId, connectorId) {
  * email → Instantly (preferred) or Gmail; linkedin → HeyReach; whatsapp → WhatsApp.
  */
 export async function goLiveProspect(runId, prospectId, opts = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const prospect = run.prospects.find((p) => p.id === prospectId);
   if (!prospect) throw new Error('Prospect not found');
 
@@ -1624,9 +1630,8 @@ export function getWhatsAppTemplatesForCompany(companyId) {
   return listWhatsAppTemplates(companyId);
 }
 
-export function getWhatsAppDeliveryForRun(runId) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+export async function getWhatsAppDeliveryForRun(runId) {
+  const run = await requireRun(runId);
   const tracked = listWhatsAppStatusesForRun(runId);
   // Merge latest delivery_status onto prospect go_live results
   for (const prospect of run.prospects || []) {
@@ -1690,8 +1695,7 @@ export function getWhatsAppInbound(runId) {
  * Generate / replace run-level multi-step email sequence (first + 3 follow-ups).
  */
 export async function generateRunEmailSequence(runId, { subject, body, prospectId } = {}) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+  const run = await requireRun(runId);
   const prospect =
     (prospectId && run.prospects.find((p) => p.id === prospectId)) ||
     run.prospects.find((p) => p.subject || p.body || p.channel_copies?.email) ||
@@ -1719,11 +1723,10 @@ export async function generateRunEmailSequence(runId, { subject, body, prospectI
 /**
  * Patch run-level sequence_emails from the UI.
  */
-export function setRunEmailSequence(runId, emails) {
-  const run = runsById.get(runId);
-  if (!run) throw new Error('Outreach run not found');
+export async function setRunEmailSequence(runId, emails) {
+  const run = await requireRun(runId);
   run.sequence_emails = normalizeSequenceEmails(emails);
-  touchRun(run);
+  await touchRun(run);
   return { sequence_emails: run.sequence_emails };
 }
 

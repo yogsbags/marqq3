@@ -1121,12 +1121,13 @@ router.get('/outreach/runs/:runId', async (req, res) => {
   });
 });
 
-router.patch('/outreach/runs/:runId/prospects/:prospectId', (req, res) => {
+router.patch('/outreach/runs/:runId/prospects/:prospectId', async (req, res) => {
   try {
-    const prospect = patchProspect(req.params.runId, req.params.prospectId, req.body || {});
+    const prospect = await patchProspect(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, prospect });
   } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
+    const status = /not found/i.test(err.message || '') ? 404 : 400;
+    res.status(status).json({ ok: false, error: err.message });
   }
 });
 
@@ -1139,7 +1140,8 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/copy', async (req, res)
   } catch (err) {
     if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/copy]', err);
-    res.status(500).json({ ok: false, error: err.message || 'Copy generation failed' });
+    const status = /not found/i.test(err.message || '') ? 404 : 500;
+    res.status(status).json({ ok: false, error: err.message || 'Copy generation failed' });
   }
 });
 
@@ -1191,13 +1193,14 @@ router.post('/outreach/runs/:runId/generate-sequence', async (req, res) => {
   }
 });
 
-router.put('/outreach/runs/:runId/sequence', (req, res) => {
+router.put('/outreach/runs/:runId/sequence', async (req, res) => {
   try {
     const emails = req.body?.sequence_emails || req.body?.emails || req.body;
-    const result = setRunEmailSequence(req.params.runId, emails);
+    const result = await setRunEmailSequence(req.params.runId, emails);
     res.json({ ok: true, ...result });
   } catch (err) {
-    res.status(400).json({ ok: false, error: err.message });
+    const status = /not found/i.test(err.message || '') ? 404 : 400;
+    res.status(status).json({ ok: false, error: err.message });
   }
 });
 
@@ -1225,9 +1228,9 @@ router.get('/outreach/whatsapp/templates', async (req, res) => {
 });
 
 /** Delivery statuses + inbound for a run (Meta webhook + in-memory index) */
-router.get('/outreach/runs/:runId/whatsapp/statuses', (req, res) => {
+router.get('/outreach/runs/:runId/whatsapp/statuses', async (req, res) => {
   try {
-    res.json({ ok: true, ...getWhatsAppDeliveryForRun(req.params.runId) });
+    res.json({ ok: true, ...(await getWhatsAppDeliveryForRun(req.params.runId)) });
   } catch (err) {
     res.status(404).json({ ok: false, error: err.message });
   }
