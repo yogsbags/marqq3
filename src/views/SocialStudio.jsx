@@ -285,13 +285,20 @@ export default function SocialStudio({ setActiveScreen }) {
             </div>
           ) : null}
           {posts.map((p) => (
-            <div key={p.id} style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8 }}>
+            <div
+              key={p.id}
+              data-testid="social-post-card"
+              data-channel={p.channel}
+              data-angle={p.angle}
+              style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8 }}
+            >
               <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>
                 {p.channel} · {p.angle}
               </div>
               <textarea
                 className="input"
-                rows={4}
+                data-testid="social-post-caption"
+                rows={8}
                 style={{ marginTop: 8 }}
                 value={p.caption}
                 onChange={(e) => updatePost(p.id, 'caption', e.target.value)}
@@ -302,7 +309,7 @@ export default function SocialStudio({ setActiveScreen }) {
             </div>
           ))}
           {posts.length ? (
-            <button type="button" className="btn btn-primary" onClick={() => setStep('approve')}>
+            <button type="button" className="btn btn-primary" data-testid="social-continue-approve" onClick={() => setStep('approve')}>
               Continue to approve <ArrowRight size={14} />
             </button>
           ) : null}
@@ -349,7 +356,13 @@ export default function SocialStudio({ setActiveScreen }) {
                   : true;
             const canPublish = ready && mediaOk && p.caption;
             return (
-              <div key={p.id} style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div
+                key={p.id}
+                data-testid="social-approve-card"
+                data-channel={p.channel}
+                data-angle={p.angle}
+                style={{ padding: 12, border: '1px solid var(--color-divider)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                   <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>
                     {p.channel} · {p.angle}
@@ -414,14 +427,16 @@ export default function SocialStudio({ setActiveScreen }) {
                   </div>
                 )}
                 <div className="card-kicker">Channel preview · feels published</div>
-                <SocialPostPreview
-                  platform={p.channel}
-                  authorName={getCompanyName() || seed.companyName || 'Your Brand'}
-                  post={p.caption || ''}
-                  hook={p.hook || p.title}
-                  imageUrl={p.image_url || undefined}
-                  videoUrl={p.video_url || undefined}
-                />
+                <div data-testid="social-channel-preview" data-channel={p.channel}>
+                  <SocialPostPreview
+                    platform={p.channel}
+                    authorName={getCompanyName() || seed.companyName || 'Your Brand'}
+                    post={p.caption || ''}
+                    hook={p.hook || p.title}
+                    imageUrl={p.image_url || undefined}
+                    videoUrl={p.video_url || undefined}
+                  />
+                </div>
                 {!ready ? (
                   <p className="text-muted" style={{ fontSize: 12, margin: 0 }}>
                     Connect {p.channel === 'twitter' ? 'X (Twitter)' : p.channel} under Integrations to publish.

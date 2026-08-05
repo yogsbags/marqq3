@@ -69,7 +69,15 @@ export function SocialPostPreview({
   style,
 }) {
   const key = platformKey(platform);
-  const text = [hook, post].filter(Boolean).join('\n\n');
+  // Caption from Social Studio already includes hook as line 1 — don't double it in preview.
+  const body = String(post || '').trim();
+  const hookLine = String(hook || '').trim();
+  const bodyStartsWithHook =
+    hookLine &&
+    body.toLowerCase().replace(/\s+/g, ' ').startsWith(hookLine.toLowerCase().replace(/\s+/g, ' '));
+  const text = bodyStartsWithHook
+    ? body
+    : [hookLine, body].filter(Boolean).join('\n\n');
   const tags = (hashtags || []).map((t) => (String(t).startsWith('#') ? t : `#${t}`));
   const handle = authorHandle || handleFrom(authorName);
 

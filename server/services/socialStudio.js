@@ -21,11 +21,54 @@ const DEFAULT_CHANNELS = ['linkedin', 'instagram', 'twitter', 'facebook'];
 const DEFAULT_ANGLES = ['benefit', 'proof', 'curiosity'];
 const ALLOWED_CHANNELS = ['linkedin', 'instagram', 'twitter', 'facebook', 'youtube', 'x'];
 
+/** Patterns that usually mean hallucinated case-study numbers */
+const UNVERIFIED_METRIC_RE =
+  /(\b\d{1,3}\s*%|\b\d+\s*[x×]\b|\b\d{1,4}\s*(?:\+?\s*)?(?:clients?|customers?|firms?|companies|mid[- ]market|brands?|pilots?|users|employees)\b|\b(?:lift|uplift|ROI|CAC|ROAS|conversion|repeat[- ]purchase)\b.{0,40}\b\d|\b\d.{0,40}\b(?:lift|uplift|ROI|CAC|ROAS)\b|\b(?:in our (?:recent )?work with|we (?:helped|worked with)|across)\s+\d+)/gi;
+
 function channelKind(channel) {
   const c = String(channel || '').toLowerCase();
   if (c === 'x') return 'twitter';
   return c;
 }
+
+function groundedSourceText(run) {
+  return [
+    run?.brandContext,
+    run?.topic,
+    run?.brief?.hook,
+    ...(Array.isArray(run?.brief?.message_pillars) ? run.brief.message_pillars : []),
+    run?.brief?.cta,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** True when caption cites % / counts / case claims not present in brand/topic brief context. */
+function findUnverifiedMetrics(caption, groundedText) {
+  const text = String(caption || '');
+  const grounded = String(groundedText || '');
+  const hits = [];
+  for (const match of text.matchAll(UNVERIFIED_METRIC_RE)) {
+    const raw = String(match[0] || '').trim();
+    if (!raw) continue;
+    // Allow numbers that already appear verbatim in grounded brand/topic context
+    const compact = raw.replace(/\s+/g, ' ').toLowerCase();
+    if (grounded.toLowerCase().includes(compact)) continue;
+    // Allow bare small integers used as list counts (1, 2, 3) when not %/clients
+    if (/^\d{1,2}$/.test(raw) && Number(raw) <= 10) continue;
+    hits.push(raw);
+  }
+  return [...new Set(hits)];
+}
+
+const TRUTH_RULES = [
+  'TRUTHFULNESS (hard rules — never break):',
+  '1) NEVER invent metrics, percentages, ROI, lift, timelines-as-stats, client counts, sample sizes, survey results, or named case studies.',
+  '2) NEVER write "in our work with N firms", "70% stall", "9% lift", "X customers" unless that EXACT figure appears in brand_context / topic.',
+  '3) Proof angle ≠ fake case study. Proof = observed operator pattern, mechanism, before/after workflow, or a specific failure mode — framed as pattern ("what we keep seeing"), not fabricated n=.',
+  '4) If no real numbers are in brand_context, use qualitative proof only: frameworks, decision criteria, tradeoffs, named industry tension (no fake stats).',
+  '5) Prefer "often", "usually", "the pattern we see" over any number. When unsure, omit the number.',
+].join(' ');
 
 function parseJsonLoose(raw) {
   const text = String(raw || '').trim();
@@ -74,6 +117,7 @@ function publicRun(run) {
     brief: run.brief,
     posts: run.posts,
     skills: run.skills,
+    composeMeta: run.composeMeta || null,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
@@ -133,9 +177,11 @@ export async function runSocialBrief(runId, patch = {}) {
       'Write a short social campaign brief optimized for viral LinkedIn reach. Return ONLY JSON:',
       '{ "hook": "...", "message_pillars": ["..."], "cta": "...", "tone": "...", "visual_direction": "..." }',
       'hook must be a scroll-stopping first line (curiosity/contrarian/story/value), ≤180 chars — not a topic label.',
-      'message_pillars: 3 concrete tensions/angles buyers debate, not generic benefits.',
+      'hook must NOT invent statistics or client counts.',
+      'message_pillars: 3 concrete tensions/angles buyers debate, not generic benefits, and not fabricated proof numbers.',
       'cta: prefer a discussion question or soft comment-side next step over hard sell.',
       'tone: peer operator, opinionated, specific.',
+      TRUTH_RULES,
       playbook.playbook || '',
     ].join(' '),
     user: JSON.stringify({
@@ -172,51 +218,85 @@ export async function runSocialCompose(runId) {
   const playbook = await buildPlaybookFromPack(PACK_PACK, { label: 'social_pack' });
   run.skills.compose = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
-  const parsed = await groqJson({
+  const composeSystem = [
+    'You are Kiran + Sam writing organic social posts optimized for reach and comments.',
+    'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
+    `Create one post per channel×angle. Channels: ${run.channels.join(', ')}. Angles: ${DEFAULT_ANGLES.join(', ')}.`,
+    // LinkedIn virality (social-content skill: platforms.md + post-templates.md + hook formulas)
+    'LINKEDIN VIRAL RULES (mandatory when channel=linkedin):',
+    '1) Hook = first line ONLY, ≤180 chars, before fold. Use curiosity, contrarian, story, or value formula. Must make a reader stop mid-scroll.',
+    '2) caption = full post including the hook as line 1, then blank line, then short lines (1–2 sentences max per line). Use \\n\\n whitespace. Target 900–1600 characters (not a thin 80-word blurb, not a wall of text).',
+    '3) Pattern: Hook → concrete tension/observation → 3 sharp points OR a short story beat → lesson → engagement question as last line.',
+    '4) Algorithm: NO external URLs in caption body (puts link in comments instead via cta note). Comments > likes. End with a real discussion question, not "Thoughts?".',
+    '5) Banned: "Excited to announce", "I\'m humbled", generic motivation, corporate fluff, invented metrics/case studies, links in body, emoji spam.',
+    '6) Voice: peer founder/operator — specific, opinionated, industry-concrete. Prefer naming the real tension buyers feel over promoting the product. Soft brand only in the last 1–2 lines if at all.',
+    'ANGLE GUIDE:',
+    '- benefit: outcome or capability the reader wants — still no fake numbers.',
+    '- proof: credibility via mechanism, operator pattern, or concrete failure mode. NOT fake case studies or invented % lifts.',
+    '- curiosity: open a loop / reframe — no fake research stats as bait.',
+    'Vary structure across angles (do not use the exact same 3-bullet skeleton thrice).',
+    TRUTH_RULES,
+    'Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars with a punchy take. Facebook: conversational. YouTube: title-friendly caption + description tone.',
+    'No placeholders. Hashtags: 3–5 niche (LinkedIn: end of post or empty array). Peer tone, not salesy.',
+    playbook.playbook || '',
+  ].join(' ');
+
+  const composeUser = {
+    company: run.companyName,
+    topic: run.topic,
+    audience: run.audience,
+    brief: run.brief,
+    brand_context: run.brandContext,
+    allowed_metrics_note:
+      'Only use numeric claims that appear verbatim in brand_context or topic. Otherwise use qualitative pattern language only.',
+  };
+
+  let parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.55,
-    system: [
-      'You are Kiran + Sam writing organic social posts optimized for reach and comments.',
-      'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
-      `Create one post per channel×angle. Channels: ${run.channels.join(', ')}. Angles: ${DEFAULT_ANGLES.join(', ')}.`,
-      // LinkedIn virality (social-content skill: platforms.md + post-templates.md + hook formulas)
-      'LINKEDIN VIRAL RULES (mandatory when channel=linkedin):',
-      '1) Hook = first line ONLY, ≤180 chars, before fold. Use curiosity, contrarian, story, or value formula. Must make a reader stop mid-scroll.',
-      '2) caption = full post including the hook as line 1, then blank line, then short lines (1–2 sentences max per line). Use \\n\\n whitespace. Target 900–1600 characters (not a thin 80-word blurb, not a wall of text).',
-      '3) Pattern: Hook → concrete tension/observation → 3 sharp points OR a short story beat → lesson → engagement question as last line.',
-      '4) Algorithm: NO external URLs in caption body (puts link in comments instead via cta note). Comments > likes. End with a real discussion question, not "Thoughts?".',
-      '5) Banned: "Excited to announce", "I\'m humbled", generic motivation, corporate fluff, invented metrics/case studies, links in body, emoji spam.',
-      '6) Voice: peer founder/operator — specific, opinionated, industry-concrete. Prefer naming the real tension buyers feel over promoting the product. Soft brand only in the last 1–2 lines if at all.',
-      'Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars with a punchy take. Facebook: conversational. YouTube: title-friendly caption + description tone.',
-      'No placeholders. Hashtags: 3–5 niche (LinkedIn: end of post or empty array). Peer tone, not salesy.',
-      playbook.playbook || '',
-    ].join(' '),
-    user: JSON.stringify({
-      company: run.companyName,
-      topic: run.topic,
-      audience: run.audience,
-      brief: run.brief,
-      brand_context: run.brandContext,
-    }),
+    system: composeSystem,
+    user: JSON.stringify(composeUser),
   });
 
-  const posts = (Array.isArray(parsed.posts) ? parsed.posts : [])
-    .map((p, i) => ({
-      id: `sp-${i + 1}`,
-      channel: channelKind(p.channel || 'linkedin'),
-      angle: String(p.angle || 'benefit').toLowerCase(),
-      hook: String(p.hook || '').trim(),
-      caption: String(p.caption || '').trim(),
-      hashtags: Array.isArray(p.hashtags) ? p.hashtags.map(String) : [],
-      cta: String(p.cta || run.brief.cta || '').trim(),
-      visual_brief: String(p.visual_brief || run.brief.visual_direction || '').trim(),
-      title: String(p.title || '').trim(),
-      image_url: '',
-      video_url: '',
-      status: 'draft',
-      go_live: null,
+  let posts = normalizePosts(parsed, run);
+  const grounded = groundedSourceText(run);
+  const suspects = posts.flatMap((p) =>
+    findUnverifiedMetrics(`${p.hook}\n${p.caption}\n${p.cta}`, grounded).map((hit) => ({
+      postId: p.id,
+      angle: p.angle,
+      hit,
     }))
-    .filter((p) => p.caption);
+  );
+
+  if (suspects.length) {
+    const repaired = await groqJson({
+      workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
+      temperature: 0.25,
+      system: [
+        'Rewrite social posts to remove ALL unverified numeric claims while keeping LinkedIn viral craft.',
+        'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
+        'Keep whitespace, strong hooks, and discussion-question closers.',
+        'Replace invented % / client counts / ROI with qualitative operator patterns.',
+        'Do not add any new numbers unless they appear in brand_context or topic.',
+        TRUTH_RULES,
+      ].join(' '),
+      user: JSON.stringify({
+        ...composeUser,
+        flagged_claims: suspects,
+        posts_to_fix: posts.map((p) => ({
+          channel: p.channel,
+          angle: p.angle,
+          hook: p.hook,
+          caption: p.caption,
+          hashtags: p.hashtags,
+          cta: p.cta,
+          visual_brief: p.visual_brief,
+        })),
+      }),
+    });
+    const fixed = normalizePosts(repaired, run);
+    if (fixed.length) posts = fixed;
+  }
 
   if (!posts.length) throw new Error('Compose returned no posts');
 
@@ -224,7 +304,32 @@ export async function runSocialCompose(runId) {
   run.status = 'composed';
   run.step = 'approve';
   run.updatedAt = new Date().toISOString();
+  run.composeMeta = {
+    unverifiedClaimsFound: suspects.length,
+    unverifiedClaims: suspects.slice(0, 20),
+    repaired: suspects.length > 0,
+  };
   return { run: publicRun(run), posts };
+}
+
+function normalizePosts(parsed, run) {
+  return (Array.isArray(parsed?.posts) ? parsed.posts : [])
+    .map((p, i) => ({
+      id: `sp-${i + 1}`,
+      channel: channelKind(p.channel || 'linkedin'),
+      angle: String(p.angle || 'benefit').toLowerCase(),
+      hook: String(p.hook || '').trim(),
+      caption: String(p.caption || '').trim(),
+      hashtags: Array.isArray(p.hashtags) ? p.hashtags.map(String) : [],
+      cta: String(p.cta || run.brief?.cta || '').trim(),
+      visual_brief: String(p.visual_brief || run.brief?.visual_direction || '').trim(),
+      title: String(p.title || '').trim(),
+      image_url: '',
+      video_url: '',
+      status: 'draft',
+      go_live: null,
+    }))
+    .filter((p) => p.caption);
 }
 
 export function patchSocialPost(runId, postId, patch = {}) {
