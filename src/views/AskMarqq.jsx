@@ -151,18 +151,9 @@ function buildSystemPrompt(channel, sectionCtx, northStar, companyCtx = {}) {
   const website = String(companyCtx.website || '').trim();
   const niche = String(companyCtx.niche || '').trim();
   const companyBlock = `Active company: ${companyName}${website ? ` (${website})` : ''}${niche ? ` · ${niche}` : ''}.
-Stay locked to this company only. Do not switch brands, invent another company, or reuse context from a different brand (e.g. Nouriva) unless that is the active company above.`;
+Stay locked to this company only. Do not switch companies, invent another company, or reuse context from a different workspace.`;
 
-  let groundedSection = sectionCtx || '';
-  if (
-    groundedSection &&
-    companyName &&
-    !/^your workspace$/i.test(companyName) &&
-    /nouriva/i.test(groundedSection) &&
-    !/nouriva/i.test(companyName)
-  ) {
-    groundedSection = `[Note: The stored section text mentions another brand. Active company is ${companyName}${website ? ` · ${website}` : ''}. Prefer the active company; treat other brand names as stale.]\n\n${groundedSection}`;
-  }
+  const groundedSection = sectionCtx || '';
 
   return `You are Marqq, a senior GTM strategy copilot inside the Marqq platform.
 
@@ -178,8 +169,8 @@ ${groundedSection
 Rules:
 - Answer the user's question directly. If they ask to explain, explain the section clearly in plain language.
 - ${revisionPromptHint(channel)}
-- Stay grounded in the section context, the active company, and North Star; do not invent unrelated metrics, markets, or brands.
-- You have built-in web search. Use it when the user asks about market facts, competitors, the company website, or anything that needs current public information. Prefer evidence from search over guesses. When searching, query for ${companyName}${website ? ` / ${website}` : ''}, not a different brand.
+- Stay grounded in the section context, the active company, and North Star; do not invent unrelated metrics, markets, or companies.
+- You have built-in web search. Use it when the user asks about market facts, competitors, the company website, or anything that needs current public information. Prefer evidence from search over guesses. When searching, query for ${companyName}${website ? ` / ${website}` : ''}, not a different company.
 - When the user attaches documents or voice notes, use that content as primary evidence for this channel.
 - Prefer short structured answers (headings/bullets/markdown tables) when helpful. Avoid filler and fake confidence scores.
 - Do not refuse ordinary strategy questions. Do not claim you cannot see the section when context is provided above.`;
