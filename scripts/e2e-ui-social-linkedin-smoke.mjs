@@ -3,6 +3,7 @@
  * Social Studio UI smoke — signup → brief draft → LinkedIn compose (drafts only).
  *
  *   BASE_UI=http://localhost:5179 node scripts/e2e-ui-social-linkedin-smoke.mjs
+ *   BRAND=elevate|nouriva BASE_UI=http://localhost:5179 node scripts/e2e-ui-social-linkedin-smoke.mjs
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
@@ -15,13 +16,39 @@ const OUT_DIR = join(__dirname, "output");
 const BASE_UI = String(process.env.BASE_UI || "http://localhost:5179").replace(/\/$/, "");
 const SOCIAL_BRIEF_MS = Number(process.env.SOCIAL_BRIEF_TIMEOUT_MS || 150_000);
 const SOCIAL_POSTS_MS = Number(process.env.SOCIAL_POSTS_TIMEOUT_MS || 180_000);
+const BRAND_KEY = String(process.env.BRAND || "elevate").toLowerCase().trim();
 
-const ELEVATE = {
-  companyName: "Elevate",
-  website: "https://theelevate.co.in",
-  niche: "Management strategy, AI solutions & digital transformation consulting",
-  icp: "Growth-stage companies and mid-market leaders seeking strategy-to-execution partners",
+const BRANDS = {
+  elevate: {
+    id: "elevate",
+    companyName: "Elevate",
+    website: "https://theelevate.co.in",
+    niche: "Management strategy, AI solutions & digital transformation consulting",
+    icp: "CDO, Head of Digital Transformation, Head of AI/ML, DX program leads at mid-market BFSI and growth companies",
+    strategyPrefix: "elevate-ui-strategy-",
+    topic:
+      "Elevate for mid-market DX leaders: strategy decks that never become delivery — cover AI AND non-AI digital transformation (operating model, change, governance, execution handoffs)",
+    signupName: "Elevate Social LI",
+    emailPrefix: "elevate.social.li",
+  },
+  nouriva: {
+    id: "nouriva",
+    companyName: "Nouriva AI",
+    website: "https://nouriva.tech",
+    niche: "Lab-driven personalized nutrition for Indian adults seeking meal guidance",
+    icp: "Health-conscious Indian adults aged 25–55 seeking lab-based meal guidance and Indian-cuisine nutrition (not CPG brand marketers or corporate wellness buyers)",
+    strategyPrefix: "nouriva-ui-strategy-",
+    topic:
+      "Nouriva AI: how health-conscious Indians 25–55 know which everyday Indian meals actually match their latest labs",
+    signupName: "Nouriva Social LI",
+    emailPrefix: "nouriva.social.li",
+  },
 };
+
+const BRAND = BRANDS[BRAND_KEY] || BRANDS.elevate;
+if (!BRANDS[BRAND_KEY]) {
+  console.warn(`Unknown BRAND=${BRAND_KEY}, defaulting to elevate`);
+}
 
 const FORBIDDEN = /Publish now|Publish live|Go live|Post live|Schedule & publish/i;
 
@@ -43,9 +70,9 @@ async function loadPlaywright() {
   }
 }
 
-function loadStrategy() {
+function loadStrategy(prefix) {
   const files = readdirSync(OUT_DIR)
-    .filter((f) => f.startsWith("elevate-ui-strategy-") && f.endsWith(".json"))
+    .filter((f) => f.startsWith(prefix) && f.endsWith(".json"))
     .sort();
   if (!files.length) return { file: null, strategy: null };
   const raw = JSON.parse(readFileSync(join(OUT_DIR, files.at(-1)), "utf8"));
@@ -60,15 +87,22 @@ function scoreCaption(caption) {
   const text = String(caption || "").trim();
   const lines = text.split(/\n+/).filter(Boolean);
   const first = lines[0] || "";
-  const last3 = lines.slice(-3).join("\n");
+  const last5 = lines.slice(-5).join("\n");
+  const valueExchange =
+    /like this post/i.test(last5) &&
+    /comment\s+["“']?\w+/i.test(last5) &&
+    /connect/i.test(last5) &&
+    (/i'?ll send|i will send|send (it|the|you)/i.test(last5) ||
+      /\b(pdf|checklist|spreadsheet|excel|scorecard|kpi|template|playbook)\b/i.test(text));
   return {
     chars: text.length,
     hook: first.slice(0, 180),
     hasWhitespace: /\n\n/.test(text),
-    endsWithQuestion: /\?\s*$/.test(text) || /\?\s*$/m.test(last3),
+    endsWithQuestion: /\?\s*$/.test(text) || /\?\s*$/m.test(last5),
+    valueExchange,
     bannedOpener: BANNED_OPENERS.test(text),
     fakeMetricSmell: FAKE_METRIC_RE.test(text),
-    postableShape: text.length >= 400 && first.length >= 20 && first.length <= 220,
+    postableShape: text.length >= 1200 && first.length >= 20 && first.length <= 220,
   };
 }
 
@@ -184,14 +218,14 @@ async function waitEnabled(page, nameRe, timeoutMs) {
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const shotDir = join(OUT_DIR, `social-li-smoke-${stamp}`);
+  const shotDir = join(OUT_DIR, `social-li-smoke-${BRAND.id}-${stamp}`);
   mkdirSync(shotDir, { recursive: true });
   const { chromium } = await loadPlaywright();
-  const { file, strategy } = loadStrategy();
+  const { file, strategy } = loadStrategy(BRAND.strategyPrefix);
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
-  const email = `elevate.social.li.${Date.now()}@marqq.test`;
-  const password = "ElevateExec123!";
+  const email = `${BRAND.emailPrefix}.${Date.now()}@marqq.test`;
+  const password = "SocialSmoke123!";
 
   const shot = async (name) => {
     await page.screenshot({ path: join(shotDir, `${name}.png`), fullPage: true }).catch(() => {});
@@ -201,6 +235,7 @@ async function main() {
   let capturedPosts = [];
 
   console.log("\nSocial LinkedIn UI smoke (drafts only)");
+  console.log(`Brand ${BRAND.companyName} (${BRAND.id})`);
   console.log(`UI ${BASE_UI}`);
   console.log(`Strategy ${file || "(none)"}\n`);
 
@@ -233,7 +268,7 @@ async function main() {
     await page.waitForTimeout(500);
 
     const nameInput = page.locator("#su-name").or(page.getByLabel(/Full name|Name/i)).first();
-    if (await nameInput.isVisible().catch(() => false)) await nameInput.fill("Elevate Social LI");
+    if (await nameInput.isVisible().catch(() => false)) await nameInput.fill(BRAND.signupName);
     const emailInput = page.locator("#su-email").or(page.getByLabel(/Email/i)).first();
     if (await emailInput.isVisible().catch(() => false)) await emailInput.fill(email);
     else await page.locator('input[type="email"]').first().fill(email, { timeout: 15_000 });
@@ -253,19 +288,19 @@ async function main() {
     }
 
     await page.evaluate(
-      ({ strategy, elevate }) => {
+      ({ strategy, brand }) => {
         localStorage.setItem("marqq_onboarding_complete", "1");
-        localStorage.setItem("marqq_ob_companyName", elevate.companyName);
-        localStorage.setItem("marqq_ob_website", elevate.website);
-        localStorage.setItem("marqq_ob_niche", elevate.niche);
-        localStorage.setItem("marqq_ob_icp", elevate.icp);
+        localStorage.setItem("marqq_ob_companyName", brand.companyName);
+        localStorage.setItem("marqq_ob_website", brand.website);
+        localStorage.setItem("marqq_ob_niche", brand.niche);
+        localStorage.setItem("marqq_ob_icp", brand.icp);
         localStorage.setItem(
           "marqq_brand_context",
           JSON.stringify({
-            companyName: elevate.companyName,
-            website: elevate.website,
-            niche: elevate.niche,
-            icp: elevate.icp,
+            companyName: brand.companyName,
+            website: brand.website,
+            niche: brand.niche,
+            icp: brand.icp,
           })
         );
         if (strategy) {
@@ -274,7 +309,7 @@ async function main() {
         }
         localStorage.setItem("marqq_active_screen", "social");
       },
-      { strategy, elevate: ELEVATE }
+      { strategy, brand: BRAND }
     );
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1500);
@@ -293,9 +328,7 @@ async function main() {
       .or(page.locator("textarea").first())
       .or(page.locator("input.input, textarea.input").first());
     if (await topic.isVisible().catch(() => false)) {
-      await topic.fill(
-        "Elevate: why mid-market AI transformation stalls after the strategy deck — and what DX leaders should do instead"
-      );
+      await topic.fill(BRAND.topic);
       ok("social:topic-filled");
     } else {
       note("topic input not found — continuing with defaults");
@@ -400,16 +433,18 @@ async function main() {
               ok("social:linkedin-truth", "no unverified % / client-count smell");
             }
 
-            const postable = capturedPosts.filter((p) => p.score.postableShape && p.score.endsWithQuestion);
+            const postable = capturedPosts.filter(
+              (p) => p.score.postableShape && p.score.valueExchange
+            );
             if (postable.length) {
               ok(
                 "social:linkedin-postable",
-                `${postable.length}/${capturedPosts.length} look postable (length+hook+question)`
+                `${postable.length}/${capturedPosts.length} value-exchange (like+comment+connect+send asset)`
               );
             } else {
               fail(
                 "social:linkedin-postable",
-                `none met shape; sample hook=${JSON.stringify(sample.score.hook)} chars=${sample.score.chars}`
+                `missing value CTA; sample hook=${JSON.stringify(sample.score.hook)} valueExchange=${sample.score.valueExchange}`
               );
             }
 
@@ -465,7 +500,13 @@ async function main() {
   const failed = results.filter((r) => r.status === "fail").length;
   const report = {
     stamp,
-    company: ELEVATE,
+    brand: BRAND.id,
+    company: {
+      companyName: BRAND.companyName,
+      website: BRAND.website,
+      niche: BRAND.niche,
+      icp: BRAND.icp,
+    },
     baseUi: BASE_UI,
     strategyFile: file,
     passed,
@@ -477,6 +518,7 @@ async function main() {
       hook: p.score.hook,
       hasWhitespace: p.score.hasWhitespace,
       endsWithQuestion: p.score.endsWithQuestion,
+      valueExchange: p.score.valueExchange,
       bannedOpener: p.score.bannedOpener,
       fakeMetricSmell: p.score.fakeMetricSmell,
       postableShape: p.score.postableShape,
@@ -484,14 +526,15 @@ async function main() {
     })),
     shots: shotDir,
   };
-  const jsonPath = join(OUT_DIR, `social-li-smoke-${stamp}.json`);
-  const mdPath = join(OUT_DIR, `social-li-smoke-${stamp}.md`);
+  const jsonPath = join(OUT_DIR, `social-li-smoke-${BRAND.id}-${stamp}.json`);
+  const mdPath = join(OUT_DIR, `social-li-smoke-${BRAND.id}-${stamp}.md`);
   writeFileSync(jsonPath, JSON.stringify(report, null, 2));
   writeFileSync(
     mdPath,
     [
-      `# Social LinkedIn UI smoke`,
+      `# Social LinkedIn UI smoke — ${BRAND.companyName}`,
       ``,
+      `- Brand: ${BRAND.id}`,
       `- UI: ${BASE_UI}`,
       `- Mode: drafts only`,
       `- Result: **${passed} passed · ${failed} failed**`,
@@ -508,6 +551,7 @@ async function main() {
             "```",
             ``,
             `- postableShape: ${p.score.postableShape}`,
+            `- valueExchange: ${p.score.valueExchange}`,
             `- endsWithQuestion: ${p.score.endsWithQuestion}`,
             `- fakeMetricSmell: ${p.score.fakeMetricSmell}`,
           ])
