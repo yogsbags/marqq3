@@ -130,8 +130,12 @@ export async function runSocialBrief(runId, patch = {}) {
     temperature: 0.35,
     system: [
       'You are Kiran, Marqq social agent.',
-      'Write a short social campaign brief. Return ONLY JSON:',
+      'Write a short social campaign brief optimized for viral LinkedIn reach. Return ONLY JSON:',
       '{ "hook": "...", "message_pillars": ["..."], "cta": "...", "tone": "...", "visual_direction": "..." }',
+      'hook must be a scroll-stopping first line (curiosity/contrarian/story/value), ≤180 chars — not a topic label.',
+      'message_pillars: 3 concrete tensions/angles buyers debate, not generic benefits.',
+      'cta: prefer a discussion question or soft comment-side next step over hard sell.',
+      'tone: peer operator, opinionated, specific.',
       playbook.playbook || '',
     ].join(' '),
     user: JSON.stringify({
@@ -170,13 +174,21 @@ export async function runSocialCompose(runId) {
 
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
-    temperature: 0.45,
+    temperature: 0.55,
     system: [
-      'You are Kiran + Sam writing organic social posts.',
+      'You are Kiran + Sam writing organic social posts optimized for reach and comments.',
       'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
       `Create one post per channel×angle. Channels: ${run.channels.join(', ')}. Angles: ${DEFAULT_ANGLES.join(', ')}.`,
-      'LinkedIn: professional, 80–150 words. Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars. Facebook: conversational. YouTube: title-friendly caption + description tone.',
-      'No placeholders. Hashtags: 3–6 relevant. Peer tone, not salesy.',
+      // LinkedIn virality (social-content skill: platforms.md + post-templates.md + hook formulas)
+      'LINKEDIN VIRAL RULES (mandatory when channel=linkedin):',
+      '1) Hook = first line ONLY, ≤180 chars, before fold. Use curiosity, contrarian, story, or value formula. Must make a reader stop mid-scroll.',
+      '2) caption = full post including the hook as line 1, then blank line, then short lines (1–2 sentences max per line). Use \\n\\n whitespace. Target 900–1600 characters (not a thin 80-word blurb, not a wall of text).',
+      '3) Pattern: Hook → concrete tension/observation → 3 sharp points OR a short story beat → lesson → engagement question as last line.',
+      '4) Algorithm: NO external URLs in caption body (puts link in comments instead via cta note). Comments > likes. End with a real discussion question, not "Thoughts?".',
+      '5) Banned: "Excited to announce", "I\'m humbled", generic motivation, corporate fluff, invented metrics/case studies, links in body, emoji spam.',
+      '6) Voice: peer founder/operator — specific, opinionated, industry-concrete. Prefer naming the real tension buyers feel over promoting the product. Soft brand only in the last 1–2 lines if at all.',
+      'Instagram: scannable, emoji sparingly. Twitter/X: under 260 chars with a punchy take. Facebook: conversational. YouTube: title-friendly caption + description tone.',
+      'No placeholders. Hashtags: 3–5 niche (LinkedIn: end of post or empty array). Peer tone, not salesy.',
       playbook.playbook || '',
     ].join(' '),
     user: JSON.stringify({
