@@ -41,16 +41,40 @@ function ensureDb() {
   }
 }
 
+/**
+ * Multi-tenant fix: `agent_os` used to be a single shared slot for the whole
+ * process, so calling loadAgentOsProfile(workspaceA) after workspaceB's async
+ * Supabase hydrate wrote into that slot would silently return workspace B's
+ * data to workspace A. Every other per-workspace collection in this file
+ * (credit_wallets, agent_deployments' workspaceId tagging, etc.) is already
+ * keyed by workspace — this brings agent_os in line with that same pattern.
+ *
+ * Back-compat: migrates a legacy singular `agent_os` value (if present) into
+ * the map under its own workspaceId (or the default workspace) exactly once.
+ */
+function migrateAgentOsMap(data) {
+  if (data?.agent_os_by_workspace && typeof data.agent_os_by_workspace === 'object') {
+    return data.agent_os_by_workspace;
+  }
+  if (data?.agent_os && typeof data.agent_os === 'object') {
+    const workspaceId = data.agent_os.workspaceId || 'marqq-ws-1';
+    return { [workspaceId]: data.agent_os };
+  }
+  return {};
+}
+
 function withAgentDefaults(data) {
-  return {
+  const next = {
     ...data,
-    agent_os: data.agent_os ?? null,
+    agent_os_by_workspace: migrateAgentOsMap(data),
     agent_deployments: Array.isArray(data.agent_deployments) ? data.agent_deployments : [],
     scheduled_automations: Array.isArray(data.scheduled_automations)
       ? data.scheduled_automations
       : [],
     automation_runs: Array.isArray(data.automation_runs) ? data.automation_runs : [],
   };
+  delete next.agent_os; // superseded by agent_os_by_workspace — drop the legacy singular slot
+  return next;
 }
 
 function migrateIfNeeded(data) {
@@ -58,7 +82,7 @@ function migrateIfNeeded(data) {
   const next = withAgentDefaults({
     ...initialData,
     // Keep real agent OS / deployments if already generated from strategy
-    agent_os: data?.agent_os ?? null,
+    agent_os_by_workspace: migrateAgentOsMap(data || {}),
     agent_deployments: Array.isArray(data?.agent_deployments) ? data.agent_deployments : [],
     scheduled_automations: Array.isArray(data?.scheduled_automations)
       ? data.scheduled_automations

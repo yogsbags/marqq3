@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase.js';
 import { getActiveWorkspaceId } from '../../lib/workspace.js';
+import CofounderDigestCard from './CofounderDigestCard.jsx';
 
 const AGENT_COLOURS = {
   zara: { bg: '#e0e7ff', fg: '#3730a3' },
@@ -371,13 +372,15 @@ export default function NotificationsPanel({
               <div style={{ fontSize: 13 }}>Sign in to view notifications</div>
             </div>
           ) : activeTab === 'ai-team' ? (
-            !filteredAgentNotifs.length ? (
-              <div style={{ textAlign: 'center', padding: 32, color: 'var(--color-muted)' }}>
-                <Bell size={24} style={{ opacity: 0.4, marginBottom: 8 }} />
-                <div style={{ fontSize: 13 }}>No AI team updates yet</div>
-                <div style={{ fontSize: 11 }}>Scheduled agent runs surface here</div>
-              </div>
-            ) : (
+            <>
+              <CofounderDigestCard workspaceId={workspaceId} onOpenScreen={onScreenSelect} compact />
+              {!filteredAgentNotifs.length ? (
+                <div style={{ textAlign: 'center', padding: 32, color: 'var(--color-muted)' }}>
+                  <Bell size={24} style={{ opacity: 0.4, marginBottom: 8 }} />
+                  <div style={{ fontSize: 13 }}>No AI team updates yet</div>
+                  <div style={{ fontSize: 11 }}>Scheduled agent runs surface here</div>
+                </div>
+              ) : (
               filteredAgentNotifs.map((notif) => {
                 const colours = AGENT_COLOURS[notif.agent_name] || { bg: '#f1f5f9', fg: '#334155' };
                 return (
@@ -437,7 +440,8 @@ export default function NotificationsPanel({
                   </div>
                 );
               })
-            )
+              )}
+            </>
           ) : !filteredAlerts.length ? (
             <div style={{ textAlign: 'center', padding: 32, color: 'var(--color-muted)' }}>
               <Bell size={24} style={{ opacity: 0.4, marginBottom: 8 }} />

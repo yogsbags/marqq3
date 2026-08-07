@@ -1,10 +1,10 @@
-import { supabaseAdmin, supabase } from '../lib/supabase.js';
+import { getSupabaseAdminClient, getSupabaseAnonClient } from '../lib/supabase.js';
 
 export async function resolveBearerUser(req) {
   const header = String(req.headers.authorization || '');
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   if (!token) return null;
-  const client = supabaseAdmin || supabase;
+  const client = getSupabaseAdminClient() || getSupabaseAnonClient();
   if (!client) return null;
   try {
     const { data, error } = await client.auth.getUser(token);
@@ -37,6 +37,7 @@ export async function optionalAuth(req, res, next) {
 }
 
 export async function assertWorkspaceMember(userId, workspaceId) {
+  const supabaseAdmin = getSupabaseAdminClient();
   if (!supabaseAdmin || !userId || !workspaceId) return false;
   const { data, error } = await supabaseAdmin
     .from('workspace_members')
@@ -67,7 +68,7 @@ export async function requireWorkspaceMember(req, res, next) {
     req.query?.workspaceId ||
     null;
 
-  if (workspaceId && supabaseAdmin) {
+  if (workspaceId && getSupabaseAdminClient()) {
     const ok = await assertWorkspaceMember(user.id, workspaceId);
     if (!ok) {
       return res.status(403).json({ error: 'You are not a member of this workspace' });

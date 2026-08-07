@@ -46,6 +46,8 @@ import {
 } from "./gtmBriefQuality.js";
 import { resolveGtmAutoSectionModel } from "./groqReasoning.js";
 import { meteredGroqJson, assertCanAfford } from "./credits/index.js";
+import { getInjectableRulesBlock } from "./agentInstructions.js";
+import { SECTION_PRIMARY } from "./agentOs.js";
 
 const MARKET_ANALYSIS_TACTICAL_RE =
   /\b(roi calculator|case[- ]study library|sales script|objection[- ]handling|landing page|webinar|outreach cadence|ad budget|linkedin ads|content calendar|pilot onboarding|equip the sales|create a rapid|launch a \d+-week)\b/i;
@@ -221,6 +223,9 @@ export async function generateAutoSection(body = {}) {
     voiceNotes.push(String(brandDna.voiceTranscript).slice(0, 1200));
   }
 
+  const autoSectionAgent = SECTION_PRIMARY[def.id] || "neel";
+  const autoSectionRules = await getInjectableRulesBlock(workspaceId, autoSectionAgent);
+
   let groqResult;
   try {
     groqResult = await callGroq(
@@ -255,7 +260,7 @@ ${qualityRules}
 Global rules:
 - Editable recommendation — specific, with tradeoffs. No questions to the user.
 - Stay consistent with prior approved sections (summaries only — do not copy their plays).
-- If context is thin, stay conditional rather than asserting certainty.`,
+- If context is thin, stay conditional rather than asserting certainty.${autoSectionRules}`,
       JSON.stringify(
         {
           sectionId: def.id,

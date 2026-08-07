@@ -9,7 +9,9 @@ import { resolveGtmAutoSectionModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishBlogPackage } from './blogPublish.js';
 import { apifyToken, researchKeywordsFromSeeds, classifyKeywordIntent, scoreKeywordForContent } from './apifyKeywords.js';
+import { attachGeoScanToResearchPlan } from './geoCitationScanner.js';
 import { meteredStudioJson, meteredStudioChat, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
@@ -347,6 +349,7 @@ export async function runContentResearch(runId) {
     .slice(0, 12);
 
   const model = resolveGtmAutoSectionModel();
+  const mayaRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'maya');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     model,
@@ -364,6 +367,7 @@ export async function runContentResearch(runId) {
             'Do NOT invent keywords or claim SEMrush/Ahrefs. At most one close long-tail variant of a live keyword.',
           ].join(' ')
         : 'No live keyword dataset — propose evergreen commercial keywords only; data_source=model_estimate; no SEMrush/Ahrefs claims.',
+      mayaRules,
       'Return ONLY JSON with keys:',
       'topical_authority (string),',
       'topic_clusters (array of { name, why }),',
@@ -431,7 +435,7 @@ export async function runContentResearch(runId) {
     ? `apify_actor:${keywordIntel.actorId}`
     : String(parsed.data_source || 'model_estimate').replace(/semrush|ahrefs/gi, 'estimate');
 
-  run.plan = {
+  let plan = {
     topical_authority: String(parsed.topical_authority || '').trim(),
     topic_clusters: Array.isArray(parsed.topic_clusters) ? parsed.topic_clusters : [],
     article_queue: queue,
@@ -452,6 +456,22 @@ export async function runContentResearch(runId) {
     agent: 'maya',
     createdAt: new Date().toISOString(),
   };
+
+  // Operational GEO: live AI Overview / Perplexity citation probe (non-blocking on failure)
+  const skipGeo =
+    String(process.env.GEO_SCAN_ON_RESEARCH || 'true').toLowerCase() === 'false' ||
+    run.skipGeoScan === true;
+  if (!skipGeo && apifyToken()) {
+    plan = await attachGeoScanToResearchPlan(run, plan);
+  } else if (!skipGeo && !apifyToken()) {
+    plan.geo_scan = {
+      skipped: true,
+      error: 'APIFY_TOKEN not configured',
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  run.plan = plan;
   run.status = 'researched';
   run.step = 'brief';
   run.updatedAt = new Date().toISOString();
@@ -493,6 +513,7 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
   };
 
   const year = currentCalendarYear();
+  const briefMayaRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'maya');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
@@ -504,6 +525,7 @@ export async function runContentBrief(runId, { queueIndex, keyword, topic } = {}
       'faq_questions (array of strings), audience, angle, cta, why.',
       'Outline: 5-8 H2s. Secondary keywords: 3-6. FAQ: 3-5.',
       playbookResult.playbook ? `\n${playbookResult.playbook}` : '',
+      briefMayaRules,
     ]
       .filter(Boolean)
       .join(' '),
@@ -575,6 +597,7 @@ export async function runContentDraft(runId) {
       ].join(' ')
     : 'B2B voice: clear, expert, decision-maker friendly. No invented claims.';
 
+  const draftRiyaRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'riya');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: isB2c ? 0.5 : 0.4,
@@ -593,6 +616,7 @@ export async function runContentDraft(runId) {
       b2cVoice,
       `Target ~${wordTarget} words.`,
       playbookResult.playbook ? `\n${playbookResult.playbook}` : '',
+      draftRiyaRules,
     ]
       .filter(Boolean)
       .join(' '),

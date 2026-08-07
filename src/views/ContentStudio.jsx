@@ -5,6 +5,7 @@ import DeliveryModeToggle from '../components/DeliveryModeToggle.jsx';
 import { stashJourneyHandoff } from '../lib/journeyHandoff';
 import { studioSeed, getCompanyName } from '../lib/liveWorkspace';
 import { BlogArticleBrowserPreview, InlineBrowserPreview } from '../components/outcome-previews/ChannelPreviews.jsx';
+import GeoCitationPanel from '../components/seo/GeoCitationPanel.jsx';
 
 const STEPS = [
   { id: 'research', label: '1 · Research', agent: 'Maya' },
@@ -359,6 +360,29 @@ export default function ContentStudio({ setActiveScreen }) {
                   </ul>
                 </div>
               ) : null}
+              {plan.geo_scan && !plan.geo_scan.skipped ? (
+                <GeoCitationPanel
+                  compact
+                  domain={seed.domain}
+                  companyName={getCompanyName()}
+                  keywords={(plan.article_queue || []).map((q) => q.keyword).filter(Boolean).slice(0, 4)}
+                  initialScan={plan.geo_scan.id ? { ...plan.geo_scan, perQuery: plan.geo_scan.perQuery || [], llmo_notes: plan.llmo_notes || [] } : null}
+                />
+              ) : plan.geo_scan?.skipped || plan.geo_scan?.error ? (
+                <div className="card" style={{ borderLeft: '3px solid #9a6700' }}>
+                  <div className="card-kicker">GEO scan</div>
+                  <p style={{ margin: '6px 0 0', fontSize: 13 }}>
+                    Skipped or failed: {plan.geo_scan.error || 'unavailable'}. Run manually from SEO → GEO citation scanner.
+                  </p>
+                </div>
+              ) : (
+                <GeoCitationPanel
+                  compact
+                  domain={seed.domain}
+                  companyName={getCompanyName()}
+                  keywords={(plan.article_queue || []).map((q) => q.keyword).filter(Boolean).slice(0, 4)}
+                />
+              )}
               <div className="table-container">
                 <table className="data-table">
                   <thead>

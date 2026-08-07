@@ -10,6 +10,8 @@ import {
   TASK_SKILL_PACKS,
 } from './gtmStrategySkills.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
+import { SECTION_PRIMARY } from './agentOs.js';
 
 /** Sections not covered by GTM_AUTO_SECTION_DEFS — still need skillful generation. */
 const EXTRA_SECTIONS = [
@@ -67,6 +69,8 @@ async function generateExtraSection(def, ctx) {
       ? await buildPlaybookFromPack(TASK_SKILL_PACKS.gtm_strategy_doc, { label: def.id })
       : await loadStrategySectionPlaybook(def.id);
   const lane = EXTRA_LANES[def.id] || '';
+  const sectionAgent = SECTION_PRIMARY[def.id] || 'neel';
+  const sectionAgentRules = await getInjectableRulesBlock(workspaceId, sectionAgent);
   const system = `You are a senior GTM strategist writing an EXECUTABLE section Marqq agents will run.
 Return STRICT JSON:
 {
@@ -78,7 +82,7 @@ Return STRICT JSON:
 }
 ${skill.playbook || ''}
 ${lane}
-Rules: specific to THIS company; no hollow "develop a UVP" advice; ground in website/ICP; never invent fake funding surges.`;
+Rules: specific to THIS company; no hollow "develop a UVP" advice; ground in website/ICP; never invent fake funding surges.${sectionAgentRules}`;
 
   const user = JSON.stringify({
     sectionId: def.id,

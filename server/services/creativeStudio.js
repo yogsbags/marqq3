@@ -17,6 +17,7 @@ import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { readBrandContext, readBrandDnaManifest } from './brandStore.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
@@ -328,6 +329,7 @@ export async function runCreativeConcept(runId, patch = {}) {
   const channelDefaults = channelVideoDefaults(run.platform);
   const hasLogo = Boolean(run.brandAssets?.logoPublicUrl);
   const refCount = run.brandAssets?.referenceUrls?.length || 0;
+  const creativeRiyaRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'riya');
 
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
@@ -356,6 +358,7 @@ export async function runCreativeConcept(runId, patch = {}) {
       `Channel defaults to bias toward: ${JSON.stringify(channelDefaults)}`,
       'Optimize for organic reach: scroll-stopping hook, retention beats, share/save motive, soft CTA — not a paid ad hard sell.',
       playbook.playbook || '',
+      creativeRiyaRules,
     ].join(' '),
     user: JSON.stringify({
       company: run.companyName,

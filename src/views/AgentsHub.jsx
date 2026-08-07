@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { Send, CheckCircle2, XCircle, MessageSquare, ArrowLeft } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Send, CheckCircle2, XCircle, MessageSquare, ArrowLeft, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { openAgentScreen } from '../lib/journeyHandoff';
 import { AGENT_CATALOG_BY_ID } from '../lib/agents/catalog';
+import { fetchWorkspaceReportCards } from '../lib/agentReportCard.js';
 
 const fallbackAgent = {
   id: 'dev',
@@ -21,13 +22,26 @@ const fallbackAgent = {
   metric: null,
 };
 
-export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions = {}, onDecideAction, onUndoAction, setActiveScreen }) {
+export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions = {}, onDecideAction, onUndoAction, setActiveScreen, workspaceId = null }) {
   const [selectedAgentId, setSelectedAgentId] = useState(null); // null = Grid view, string = Detail view
   const [chatThreads, setChatThreads] = useState({});
   const [chatDraft, setChatDraft] = useState('');
+  const [reportCards, setReportCards] = useState({});
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    let cancelled = false;
+    fetchWorkspaceReportCards(workspaceId).then((result) => {
+      if (!cancelled && result.ok) setReportCards(result.cards);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
 
   const safeAgents = Array.isArray(agents) && agents.length > 0 ? agents : [fallbackAgent];
   const selectedAgent = safeAgents.find(a => a.id === selectedAgentId);
+  const selectedCard = selectedAgent ? reportCards[selectedAgent.id] : null;
 
   const logs = (selectedAgent && agentLogs && agentLogs[selectedAgent.id]) || [
     { id: 'l1', time: 'Today, 9:14 AM', observed: 'Paid Search CAC up 18% w/w, concentrated in 2 keyword groups; conversion rate flat.', action: 'Shift $12K budget from those groups into the LinkedIn ABM audience.', confidence: '87% confidence' },
@@ -260,6 +274,53 @@ export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions
               </div>
             </div>
 
+            <div>
+              <h4 style={{ marginBottom: '8px' }}>Report Card (7 days)</h4>
+              {selectedCard ? (
+                <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                    <div>
+                      <div className="card-kicker">Runs</div>
+                      <div className="card-title" style={{ fontSize: '18px' }}>{selectedCard.runs}</div>
+                    </div>
+                    <div>
+                      <div className="card-kicker">Edit rate</div>
+                      <div className="card-title" style={{ fontSize: '18px' }}>{selectedCard.editRate}%</div>
+                    </div>
+                    <div>
+                      <div className="card-kicker">Escalation rate</div>
+                      <div className="card-title" style={{ fontSize: '18px' }}>{selectedCard.escalationRate}%</div>
+                    </div>
+                  </div>
+                  <div className="card-meta">
+                    {selectedCard.grade}
+                    {selectedCard.ruleCount != null ? ` · ${selectedCard.ruleCount} rules · v${selectedCard.instructionsVersion}` : ' · instructions not initialized yet'}
+                  </div>
+                  {selectedCard.topPattern ? (
+                    <div className="card-meta">
+                      Most common correction: <strong>{selectedCard.topPattern.editType.replace(/_/g, ' ')}</strong> ({selectedCard.topPattern.count}×) — this is what the next weekly review will act on.
+                    </div>
+                  ) : null}
+                  {selectedCard.recentReviews?.length ? (
+                    <div>
+                      <div className="card-kicker" style={{ marginBottom: '4px' }}>Recent self-review changes</div>
+                      {selectedCard.recentReviews.map((r) => (
+                        <div key={r.id} className="card-meta" style={{ marginBottom: '4px' }}>
+                          {new Date(r.created_at).toLocaleDateString()} — {r.what_changed}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="card-meta">No weekly review has run for this agent yet.</div>
+                  )}
+                </div>
+              ) : (
+                <div className="card text-muted" style={{ fontSize: '12px' }}>
+                  No report card data yet — dismiss or flag edits on drafts in Approvals to start building signal.
+                </div>
+              )}
+            </div>
+
             {/* Chat Box */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-divider)', fontWeight: 700 }}>
@@ -326,7 +387,9 @@ export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions
 
       {/* Agents Library Cards Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
-        {safeAgents.map((agent) => (
+        {safeAgents.map((agent) => {
+          const card = reportCards[agent.id];
+          return (
           <div
             key={agent.id}
             onClick={() => setSelectedAgentId(agent.id)}
@@ -362,10 +425,13 @@ export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions
               <span className={agent.status === 'Running' || agent.status === 'Completed' ? 'tag tag-accent' : 'tag tag-accent-2'}>
                 {agent.rosterStatus || agent.status}
               </span>
-              <span className="card-meta">{agent.metric ? `owns: ${String(agent.metric).slice(0, 28)}` : (agent.successRate || '—')}</span>
+              <span className="card-meta">
+                {agent.metric ? `owns: ${String(agent.metric).slice(0, 28)}` : (card ? card.grade : (agent.successRate || '—'))}
+              </span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

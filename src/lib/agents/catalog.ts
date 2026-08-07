@@ -191,9 +191,9 @@ export const AGENT_CATALOG: CatalogAgent[] = [
     tier: "specialist",
     capabilities: ["seo", "aso", "search_intelligence", "programmatic_content"],
     avatarColor: "#c74dd1",
-    purpose: "Tracks search rankings and AI-answer visibility; recommends SEO fixes.",
-    tools: ["Rank tracker", "GEO citation scanner"],
-    dataAccess: ["Search console", "Public web"],
+    purpose: "Tracks search rankings and AI-answer / GEO visibility; recommends SEO + citation fixes.",
+    tools: ["Rank tracker", "GEO citation scanner", "Content Studio AEO drafts"],
+    dataAccess: ["Search console", "Public web", "AI Overview / Perplexity probes"],
     openScreen: "seo",
   },
   {

@@ -43,6 +43,9 @@ export const FEATURE_ESTIMATES = Object.freeze({
   market_research: 15,
   control_loop: 10,
   command_center: 8,
+  cofounder_digest: 8,
+  ask_marqq_overnight: 6,
+  agent_self_review: 10,
   marketing_ideas: 10,
   // Studios
   content_studio: 12,

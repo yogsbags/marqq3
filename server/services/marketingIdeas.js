@@ -6,6 +6,7 @@
 import { resolveGroqModel, isCompoundModel } from "./groqReasoning.js";
 import { buildPlaybookFromPack } from "./gtmStrategySkills.js";
 import { meteredGroqJson, assertCanAfford } from "./credits/index.js";
+import { getInjectableRulesBlock } from "./agentInstructions.js";
 
 const MARKETING_IDEAS_PACK = {
   primary: ["marketing-ideas"],
@@ -173,6 +174,7 @@ export async function generateMarketingIdeas(input = {}) {
 
   assertCanAfford(workspaceId, "marketing_ideas");
 
+  const neelRules = await getInjectableRulesBlock(workspaceId, "neel");
   const model = process.env.GROQ_MARKETING_IDEAS_MODEL || resolveGroqModel();
   const system = `You are Marqq executing the marketing-ideas skill for ${company}.
 
@@ -208,7 +210,7 @@ JSON schema:
   }],
   "hooksToTest": [{ "hook": string, "why": string }],
   "anglesToTest": [{ "angle": string, "framework": string, "hypothesis": string }]
-}`;
+}${neelRules}`;
 
   const user = JSON.stringify(
     {

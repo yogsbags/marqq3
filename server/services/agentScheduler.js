@@ -105,17 +105,22 @@ export async function executeAgentRun({
 
   updateDb((state) => {
     const next = ensureAgentCollections(state);
+    const confidence = plan?.confidence || 'medium';
     const approval = {
       id: approvalId,
       type: 'Agent draft',
       title,
       owner: `${agent.name} · ${agent.role}`,
-      risk: autonomous ? 'Auto-approved' : 'Low risk',
-      riskClass: autonomous ? 'tag tag-accent' : 'tag tag-outline',
+      risk: confidence === 'low' ? 'Needs review — low confidence' : autonomous ? 'Auto-approved' : 'Low risk',
+      riskClass: confidence === 'low' ? 'tag tag-accent-2' : autonomous ? 'tag tag-accent' : 'tag tag-outline',
       preview,
       deadline: autonomous ? 'Auto-cleared' : 'Awaiting review',
       deploymentId: depId,
+      // workspaceId was missing here entirely — draft_corrections capture in
+      // /api/approvals/decide silently never fired without it (confirmed).
+      workspaceId: ws,
       agentName: agent.id,
+      confidence,
       openScreen,
       sectionId: deployment?.sectionId || null,
       deliveryMode: delivery_mode || 'draft',
@@ -155,23 +160,27 @@ export async function executeAgentRun({
     const key = agent.id;
     agentLogs[key] = [logEntry, ...(agentLogs[key] || [])].slice(0, 40);
 
-    let agent_os = next.agent_os;
-    if (agent_os) {
-      agent_os = {
-        ...agent_os,
-        last_executed_task: {
-          agentName: agent.id,
-          deploymentId: depId,
-          approvalId,
-          at: new Date().toISOString(),
-          triggered_by,
-          executionMode: mode,
+    const existingOs = next.agent_os_by_workspace?.[ws];
+    let agentOsByWorkspace = next.agent_os_by_workspace;
+    if (existingOs) {
+      agentOsByWorkspace = {
+        ...agentOsByWorkspace,
+        [ws]: {
+          ...existingOs,
+          last_executed_task: {
+            agentName: agent.id,
+            deploymentId: depId,
+            approvalId,
+            at: new Date().toISOString(),
+            triggered_by,
+            executionMode: mode,
+          },
+          updatedAt: new Date().toISOString(),
         },
-        updatedAt: new Date().toISOString(),
       };
     }
 
-    return { ...next, approvals, approvedActions, tasks, agentLogs, agent_os };
+    return { ...next, approvals, approvedActions, tasks, agentLogs, agent_os_by_workspace: agentOsByWorkspace };
   });
 
   // Meter agent draft run (fixed feature estimate; no LLM tokens on this path yet)

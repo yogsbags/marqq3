@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { withGroqReasoning, resolveGroqModel } from './groqReasoning.js';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
@@ -159,6 +160,7 @@ export async function runPaidPlan(runId) {
   const playbook = await buildPlaybookFromPack(PLAN_PACK, { label: 'paid_ads_strategy' });
   run.skills.plan = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
+  const planZaraRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'zara');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
@@ -184,6 +186,7 @@ export async function runPaidPlan(runId) {
       'link_url (string),',
       'targeting_notes (string).',
       playbook.playbook || '',
+      planZaraRules,
     ].join(' '),
     user: JSON.stringify(
       {
@@ -293,6 +296,7 @@ export async function runPaidCreativeDraft(runId, { generateImage = true } = {})
   const playbook = await buildPlaybookFromPack(CREATIVE_PACK, { label: 'paid_creative_draft' });
   run.skills.creative = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
+  const creativeZaraRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'zara');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.4,
@@ -301,6 +305,7 @@ export async function runPaidCreativeDraft(runId, { generateImage = true } = {})
       'Return ONLY JSON: { "headline", "primary_text", "description", "cta", "image_prompt", "angle" }',
       'headline <= 40 chars. primary_text peer tone. No inventing medical claims.',
       playbook.playbook || '',
+      creativeZaraRules,
     ].join(' '),
     user: JSON.stringify({
       company: run.companyName,

@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { executeSocialGoLive, getSocialPublishReadiness } from './socialGoLive.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 /** @type {Map<string, object>} */
 const runsById = new Map();
@@ -178,6 +179,7 @@ export async function runSocialBrief(runId, patch = {}) {
   );
   run.skills.brief = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
+  const briefKiranRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'kiran');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     temperature: 0.35,
@@ -194,6 +196,7 @@ export async function runSocialBrief(runId, patch = {}) {
       ICP_ENGAGEMENT_RULES,
       TRUTH_RULES,
       playbook.playbook || '',
+      briefKiranRules,
     ].join(' '),
     user: JSON.stringify({
       company: run.companyName,
@@ -231,6 +234,7 @@ export async function runSocialCompose(runId) {
   const playbook = await buildPlaybookFromPack(PACK_PACK, { label: 'social_pack' });
   run.skills.compose = { skillIds: playbook.skillIds, loaded: playbook.loaded, warning: playbook.warning || null };
 
+  const composeKiranRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'kiran');
   const composeSystem = [
     'You are Kiran + Sam writing organic social posts optimized for reach, comments, and lead capture.',
     'Return ONLY JSON: { "posts": [ { "channel", "angle", "hook", "caption", "hashtags": [], "cta", "visual_brief" } ] }',
@@ -269,6 +273,7 @@ export async function runSocialCompose(runId) {
     'Instagram: scannable + save-worthy tip; softer CTA OK. Twitter/X: under 260 chars with a punchy take. Facebook: conversational. YouTube: title-friendly caption + description tone.',
     'No placeholders. Hashtags: 3–5 niche (LinkedIn: end of post or empty array). Peer tone, generous teacher — not salesy pitch deck.',
     playbook.playbook || '',
+    composeKiranRules,
   ].join(' ');
 
   const composeUser = {

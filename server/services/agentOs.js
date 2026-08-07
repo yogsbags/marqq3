@@ -14,7 +14,7 @@ export const AGENT_CATALOG = [
   { id: 'tara', name: 'Tara', role: 'CRO & Offers', type: 'Conversion design', tier: 'specialist', avatarColor: '#c74d8f', purpose: 'Audits offer and page friction; designs conversion and pricing motions.', tools: ['Funnel analyzer'], dataAccess: ['Analytics'], openScreen: null, capabilities: ['conversion', 'pricing'] },
   { id: 'sam', name: 'Sam', role: 'Copy', type: 'Messaging & voice', tier: 'specialist', avatarColor: '#39a6a3', purpose: 'Owns messaging, outreach copy, and sales enablement voice.', tools: ['Brand voice model'], dataAccess: ['Brand center'], openScreen: 'brand', capabilities: ['messaging'] },
   { id: 'kiran', name: 'Kiran', role: 'Social', type: 'Content calendar', tier: 'specialist', avatarColor: '#8a5ce0', purpose: 'Builds social calendars and demand/lifecycle motions.', tools: ['Calendar planner'], dataAccess: ['Social accounts'], openScreen: 'calendar', capabilities: ['social'] },
-  { id: 'maya', name: 'Maya', role: 'SEO', type: 'Search intelligence', tier: 'specialist', avatarColor: '#c74dd1', purpose: 'Tracks search rankings and AI-answer visibility.', tools: ['Rank tracker'], dataAccess: ['Search console'], openScreen: 'seo', capabilities: ['seo'] },
+  { id: 'maya', name: 'Maya', role: 'SEO', type: 'Search intelligence', tier: 'specialist', avatarColor: '#c74dd1', purpose: 'Tracks search rankings and AI-answer / GEO visibility.', tools: ['Rank tracker', 'GEO citation scanner'], dataAccess: ['Search console', 'Public web'], openScreen: 'seo', capabilities: ['seo', 'llmo', 'geo'] },
   { id: 'riya', name: 'Riya', role: 'Content', type: 'Editorial pipeline', tier: 'specialist', avatarColor: '#38b06b', purpose: 'Runs the editorial pipeline across blog, social, and email.', tools: ['Brand voice model'], dataAccess: ['Brand center'], openScreen: 'content', capabilities: ['editorial'] },
   { id: 'arjun', name: 'Arjun', role: 'Leads', type: 'B2B prospecting', tier: 'specialist', avatarColor: '#d13a5c', purpose: 'Prospects ICP accounts and drafts outbound sequences.', tools: ['Sequencer'], dataAccess: ['CRM'], openScreen: 'outreach', capabilities: ['prospecting', 'abm'] },
 ];
@@ -58,7 +58,7 @@ const SCREEN_TO_TARGET = {
   seo: 'company_intel_seo',
 };
 
-const SECTION_PRIMARY = {
+export const SECTION_PRIMARY = {
   executive_summary: 'neel',
   market_analysis: 'isha',
   target_customer: 'isha',
@@ -138,6 +138,20 @@ export function planAgentTask({ target, sectionId, screenId, goalSystem, roster 
     .filter(Boolean)
     .join('\n');
 
+  // Honest, deterministic confidence proxy — no fabricated self-grading.
+  // 'low' when the task fell back to a generic agent guess (no skill pack
+  // matched) or genuinely needs a connector this flow can't verify is live;
+  // 'high' only when a specific skill pack matched with nothing missing.
+  // This is what threads through to draft_corrections.confidence and drives
+  // the report card's escalation rate — see agentScheduler.js#executeAgentRun.
+  const confidence = !resolvedTarget
+    ? 'low'
+    : (pack.requiredConnectors || []).length > 0
+      ? 'low'
+      : (pack.marketingSkills || []).length > 0
+        ? 'high'
+        : 'medium';
+
   return {
     agentName: agentId,
     agentDisplayName: catalog?.name || agentId,
@@ -152,6 +166,7 @@ export function planAgentTask({ target, sectionId, screenId, goalSystem, roster 
       ? goalSystem.sectionTargets.filter((t) => !sectionId || t.sectionId === sectionId)
       : [],
     requiresHumanApproval: Boolean((pack.requiredConnectors || []).length),
+    confidence,
     target: resolvedTarget,
     sectionId: sectionId || null,
     screenId: screenId || null,

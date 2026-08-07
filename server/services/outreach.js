@@ -9,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { executeComposioAction, executeComposioProxy, resolveConnectedAccountId } from './composio.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 import {
   launchInstantlyCampaign,
   launchHeyReachCampaign,
@@ -539,11 +540,12 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
   const playbook = loadColdEmailPlaybook();
   const channelCopies = { ...(prospect.channel_copies || {}) };
   const senderName = resolveSenderName(run.senderName);
+  const samRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'sam');
 
   if (wanted.includes('email') || wanted.includes('email')) {
     const firstName = resolveProspectFirstName(prospect) || 'there';
     const parsed = await groqJson(
-      `You are Sam, Marqq copy agent. Follow the cold-email skill playbook strictly. Return JSON: {"subject":"...","body":"..."}. Never use placeholders like [Your Name], [Name], {{name}}, or {{first_name}} — always use real names. Body MUST open with "Hi ${firstName}," on its own line.`,
+      `You are Sam, Marqq copy agent. Follow the cold-email skill playbook strictly. Return JSON: {"subject":"...","body":"..."}. Never use placeholders like [Your Name], [Name], {{name}}, or {{first_name}} — always use real names. Body MUST open with "Hi ${firstName}," on its own line.${samRules}`,
       `${playbook}\n\n---\nWrite a first-touch cold email for:\nCompany sending: ${run.companyName}\nSender full name (sign-off MUST use this exact name): ${senderName}\nProspect first name (salutation MUST be "Hi ${firstName},"): ${firstName}\nProspect: ${prospect.full_name}, ${prospect.title} at ${prospect.company}\nBrief: ${run.question || 'Book a short intro call about lab-personalized nutrition for their patients / org.'}\nOpen with: Hi ${firstName},\nSign off as:\nThanks,\n${senderName}\n${run.companyName}\nReturn only JSON.`,
       run.workspaceId || run.companyId || 'marqq-ws-1'
     );
@@ -559,7 +561,7 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
 
   if (wanted.includes('linkedin')) {
     const parsed = await groqJson(
-      `You are Sam. Write a short LinkedIn DM (under 300 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].`,
+      `You are Sam. Write a short LinkedIn DM (under 300 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].${samRules}`,
       `Prospect: ${prospect.full_name}, ${prospect.title} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Goal: reply / short call. Return JSON.`,
       run.workspaceId || run.companyId || 'marqq-ws-1'
     );
@@ -572,7 +574,7 @@ export async function generateProspectCopy(runId, prospectId, { channels } = {})
 
   if (wanted.includes('whatsapp') || wanted.includes('phone')) {
     const parsed = await groqJson(
-      `You are Sam. Write a concise WhatsApp outreach (under 280 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].`,
+      `You are Sam. Write a concise WhatsApp outreach (under 280 chars). Return JSON: {"body":"..."}. Sign as ${senderName}, never [Your Name].${samRules}`,
       `Prospect: ${prospect.full_name} @ ${prospect.company}. Sender: ${senderName} at ${run.companyName}. Return JSON.`,
       run.workspaceId || run.companyId || 'marqq-ws-1'
     );
@@ -1051,6 +1053,7 @@ export async function draftAutoReplyForRecordedReply(run, prospect, reply) {
   const senderName = resolveSenderName(run.senderName);
   const originalSubject = String(prospect.subject || '').trim();
   const originalBody = String(prospect.channel_copies?.email?.body || prospect.body || '').trim();
+  const replySamRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'sam');
 
   const parsed = await groqJson(
     [
@@ -1067,6 +1070,7 @@ export async function draftAutoReplyForRecordedReply(run, prospect, reply) {
       'body (string).',
       'If OOO or clear not_interested with no question, should_reply may be false and body empty.',
       'Reply body: under 90 words, peer tone, one clear next step when appropriate.',
+      replySamRules,
     ].join(' '),
     JSON.stringify(
       {

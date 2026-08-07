@@ -136,6 +136,20 @@ interface GtmWizardProps {
   setActiveScreen: (screen: string) => void;
 }
 
+/** Minimal shape of a gtm_modules row as returned by GtmModuleSwitcher.jsx's
+ * onSwitched callback (that component is plain JS, so this keeps the TSX
+ * call site type-safe without converting it). */
+interface GtmModuleSummary {
+  id: string;
+  profile?: { answers?: GtmAnswers } | null;
+  section_state?: {
+    strategy?: StrategyDoc | null;
+    drafts?: Partial<Record<GtmInterviewSectionId, GtmStrategySectionDraft[]>>;
+    autoSections?: unknown[];
+    phase?: string;
+  } | null;
+}
+
 function getCtx(): OnboardingCtx {
   const brand = loadLocalBrandContext() as Record<string, unknown> | null;
   const auto = loadGtmAutoSections(getActiveWorkspaceId());
@@ -2260,10 +2274,10 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
             profile: {
               answers: normalized.answers || {},
               companyName: ctx.companyName,
-              phase: normalized.stage || normalized.phase,
+              phase: normalized.stage,
             },
             sectionState: {
-              phase: normalized.stage || normalized.phase,
+              phase: normalized.stage,
               drafts: normalized.drafts || {},
               autoSections: loadGtmAutoSections(workspaceId),
             },
@@ -2634,7 +2648,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
       <div style={{ marginBottom: 20 }}>
         <GtmModuleSwitcher
           setActiveScreen={setActiveScreen}
-          onSwitched={(mod) => {
+          onSwitched={(mod: GtmModuleSummary | null) => {
             if (!mod) return;
             // Remount-friendly: clear in-memory wizard when switching/creating
             if (mod.section_state?.strategy) {

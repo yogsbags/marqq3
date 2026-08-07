@@ -43,7 +43,10 @@ function nowIso() {
 export function ensureAgentCollections(state) {
   return {
     ...state,
-    agent_os: state.agent_os || null,
+    agent_os_by_workspace:
+      state.agent_os_by_workspace && typeof state.agent_os_by_workspace === 'object'
+        ? state.agent_os_by_workspace
+        : {},
     agent_deployments: Array.isArray(state.agent_deployments) ? state.agent_deployments : [],
     scheduled_automations: Array.isArray(state.scheduled_automations) ? state.scheduled_automations : [],
     automation_runs: Array.isArray(state.automation_runs) ? state.automation_runs : [],
@@ -62,28 +65,38 @@ export function saveAgentOsProfile(profile, workspaceId = DEFAULT_WS) {
   };
   updateDb((state) => {
     const next = ensureAgentCollections(state);
-    return { ...next, agent_os: saved };
+    return {
+      ...next,
+      agent_os_by_workspace: { ...next.agent_os_by_workspace, [workspaceId]: saved },
+    };
   });
   void persistAgentOsToSupabase(saved, workspaceId);
   return saved;
 }
 
+/**
+ * Per-workspace read — each workspace has its own slot (no more cross-tenant
+ * bleed when multiple workspaces are active in the same process).
+ */
 export function loadAgentOsProfile(workspaceId = DEFAULT_WS) {
   // Sync path keeps JSON DB; async hydrate happens via loadAgentOsProfileAsync
   const db = ensureAgentCollections(getDb());
-  const os = db.agent_os;
-  if (os && (!os.workspaceId || os.workspaceId === workspaceId || workspaceId === DEFAULT_WS)) {
-    return os;
-  }
-  return os?.workspaceId === workspaceId ? os : null;
+  return db.agent_os_by_workspace[workspaceId] || null;
 }
 
 export async function loadAgentOsProfileAsync(workspaceId = DEFAULT_WS) {
   if (isUuidWorkspace(workspaceId)) {
     const fromSb = await loadAgentOsFromSupabase(workspaceId);
     if (fromSb) {
-      updateDb((state) => ({ ...ensureAgentCollections(state), agent_os: { ...fromSb, workspaceId } }));
-      return { ...fromSb, workspaceId };
+      const hydrated = { ...fromSb, workspaceId };
+      updateDb((state) => {
+        const next = ensureAgentCollections(state);
+        return {
+          ...next,
+          agent_os_by_workspace: { ...next.agent_os_by_workspace, [workspaceId]: hydrated },
+        };
+      });
+      return hydrated;
     }
   }
   return loadAgentOsProfile(workspaceId);

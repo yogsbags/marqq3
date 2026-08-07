@@ -23,6 +23,7 @@ import {  loadAgentOs, saveAgentOs  } from '../lib/agents/persist';
 import {  planAgentTask  } from '../lib/agents/planTask';
 import {  sectionBriefForScreen  } from '../lib/journeyHandoff';
 import { GtmControlLoopPanel } from '../components/GtmControlLoopPanel.jsx';
+import GeoCitationPanel from '../components/seo/GeoCitationPanel.jsx';
 
 function strategySectionPreview(s) {
   const text =
@@ -2330,6 +2331,8 @@ export function SeoView({ setActiveScreen }) {
           ) : null}
         </div>
       </div>
+
+      <GeoCitationPanel companyName={company} niche="organic search and AI answer visibility" />
 
       <div className="card">
         <h4 style={{ marginTop: 0 }}>Search Console (30d)</h4>

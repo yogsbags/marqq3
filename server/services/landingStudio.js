@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishStaticHtmlPage } from './blogPublish.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 const runsById = new Map();
 
@@ -122,10 +123,12 @@ export async function generateLandingPage(runId, patch = {}) {
   });
 
   const pack = await buildPlaybookFromPack(LANDING_PACK, { label: 'create_landing_page' });
+  const taraRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'tara');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
-      'You are Tara (page structure) + Sam (conversion copy). Apply page-cro, copywriting, and form-cro. Return JSON only. Never invent fake testimonials, review scores, or case-study numbers — use honest placeholders.',
+      'You are Tara (page structure) + Sam (conversion copy). Apply page-cro, copywriting, and form-cro. Return JSON only. Never invent fake testimonials, review scores, or case-study numbers — use honest placeholders.' +
+      taraRules,
     user: `Build a conversion-ready landing page for website publish.
 
 Product: ${run.product}

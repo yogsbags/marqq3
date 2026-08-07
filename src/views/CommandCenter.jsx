@@ -3,6 +3,7 @@ import { ArrowRight, FileText, RefreshCw, Sparkles, AlertTriangle, TrendingUp, I
 import { loadAgentOs, saveAgentOs } from '../lib/agents/persist';
 import { getNextBestAction, loadStrategyDoc, northStarLabel } from '../lib/journeyHandoff';
 import { getActiveWorkspaceId } from '../lib/brandContext';
+import CofounderDigestCard from '../components/notifications/CofounderDigestCard.jsx';
 
 function SeverityIcon({ severity }) {
   if (severity === 'critical' || severity === 'warn') {
@@ -221,6 +222,8 @@ export default function CommandCenter({ agents = [], setActiveScreen }) {
           </div>
         </div>
       </div>
+
+      <CofounderDigestCard workspaceId={getActiveWorkspaceId()} onOpenScreen={setActiveScreen} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
         {(kpis.length

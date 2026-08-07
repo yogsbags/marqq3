@@ -53,6 +53,12 @@ import {
   publishContentArticle,
 } from '../services/contentStudio.js';
 import {
+  runGeoCitationScan,
+  getGeoScan,
+  getLatestGeoScan,
+  buildGeoQueries,
+} from '../services/geoCitationScanner.js';
+import {
   createLandingRun,
   getLandingRun,
   generateLandingPage,
@@ -159,7 +165,7 @@ import {
 } from '../services/credits/index.js';
 import workspacesRouter from './workspaces.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
-import { useSupabasePersistence } from '../lib/persistence.js';
+import { useSupabasePersistence, isUuidWorkspace } from '../lib/persistence.js';
 import {
   upsertGtmModule,
   getActiveGtmModule,
@@ -184,7 +190,15 @@ import {
   rescheduleContent,
   cancelScheduledContent,
 } from '../services/contentCalendar.js';
-import { getSupabaseWriteClient } from '../lib/supabase.js';
+import { getSupabaseWriteClient, getSupabaseReadClient } from '../lib/supabase.js';
+import { generateCofounderDigest } from '../services/cofounderDigest.js';
+import { runDigestForAllWorkspaces } from '../services/cofounderDigestScheduler.js';
+import { queueOvernightAsk, listOvernightAsks } from '../services/askMarqqOvernight.js';
+import { recordCorrection, EDIT_TYPES } from '../services/draftCorrections.js';
+import { getAgentReportCard, getWorkspaceReportCards } from '../services/agentReportCard.js';
+import { getActiveInstructions } from '../services/agentInstructions.js';
+import { reviewAgent } from '../services/agentSelfReview.js';
+import { runWeeklyReviewForAllWorkspaces } from '../services/agentSelfReviewScheduler.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
@@ -404,6 +418,163 @@ router.post('/ask-marqq/chat/complete', async (req, res) => {
   }
 });
 
+
+/** POST /api/ask-marqq/queue-overnight — hand a big ask to the agent roster instead of answering
+ *  synchronously; result surfaces via Approvals + the next co-founder digest. */
+router.post('/ask-marqq/queue-overnight', async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
+    const companyId = String(req.body?.companyId || workspaceId).trim();
+    const channel = String(req.body?.channel || 'general').trim();
+    const message = String(req.body?.message || '').trim();
+    const agentName = req.body?.agentName ? String(req.body.agentName).trim() : null;
+    if (!message) {
+      return res.status(400).json({ ok: false, error: 'message required' });
+    }
+    const result = queueOvernightAsk({ workspaceId, companyId, channel, message, agentName });
+    res.json(result);
+  } catch (err) {
+    console.error('[ask-marqq/queue-overnight]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to queue overnight ask' });
+  }
+});
+
+/** GET /api/ask-marqq/overnight — list queued/recent overnight asks for a workspace */
+router.get('/ask-marqq/overnight', (req, res) => {
+  const workspaceId = String(req.query.workspaceId || DEFAULT_WS).trim();
+  res.json({ ok: true, deployments: listOvernightAsks({ workspaceId }) });
+});
+
+/** GET /api/cofounder-digest/latest?workspaceId= — most recent digest for the AI-insights home /
+ *  notifications panel. */
+router.get('/cofounder-digest/latest', async (req, res) => {
+  try {
+    const workspaceId = String(req.query.workspaceId || '').trim();
+    if (!workspaceId) return res.status(400).json({ ok: false, error: 'workspaceId required' });
+    const db = getSupabaseReadClient();
+    if (!db) return res.json({ ok: true, digest: null });
+    const { data, error } = await db
+      .from('cofounder_digests')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) {
+      if (/could not find the table/i.test(error.message || '')) {
+        return res.json({ ok: true, digest: null, migrationPending: true });
+      }
+      throw new Error(error.message);
+    }
+    res.json({ ok: true, digest: data?.[0] || null });
+  } catch (err) {
+    console.error('[cofounder-digest/latest]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to load digest' });
+  }
+});
+
+/** POST /api/cofounder-digest/generate — manual "refresh my recap" trigger (also used by tests);
+ *  { workspaceId, force } or omit workspaceId to run for every active workspace. */
+router.post('/cofounder-digest/generate', async (req, res) => {
+  try {
+    const workspaceId = req.body?.workspaceId ? String(req.body.workspaceId).trim() : null;
+    const force = Boolean(req.body?.force);
+    if (!workspaceId) {
+      const results = await runDigestForAllWorkspaces({ force });
+      return res.json({ ok: true, results });
+    }
+    const result = await generateCofounderDigest(workspaceId, { force });
+    res.json(result);
+  } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
+    console.error('[cofounder-digest/generate]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Digest generation failed' });
+  }
+});
+
+/** POST /api/cofounder-digest/read — mark a digest as read */
+router.post('/cofounder-digest/read', async (req, res) => {
+  try {
+    const digestId = String(req.body?.digestId || '').trim();
+    if (!digestId) return res.status(400).json({ ok: false, error: 'digestId required' });
+    const db = getSupabaseWriteClient();
+    if (!db) return res.json({ ok: false, error: 'Supabase not configured' });
+    const { error } = await db.from('cofounder_digests').update({ read: true }).eq('id', digestId);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[cofounder-digest/read]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to mark digest read' });
+  }
+});
+
+/** GET /api/agents/report-card?workspaceId=&agentName= — single agent's report card */
+router.get('/agents/report-card', async (req, res) => {
+  try {
+    const workspaceId = String(req.query.workspaceId || '').trim();
+    const agentName = String(req.query.agentName || '').trim();
+    if (!workspaceId || !agentName) {
+      return res.status(400).json({ ok: false, error: 'workspaceId and agentName required' });
+    }
+    const card = await getAgentReportCard(workspaceId, agentName);
+    res.json({ ok: true, card });
+  } catch (err) {
+    console.error('[agents/report-card]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to load report card' });
+  }
+});
+
+/** GET /api/agents/report-cards?workspaceId= — every catalog agent's report card (grid view) */
+router.get('/agents/report-cards', async (req, res) => {
+  try {
+    const workspaceId = String(req.query.workspaceId || '').trim();
+    if (!workspaceId) return res.status(400).json({ ok: false, error: 'workspaceId required' });
+    const cards = await getWorkspaceReportCards(workspaceId, defaultUiAgents().map((a) => a.id));
+    res.json({ ok: true, cards });
+  } catch (err) {
+    console.error('[agents/report-cards]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to load report cards' });
+  }
+});
+
+/** GET /api/agents/instructions?workspaceId=&agentName= — current versioned instructions ("workflow.md") */
+router.get('/agents/instructions', async (req, res) => {
+  try {
+    const workspaceId = String(req.query.workspaceId || '').trim();
+    const agentName = String(req.query.agentName || '').trim();
+    if (!workspaceId || !agentName) {
+      return res.status(400).json({ ok: false, error: 'workspaceId and agentName required' });
+    }
+    const instructions = await getActiveInstructions(workspaceId, agentName);
+    res.json({ ok: true, instructions });
+  } catch (err) {
+    console.error('[agents/instructions]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to load instructions' });
+  }
+});
+
+/** GET /api/agents/edit-types — closed edit_type list for the Approvals queue UI */
+router.get('/agents/edit-types', (req, res) => {
+  res.json({ ok: true, editTypes: EDIT_TYPES });
+});
+
+/** POST /api/agents/self-review — manual "run the weekly review now" trigger (also used by tests).
+ *  { workspaceId, agentName } for one pair, or omit both to run every workspace x catalog agent. */
+router.post('/agents/self-review', async (req, res) => {
+  try {
+    const workspaceId = req.body?.workspaceId ? String(req.body.workspaceId).trim() : null;
+    const agentName = req.body?.agentName ? String(req.body.agentName).trim() : null;
+    if (workspaceId && agentName) {
+      const result = await reviewAgent(workspaceId, agentName);
+      return res.json(result);
+    }
+    const results = await runWeeklyReviewForAllWorkspaces(agentName ? { agentNames: [agentName] } : {});
+    res.json({ ok: true, results });
+  } catch (err) {
+    if (isInsufficientCredits(err)) return sendCreditsError(res, err);
+    console.error('[agents/self-review]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Self-review failed' });
+  }
+});
 
 /** POST /api/gtm/strategy/generate — full 16-section doc with Marqq2 skill playbooks */
 router.post('/gtm/strategy/generate', async (req, res) => {
@@ -1056,16 +1227,39 @@ router.post('/automations/scheduled/:id/run', async (req, res) => {
   }
 });
 
-// POST decision approve/dismiss
-router.post('/approvals/decide', (req, res) => {
-  const { id, decision } = req.body; // 'approved' or 'rejected'
+// POST decision approve/dismiss — also records a draft_correction (self-improvement runlog)
+// when the workspace is a real UUID: edited/rejected requires editType+note, plain approval is optional.
+router.post('/approvals/decide', async (req, res) => {
+  const { id, decision, editType, note, edited } = req.body; // decision: 'approved' or 'rejected'
+  let matchedApproval = null;
   const db = updateDb((state) => {
     const nextApproved = { ...state.approvedActions, [id]: decision };
-    const approvals = (state.approvals || []).map((a) =>
-      a.id === id ? { ...a, status: decision, decidedAt: new Date().toISOString() } : a
-    );
+    const approvals = (state.approvals || []).map((a) => {
+      if (a.id !== id) return a;
+      matchedApproval = a;
+      return { ...a, status: decision, decidedAt: new Date().toISOString(), editType: editType || null, note: note || null };
+    });
     return { ...state, approvedActions: nextApproved, approvals };
   });
+
+  // Fire-and-forget correction capture — never blocks the decision itself.
+  if (matchedApproval?.workspaceId && isUuidWorkspace(matchedApproval.workspaceId)) {
+    const action = decision === 'rejected' ? 'rejected' : edited ? 'edited' : 'approved_as_is';
+    if (action === 'approved_as_is' || editType) {
+      void recordCorrection({
+        workspaceId: matchedApproval.workspaceId,
+        userId: req.authUserId || null,
+        agentName: matchedApproval.agentName,
+        deploymentId: matchedApproval.deploymentId || null,
+        approvalId: id,
+        action,
+        editType: editType || null,
+        note: note || null,
+        confidence: matchedApproval.confidence || null,
+      });
+    }
+  }
+
   res.json({ success: true, approvedActions: db.approvedActions });
 });
 
@@ -1315,6 +1509,61 @@ router.post('/outreach/runs/:runId/replies/:replyId/approve', async (req, res) =
 
 router.get('/outreach/workspaces/:workspaceId/summary', (req, res) => {
   res.json({ ok: true, ...getWorkspaceSummary(req.params.workspaceId) });
+});
+
+// ── GEO / LLMO citation scanner (Maya) ──────────────────────────────────────
+
+/** POST /api/geo/scan — live AI Overview + Perplexity citation probe */
+router.post('/geo/scan', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const scan = await runGeoCitationScan({
+      workspaceId: body.workspaceId || body.companyId,
+      companyId: body.companyId,
+      companyName: body.companyName,
+      domain: body.domain,
+      queries: body.queries,
+      keywords: body.keywords,
+      niche: body.niche,
+      countryCode: body.countryCode,
+      enablePerplexity: body.enablePerplexity,
+    });
+    res.json({ ok: true, scanId: scan.id, scan });
+  } catch (err) {
+    console.error('[geo/scan]', err);
+    const status = err.code === 'APIFY_TOKEN_MISSING' ? 400 : 500;
+    res.status(status).json({ ok: false, error: err.message || 'GEO scan failed' });
+  }
+});
+
+/** GET /api/geo/scans/latest?workspaceId= */
+router.get('/geo/scans/latest', (req, res) => {
+  const ws = String(req.query.workspaceId || req.query.companyId || '').trim();
+  if (!ws) return res.status(400).json({ ok: false, error: 'workspaceId required' });
+  const scan = getLatestGeoScan(ws);
+  if (!scan) return res.status(404).json({ ok: false, error: 'No GEO scan yet for workspace' });
+  res.json({ ok: true, scan });
+});
+
+/** GET /api/geo/scans/:scanId */
+router.get('/geo/scans/:scanId', (req, res) => {
+  const scan = getGeoScan(req.params.scanId);
+  if (!scan) return res.status(404).json({ ok: false, error: 'Scan not found' });
+  res.json({ ok: true, scan });
+});
+
+/** POST /api/geo/queries/preview — dry-run default probe queries */
+router.post('/geo/queries/preview', (req, res) => {
+  const body = req.body || {};
+  res.json({
+    ok: true,
+    queries: buildGeoQueries({
+      companyName: body.companyName,
+      domain: body.domain,
+      keywords: body.keywords,
+      niche: body.niche,
+    }),
+  });
 });
 
 // ── Content Studio (SEO → Blog) ─────────────────────────────────────────────

@@ -2,13 +2,14 @@
  * Workspace CRUD — reuses Marqq2 `workspaces` + `workspace_members` tables.
  */
 import express from 'express';
-import { supabaseAdmin } from '../lib/supabase.js';
+import { getSupabaseAdminClient } from '../lib/supabase.js';
 import { requireAuth, requireWorkspaceMember } from '../middleware/auth.js';
 import { useSupabasePersistence } from '../lib/persistence.js';
 
 const router = express.Router();
 
 function dbOr503(res) {
+  const supabaseAdmin = getSupabaseAdminClient();
   if (!useSupabasePersistence() || !supabaseAdmin) {
     res.status(503).json({
       error: 'Workspace API requires SUPABASE_SERVICE_ROLE_KEY (USE_SUPABASE_PERSISTENCE)',

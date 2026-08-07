@@ -1,5 +1,5 @@
 import {  useEffect, useRef, useState  } from 'react';
-import {  Send, Mic, Square, Paperclip, Loader2, X  } from 'lucide-react';
+import {  Send, Mic, Square, Paperclip, Loader2, X, Moon  } from 'lucide-react';
 import { 
   consumeAskMarqqContext,
   loadStrategySectionsForAskMarqq,
@@ -14,6 +14,7 @@ import ChatMarkdown from '../components/ChatMarkdown.jsx';
 import {  askMarqqCompound  } from '../services/groqService';
 import {   getActiveWorkspaceId  } from '../lib/brandContext';
 import { getCompanyName, getWebsite } from '../lib/liveWorkspace';
+import { queueOvernightAsk } from '../lib/askMarqqOvernight.js';
 
 const gtmChannels = [
   'executive-summary',
@@ -524,6 +525,47 @@ export default function AskMarqq({ setActiveScreen }) {
     }));
   };
 
+  const [queueingOvernight, setQueueingOvernight] = useState(false);
+
+  /**
+   * Phase 4 — instead of a synchronous compound-mini reply, hand the ask to
+   * the existing agent_deployments queue (already polled every ~60s by
+   * agentScheduler.js) and let the co-founder digest report back later.
+   */
+  const handleQueueOvernight = async () => {
+    if (!chatInput.trim() || asking || queueingOvernight) return;
+    const channel = activeChannel;
+    const text = chatInput.trim();
+    const prior = messagesByChannel[channel] || currentMessages;
+
+    const userMsg = { id: Date.now(), sender: 'You', time: 'Just now', text };
+    setChatInput('');
+    setComposerError('');
+    setQueueingOvernight(true);
+    setMessagesByChannel((prev) => ({
+      ...prev,
+      [channel]: [...(prev[channel] || prior), userMsg],
+    }));
+
+    const result = await queueOvernightAsk({ channel, message: text });
+
+    const ackMsg = {
+      id: Date.now() + 1,
+      sender: 'Marqq',
+      confidence: result.ok ? 'Queued' : 'Error',
+      time: 'Just now',
+      text: result.ok
+        ? result.message
+        : `Could not queue that for overnight work: ${result.error || 'unknown error'}. Try asking directly instead.`,
+      sources: result.ok ? `${result.agentDisplayName} · agent deployment queue` : undefined,
+    };
+    setMessagesByChannel((prev) => ({
+      ...prev,
+      [channel]: [...(prev[channel] || []), ackMsg],
+    }));
+    setQueueingOvernight(false);
+  };
+
   const handleSend = async (e) => {
     e.preventDefault();
     if ((!chatInput.trim() && !pendingAttachments.length) || asking) return;
@@ -927,6 +969,15 @@ export default function AskMarqq({ setActiveScreen }) {
               disabled={asking || recording}
             />
             <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={asking || recording || queueingOvernight || !chatInput.trim()}
+              title="Queue this for the agent roster to work on overnight — check the co-founder digest later instead of waiting here"
+              onClick={handleQueueOvernight}
+            >
+              {queueingOvernight ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Moon size={14} />}
+            </button>
+            <button
               type="submit"
               className="btn btn-primary"
               disabled={asking || recording || (!chatInput.trim() && !pendingAttachments.length)}
@@ -935,7 +986,7 @@ export default function AskMarqq({ setActiveScreen }) {
             </button>
           </form>
           <div className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>
-            Voice and uploads apply to #{activeChannel} only.
+            Voice and uploads apply to #{activeChannel} only · <Moon size={10} style={{ verticalAlign: -1 }} /> queues the ask for overnight agent work instead of an instant reply.
           </div>
         </div>
       </div>

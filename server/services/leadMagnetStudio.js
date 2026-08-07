@@ -9,6 +9,7 @@ import { buildPlaybookFromPack } from './gtmStrategySkills.js';
 import { publishStaticHtmlPage } from './blogPublish.js';
 import { syncProspectsToCrm } from './crmLeads.js';
 import { meteredStudioJson, assertCanAfford } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 const runsById = new Map();
 
@@ -155,10 +156,12 @@ export async function designLeadMagnet(runId, patch = {}) {
   });
 
   const pack = await buildPlaybookFromPack(CONCEPT_PACK, { label: 'lead_magnets' });
+  const conceptRiyaRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'riya');
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
-      'You are Riya designing a high-converting lead magnet. Apply the lead-magnets skill. Return JSON only. No invented conversion rates.',
+      'You are Riya designing a high-converting lead magnet. Apply the lead-magnets skill. Return JSON only. No invented conversion rates.' +
+      conceptRiyaRules,
     user: `Design one lead magnet for ${run.companyName}.
 
 Type preference: ${run.magnetType}
@@ -214,11 +217,13 @@ export async function generateLeadMagnetPage(runId, patch = {}) {
   const concept = run.concept;
   const pack = await buildPlaybookFromPack(PAGE_PACK, { label: 'lead_magnet_landing' });
   const captureUrl = captureEndpoint(run.companyId);
+  const pageTaraRules = await getInjectableRulesBlock(run.workspaceId || run.companyId, 'tara');
 
   const parsed = await groqJson({
     workspaceId: run.workspaceId || run.companyId || 'marqq-ws-1',
     system:
-      'You are Tara + Sam building a gated lead-magnet landing page. Apply page-cro and form-cro. Return JSON only. Never invent fake social proof metrics.',
+      'You are Tara + Sam building a gated lead-magnet landing page. Apply page-cro and form-cro. Return JSON only. Never invent fake social proof metrics.' +
+      pageTaraRules,
     user: `Build a gated landing page for this lead magnet.
 
 Company: ${run.companyName}

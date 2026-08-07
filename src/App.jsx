@@ -267,12 +267,18 @@ export default function App() {
   }, []);
 
   // Handlers
-  const handleDecideAction = (key, decision) => {
+  const handleDecideAction = (key, decision, correction) => {
     setApprovedActions(prev => ({ ...prev, [key]: decision }));
     fetch('/api/approvals/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: key, decision }),
+      body: JSON.stringify({
+        id: key,
+        decision,
+        editType: correction?.editType || undefined,
+        note: correction?.note || undefined,
+        edited: correction?.edited || undefined,
+      }),
     }).catch(() => {});
     if (decision === 'approved') {
       const ap = (approvals || []).find((a) => a.id === key);
@@ -420,6 +426,7 @@ export default function App() {
               onDecideAction={handleDecideAction}
               onUndoAction={handleUndoAction}
               setActiveScreen={setActiveScreen}
+              workspaceId={getActiveWorkspaceId()}
             />
           )}
 

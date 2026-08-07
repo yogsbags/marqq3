@@ -3,6 +3,7 @@
  */
 import { resolveGtmAutoSectionModel } from './groqReasoning.js';
 import { meteredGroqJson } from './credits/index.js';
+import { getInjectableRulesBlock } from './agentInstructions.js';
 
 function fallbackResearch({ companyName, niche, website }) {
   return {
@@ -34,6 +35,7 @@ export async function runMarketResearch(input = {}) {
   const workspaceId = String(input.workspaceId || input.companyId || 'marqq-ws-1').trim();
 
   const model = resolveGtmAutoSectionModel();
+  const ishaRules = await getInjectableRulesBlock(workspaceId, 'isha');
   const system = `You are a B2B market intelligence analyst. Use web search when available.
 Return ONLY JSON:
 {
@@ -43,7 +45,7 @@ Return ONLY JSON:
   "risks": ["..."],
   "queries": ["search queries you would monitor"]
 }
-Be specific to the company. Max 5 competitors, 4 opportunities, 4 risks.`;
+Be specific to the company. Max 5 competitors, 4 opportunities, 4 risks.${ishaRules}`;
 
   const user = `Company: ${companyName}
 Website: ${website || 'n/a'}
