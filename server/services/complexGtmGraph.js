@@ -3,6 +3,7 @@ import { MemorySaver } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { AGENT_CATALOG } from './agentOs.js';
 import { meteredStudioJson } from './credits/index.js';
+import { TASK_SKILL_PACKS, buildPlaybookFromPack } from './gtmStrategySkills.js';
 
 const AGENTS = new Map(AGENT_CATALOG.map((agent) => [agent.id, agent]));
 
@@ -14,6 +15,16 @@ const SPECIALIST_SETS = {
   retention: ['dev', 'isha', 'sam', 'tara'],
   launch: ['neel', 'zara', 'riya', 'sam', 'dev'],
   general: ['veena', 'isha', 'dev', 'sam', 'tara'],
+};
+
+const SPECIALIST_SKILLS = {
+  advertising: { dev: 'analytics-tracking', zara: 'channel_strategy', maya: 'analytics-tracking', tara: 'channel_strategy' },
+  market: { veena: 'marketing_strategy', isha: 'gtm_strategy_doc', priya: 'marketing_strategy', maya: 'marketing_strategy' },
+  content: { maya: 'analytics-tracking', riya: 'marketing_strategy', sam: 'positioning_messaging', tara: 'positioning_messaging' },
+  sales: { arjun: 'sales_enablement', sam: 'sales_enablement', isha: 'gtm_strategy_doc', dev: 'analytics-tracking' },
+  retention: { tara: 'marketing_strategy', isha: 'analytics-tracking', sam: 'sales_enablement', dev: 'analytics-tracking' },
+  launch: { neel: 'launch-strategy', zara: 'channel_strategy', riya: 'marketing_strategy', sam: 'positioning_messaging', dev: 'analytics-tracking' },
+  general: { veena: 'marketing_strategy', isha: 'gtm_strategy_doc', dev: 'analytics-tracking', sam: 'sales_enablement', tara: 'marketing_strategy' },
 };
 
 function categoryForGoal(goal = {}) {
@@ -37,6 +48,7 @@ const GraphState = Annotation.Root({
   brief: Annotation(),
   category: Annotation(),
   specialists: Annotation({ reducer: (_, value) => value, default: () => [] }),
+  skillPacks: Annotation({ reducer: (_, value) => value, default: () => ({}) }),
   research: Annotation({ reducer: (current, value) => [...(current || []), ...(Array.isArray(value) ? value : [])], default: () => [] }),
   review: Annotation({ reducer: (_, value) => value, default: () => null }),
   synthesis: Annotation({ reducer: (_, value) => value, default: () => null }),
@@ -49,8 +61,9 @@ function specialistNode(slot) {
     const agentId = state.specialists?.[slot];
     if (!agentId) return { research: [] };
     const agent = AGENTS.get(agentId) || { id: agentId, name: agentId, role: 'GTM specialist', purpose: 'Analyze the assigned GTM question.' };
+    const skill = state.skillPacks?.[agentId] || { skillIds: [], playbook: '', loaded: false };
     if (state.mock) {
-      return { research: [{ agentId, agentName: agent.name, role: agent.role, result: { findings: [`Mock finding from ${agent.name}`], recommendations: [`Mock recommendation from ${agent.name}`], confidence: 'medium' }, status: 'completed' }] };
+      return { research: [{ agentId, agentName: agent.name, role: agent.role, skills: skill.skillIds, skillLoaded: skill.loaded, result: { findings: [`Mock finding from ${agent.name}`], recommendations: [`Mock recommendation from ${agent.name}`], confidence: 'medium' }, status: 'completed' }] };
     }
     try {
       const result = await meteredStudioJson({
@@ -61,21 +74,32 @@ function specialistNode(slot) {
         meta: { graph: 'complex_gtm', node: agentId, goalId: state.goal?.id || null },
         system: `You are ${agent.name}, Marqq's ${agent.role} specialist. ${agent.purpose || ''}
 Analyze only your specialist perspective. Use evidence available in the brief; distinguish facts, assumptions, and recommendations.
+Apply the assigned Marqq2 skill playbook as the method and quality bar. Do not claim evidence that is not in the brief.
 Return JSON only: {"findings":[],"evidence_needed":[],"recommendations":[],"risks":[],"confidence":"low|medium|high"}.`,
         user: `Complex GTM goal: ${state.goal?.title || state.goal?.id || 'unspecified'}
 User brief: ${state.brief}
-Your specialist assignment: ${agent.role}`,
+Your specialist assignment: ${agent.role}
+Assigned skills: ${skill.skillIds.join(', ') || 'none'}
+${skill.playbook || '(No playbook loaded; mark skill limitations in risks.)'}`,
       });
-      return { research: [{ agentId, agentName: agent.name, role: agent.role, result: safeObject(result), status: 'completed' }] };
+      return { research: [{ agentId, agentName: agent.name, role: agent.role, skills: skill.skillIds, skillLoaded: skill.loaded, result: safeObject(result), status: 'completed' }] };
     } catch (error) {
-      return { research: [{ agentId, agentName: agent.name, role: agent.role, result: null, status: 'failed', error: error.message || String(error) }], errors: [`${agentId}: ${error.message || String(error)}`] };
+      return { research: [{ agentId, agentName: agent.name, role: agent.role, skills: skill.skillIds, skillLoaded: skill.loaded, result: null, status: 'failed', error: error.message || String(error) }], errors: [`${agentId}: ${error.message || String(error)}`] };
     }
   };
 }
 
 async function planNode(state) {
   const category = categoryForGoal(state.goal);
-  return { category, specialists: SPECIALIST_SETS[category] || SPECIALIST_SETS.general };
+  const specialists = SPECIALIST_SETS[category] || SPECIALIST_SETS.general;
+  const skillMap = SPECIALIST_SKILLS[category] || SPECIALIST_SKILLS.general;
+  const skillEntries = await Promise.all(specialists.map(async (agentId) => {
+    const taskKey = skillMap[agentId] || 'gtm_strategy_doc';
+    const pack = TASK_SKILL_PACKS[taskKey] || TASK_SKILL_PACKS.gtm_strategy_doc;
+    const playbook = await buildPlaybookFromPack(pack, { label: `complex_gtm/${category}/${agentId}` });
+    return [agentId, { taskKey, ...playbook }];
+  }));
+  return { category, specialists, skillPacks: Object.fromEntries(skillEntries) };
 }
 
 async function reviewNode(state) {
@@ -198,6 +222,12 @@ export async function runComplexGtmGoalGraph({ workspaceId, goal, brief, runId =
     goalId: goal.id || null,
     category: result.category,
     specialists: result.specialists,
+    skillPacks: Object.fromEntries(Object.entries(result.skillPacks || {}).map(([agentId, pack]) => [agentId, {
+      taskKey: pack.taskKey,
+      skillIds: pack.skillIds || [],
+      loaded: Boolean(pack.loaded),
+      warning: pack.warning || null,
+    }])),
     research: result.research,
     review: result.review,
     synthesis: result.synthesis,
