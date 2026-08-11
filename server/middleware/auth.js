@@ -65,7 +65,11 @@ export async function requireWorkspaceMember(req, res, next) {
     req.params?.id ||
     req.params?.workspaceId ||
     req.body?.workspaceId ||
+    req.body?.companyId ||
+    req.body?.workspace_id ||
     req.query?.workspaceId ||
+    req.query?.companyId ||
+    req.query?.workspace_id ||
     null;
 
   if (workspaceId && getSupabaseAdminClient()) {
@@ -74,5 +78,45 @@ export async function requireWorkspaceMember(req, res, next) {
       return res.status(403).json({ error: 'You are not a member of this workspace' });
     }
   }
+  return next();
+}
+
+/** Require membership for a deployment route, resolving workspace from the
+ * deployment row when the client only supplies /:id. */
+export async function requireDeploymentMember(req, res, next) {
+  const user = await resolveBearerUser(req);
+  if (!user?.id) return res.status(401).json({ error: 'Authentication required' });
+  req.user = user;
+  req.authUserId = user.id;
+  const workspaceId = req.body?.workspaceId || req.body?.companyId || req.query?.workspaceId || null;
+  let resolved = workspaceId;
+  const admin = getSupabaseAdminClient();
+  if (!resolved && admin && req.params?.id) {
+    const { data } = await admin.from('agent_deployments').select('workspace_id').eq('id', req.params.id).maybeSingle();
+    resolved = data?.workspace_id || null;
+  }
+  if (resolved && admin && !(await assertWorkspaceMember(user.id, resolved))) {
+    return res.status(403).json({ error: 'You are not a member of this workspace' });
+  }
+  if (!resolved && admin) return res.status(400).json({ error: 'workspaceId required' });
+  return next();
+}
+
+/** Require membership for an approval decision, resolving workspace by ID. */
+export async function requireApprovalMember(req, res, next) {
+  const user = await resolveBearerUser(req);
+  if (!user?.id) return res.status(401).json({ error: 'Authentication required' });
+  req.user = user;
+  req.authUserId = user.id;
+  const admin = getSupabaseAdminClient();
+  let workspaceId = req.body?.workspaceId || null;
+  if (!workspaceId && admin && req.body?.id) {
+    const { data } = await admin.from('draft_approvals').select('workspace_id').eq('id', req.body.id).maybeSingle();
+    workspaceId = data?.workspace_id || null;
+  }
+  if (workspaceId && admin && !(await assertWorkspaceMember(user.id, workspaceId))) {
+    return res.status(403).json({ error: 'You are not a member of this workspace' });
+  }
+  if (!workspaceId && admin) return res.status(404).json({ error: 'Approval not found' });
   return next();
 }

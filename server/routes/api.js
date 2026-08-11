@@ -166,7 +166,7 @@ import {
   sendCreditsError,
 } from '../services/credits/index.js';
 import workspacesRouter from './workspaces.js';
-import { optionalAuth, requireAuth, requireWorkspaceMember } from '../middleware/auth.js';
+import { optionalAuth, requireAuth, requireWorkspaceMember, requireDeploymentMember, requireApprovalMember } from '../middleware/auth.js';
 import { useSupabasePersistence, isUuidWorkspace } from '../lib/persistence.js';
 import {
   upsertGtmModule,
@@ -440,7 +440,7 @@ router.post('/ask-marqq/chat/complete', async (req, res) => {
 
 /** POST /api/ask-marqq/queue-overnight — hand a big ask to the agent roster instead of answering
  *  synchronously; result surfaces via Approvals + the next co-founder digest. */
-router.post('/ask-marqq/queue-overnight', async (req, res) => {
+router.post('/ask-marqq/queue-overnight', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
     const companyId = String(req.body?.companyId || workspaceId).trim();
@@ -459,14 +459,14 @@ router.post('/ask-marqq/queue-overnight', async (req, res) => {
 });
 
 /** GET /api/ask-marqq/overnight — list queued/recent overnight asks for a workspace */
-router.get('/ask-marqq/overnight', (req, res) => {
+router.get('/ask-marqq/overnight', requireWorkspaceMember, (req, res) => {
   const workspaceId = String(req.query.workspaceId || DEFAULT_WS).trim();
   res.json({ ok: true, deployments: listOvernightAsks({ workspaceId }) });
 });
 
 /** GET /api/cofounder-digest/latest?workspaceId= — most recent digest for the AI-insights home /
  *  notifications panel. */
-router.get('/cofounder-digest/latest', async (req, res) => {
+router.get('/cofounder-digest/latest', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query.workspaceId || '').trim();
     if (!workspaceId) return res.status(400).json({ ok: false, error: 'workspaceId required' });
@@ -493,13 +493,12 @@ router.get('/cofounder-digest/latest', async (req, res) => {
 
 /** POST /api/cofounder-digest/generate — manual "refresh my recap" trigger (also used by tests);
  *  { workspaceId, force } or omit workspaceId to run for every active workspace. */
-router.post('/cofounder-digest/generate', async (req, res) => {
+router.post('/cofounder-digest/generate', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = req.body?.workspaceId ? String(req.body.workspaceId).trim() : null;
     const force = Boolean(req.body?.force);
     if (!workspaceId) {
-      const results = await runDigestForAllWorkspaces({ force });
-      return res.json({ ok: true, results });
+      return res.status(400).json({ ok: false, error: 'workspaceId required' });
     }
     const result = await generateCofounderDigest(workspaceId, { force });
     res.json(result);
@@ -511,7 +510,7 @@ router.post('/cofounder-digest/generate', async (req, res) => {
 });
 
 /** POST /api/cofounder-digest/read — mark a digest as read */
-router.post('/cofounder-digest/read', async (req, res) => {
+router.post('/cofounder-digest/read', requireAuth, async (req, res) => {
   try {
     const digestId = String(req.body?.digestId || '').trim();
     if (!digestId) return res.status(400).json({ ok: false, error: 'digestId required' });
@@ -790,7 +789,7 @@ router.get('/agents', (req, res) => {
 });
 
 // Static agent paths MUST be registered before /agents/:id
-router.get('/agents/deployments', async (req, res) => {
+router.get('/agents/deployments', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   const status = req.query?.status ? String(req.query.status) : null;
   const deployments = await listDeploymentsAsync({ workspaceId, status });
@@ -803,7 +802,7 @@ router.get('/agents/execution-summaries', requireWorkspaceMember, async (req, re
   res.json({ ok: true, summaries: summaries || [] });
 });
 
-router.post('/agents/deployments', (req, res) => {
+router.post('/agents/deployments', requireWorkspaceMember, (req, res) => {
   const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
   const agentName = String(req.body?.agentName || '').trim().toLowerCase();
   if (!agentName) return res.status(400).json({ ok: false, error: 'agentName required' });
@@ -838,7 +837,7 @@ router.post('/agents/deployments', (req, res) => {
 });
 
 /** PATCH /api/agents/deployments/:id — pause | resume | stop | reschedule */
-router.patch('/agents/deployments/:id', (req, res) => {
+router.patch('/agents/deployments/:id', requireDeploymentMember, (req, res) => {
   const id = String(req.params.id || '').trim();
   const action = String(req.body?.action || '').toLowerCase();
   let updated = null;
@@ -965,7 +964,7 @@ router.post('/competitor-alerts/webhook', async (req, res) => {
   }
 });
 
-router.post('/agents/scheduler/tick', async (req, res) => {
+router.post('/agents/scheduler/tick', requireWorkspaceMember, async (req, res) => {
   const force = Boolean(req.body?.force);
   const workspaceId = String(req.body?.workspaceId || req.query?.workspaceId || '').trim() || null;
   const result = await processDeploymentQueueTick({ force, workspaceId });
@@ -993,7 +992,7 @@ router.post('/agents/plan', (req, res) => {
 });
 
 /** POST /api/strategy/activate — persist Agent OS + seed scheduled deployments from locked GTM */
-router.post('/strategy/activate', (req, res) => {
+router.post('/strategy/activate', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
     const revisedSectionId = String(req.body?.revisedSectionId || '').trim() || null;
@@ -1013,20 +1012,20 @@ router.post('/strategy/activate', (req, res) => {
   }
 });
 
-router.get('/agent-os', async (req, res) => {
+router.get('/agent-os', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   const os = await loadAgentOsProfileAsync(workspaceId);
   res.json({ ok: true, agentOs: os });
 });
 
-router.post('/agent-os', (req, res) => {
+router.post('/agent-os', requireWorkspaceMember, (req, res) => {
   const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
   const saved = saveAgentOsProfile(req.body?.agentOs || req.body, workspaceId);
   res.json({ ok: true, agentOs: saved });
 });
 
 /** PATCH/POST /api/agent-os/execution-mode — human_gated | autonomous */
-router.post('/agent-os/execution-mode', (req, res) => {
+router.post('/agent-os/execution-mode', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const mode = normalizeExecutionMode(
@@ -1041,7 +1040,7 @@ router.post('/agent-os/execution-mode', (req, res) => {
   }
 });
 
-router.patch('/agent-os/execution-mode', (req, res) => {
+router.patch('/agent-os/execution-mode', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const mode = normalizeExecutionMode(
@@ -1057,7 +1056,7 @@ router.patch('/agent-os/execution-mode', (req, res) => {
 });
 
 /** POST/PATCH /api/agent-os/action-mode — draft_safe | live_drafts | live_publish */
-router.post('/agent-os/action-mode', (req, res) => {
+router.post('/agent-os/action-mode', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const mode = normalizeActionMode(req.body?.actionMode ?? req.body?.action_mode ?? req.body?.mode);
@@ -1067,7 +1066,7 @@ router.post('/agent-os/action-mode', (req, res) => {
   }
 });
 
-router.patch('/agent-os/action-mode', (req, res) => {
+router.patch('/agent-os/action-mode', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const mode = normalizeActionMode(req.body?.actionMode ?? req.body?.action_mode ?? req.body?.mode);
@@ -1275,7 +1274,7 @@ router.post('/automations/scheduled/:id/run', async (req, res) => {
 
 // POST decision approve/dismiss — also records a draft_correction (self-improvement runlog)
 // when the workspace is a real UUID: edited/rejected requires editType+note, plain approval is optional.
-router.post('/approvals/decide', async (req, res) => {
+router.post('/approvals/decide', requireApprovalMember, async (req, res) => {
   const { id, decision, editType, note, edited } = req.body; // decision: 'approved' or 'rejected'
   let matchedApproval = null;
   const persistedApproval = await getApprovalFromSupabase(id);
@@ -1385,7 +1384,7 @@ router.post('/approvals/decide', async (req, res) => {
 });
 
 // GET approvals queue
-router.get('/approvals', async (req, res) => {
+router.get('/approvals', requireAuth, async (req, res) => {
   if (req.authUserId) {
     const persisted = await listApprovalsForUserFromSupabase(req.authUserId);
     if (persisted !== null) {

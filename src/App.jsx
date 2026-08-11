@@ -6,6 +6,7 @@ import { ensureElevateWorkspace, isOnboardingComplete } from './lib/workspaceBoo
 import { supabase } from './lib/supabase.js';
 import { ensureUserWorkspace, getActiveWorkspaceId, setActiveWorkspace, WORKSPACE_CHANGED_EVENT } from './lib/workspace.js';
 import { notifyAgentIntegrationConnected } from './lib/composio.js';
+import { apiFetch } from './lib/apiFetch.js';
 
 import CommandCenter from './views/CommandCenter.jsx';
 import AskMarqq from './views/AskMarqq.jsx';
@@ -298,7 +299,7 @@ export default function App() {
   // Handlers
   const handleDecideAction = (key, decision, correction) => {
     setApprovedActions(prev => ({ ...prev, [key]: decision }));
-    fetch('/api/approvals/decide', {
+    apiFetch('/api/approvals/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -323,7 +324,7 @@ export default function App() {
       delete next[key];
       return next;
     });
-    fetch('/api/approvals/decide', {
+    apiFetch('/api/approvals/decide', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: key, decision: 'pending' }),

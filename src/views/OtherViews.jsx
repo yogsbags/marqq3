@@ -1526,10 +1526,10 @@ export function BillingView({ setActiveScreen }) {
     (async () => {
       try {
         const [dep, files, intRes, appRes] = await Promise.all([
-          fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+          apiFetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
           fetchKnowledgeFiles().catch(() => []),
           fetch(`/api/integrations?companyId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
-          fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
+          apiFetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
         ]);
         if (cancelled) return;
         const connectors = Array.isArray(intRes?.connectors) ? intRes.connectors : Array.isArray(intRes) ? intRes : [];
@@ -1736,9 +1736,9 @@ export function WorkflowsView({ setActiveScreen }) {
 
   const refresh = async () => {
     const [dep, auto, app] = await Promise.all([
-      fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch(`/api/automations/scheduled?companyId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
-      fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
+      apiFetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
     ]);
     setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
     setAutomations(Array.isArray(auto.automations) ? auto.automations : []);
@@ -1756,7 +1756,7 @@ export function WorkflowsView({ setActiveScreen }) {
     setError('');
     setMsg('');
     try {
-      const res = await fetch('/api/agents/scheduler/tick', {
+      const res = await apiFetch('/api/agents/scheduler/tick', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ force: true, workspaceId: ws }),
@@ -1818,7 +1818,7 @@ export function WorkflowsView({ setActiveScreen }) {
     setBusy('create');
     setError('');
     try {
-      const res = await fetch('/api/agents/deployments', {
+      const res = await apiFetch('/api/agents/deployments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1963,9 +1963,9 @@ export function OrchestrationView({ setActiveScreen }) {
 
   const refresh = async () => {
     const [osRes, dep, app, execution] = await Promise.all([
-      fetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
-      fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
-      fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+      apiFetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
       apiFetch(`/api/agents/execution-summaries?workspaceId=${encodeURIComponent(ws)}`).then(async (r) => {
         const json = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(json.error || 'Execution history unavailable');
@@ -2032,7 +2032,7 @@ export function OrchestrationView({ setActiveScreen }) {
     setError('');
     setMsg('');
     try {
-      const res = await fetch('/api/agent-os/execution-mode', {
+      const res = await apiFetch('/api/agent-os/execution-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId: ws, executionMode: nextMode }),
@@ -2061,7 +2061,7 @@ export function OrchestrationView({ setActiveScreen }) {
     setError('');
     setMsg('');
     try {
-      const res = await fetch('/api/agent-os/action-mode', {
+      const res = await apiFetch('/api/agent-os/action-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId: ws, actionMode: nextMode }),
@@ -2086,7 +2086,7 @@ export function OrchestrationView({ setActiveScreen }) {
     setError('');
     setMsg('');
     try {
-      const response = await fetch('/api/agents/scheduler/tick', {
+      const response = await apiFetch('/api/agents/scheduler/tick', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ force: true, workspaceId: ws }),
@@ -2118,7 +2118,7 @@ export function OrchestrationView({ setActiveScreen }) {
       } catch {
         /* ignore */
       }
-      const res = await fetch('/api/strategy/activate', {
+      const res = await apiFetch('/api/strategy/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -4408,8 +4408,8 @@ export function EvaluationsView({ setActiveScreen }) {
     try {
       const ws = getActiveWorkspaceId();
       const [osRes, depRes] = await Promise.all([
-        fetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
-        fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+        apiFetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+        apiFetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       ]);
       const os = osRes?.agentOs || loadAgentOs();
       setAgents(os?.agent_roster?.agents || []);
@@ -4483,7 +4483,7 @@ export function EvaluationsView({ setActiveScreen }) {
     setTickMsg('');
     setError('');
     try {
-      const res = await fetch('/api/agents/scheduler/tick', {
+      const res = await apiFetch('/api/agents/scheduler/tick', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ force: true, workspaceId: getActiveWorkspaceId() }),
@@ -5298,7 +5298,7 @@ export function HelpView({ setActiveScreen }) {
       try {
         const [intRes, appRes, crmRes] = await Promise.all([
           fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
-          fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
+          apiFetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
           fetch(`/api/crm/destination?companyId=${encodeURIComponent(getActiveWorkspaceId())}`).then((r) => r.json()).catch(() => ({})),
         ]);
         if (cancelled) return;

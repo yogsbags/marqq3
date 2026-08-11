@@ -19,6 +19,7 @@ import {
 import { getActiveWorkspaceId } from '../lib/workspace.js';
 import { getCompanyName } from '../lib/liveWorkspace.js';
 import JourneyBar from '../components/JourneyBar.jsx';
+import { apiFetch } from '../lib/apiFetch.js';
 
 const CALENDARIFIC_KEY = import.meta.env.VITE_CALENDARIFIC_API_KEY;
 
@@ -215,7 +216,7 @@ export default function MarketingCalendarView({ setActiveScreen }) {
     setLoading(true);
     try {
       const [depRes, schedRes, autoRes] = await Promise.all([
-        fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(workspaceId)}`).then((r) => r.json()).catch(() => ({})),
+        apiFetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(workspaceId)}`).then((r) => r.json()).catch(() => ({})),
         fetch(`/api/content-studio/scheduled?companyId=${encodeURIComponent(workspaceId)}`).then((r) => r.json()).catch(() => ({ items: [] })),
         fetch(`/api/automations/scheduled?companyId=${encodeURIComponent(workspaceId)}`).then((r) => r.json()).catch(() => ({})),
       ]);
