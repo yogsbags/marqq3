@@ -196,10 +196,30 @@ export async function persistAgentMailThread(thread) {
       expires_at: thread.expiresAt || thread.expires_at || null,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'id' });
+    if (!error) return true;
+    if (!/agent_mail_threads|schema cache|relation .* does not exist/i.test(error.message || '')) throw error;
+  } catch (err) {
+    if (!/agent_mail_threads|schema cache|relation .* does not exist/i.test(err?.message || '')) {
+      console.warn('[agent_mail_threads]', err?.message || err);
+      return false;
+    }
+  }
+  // Compatibility path: agent_artifacts is already present in older schemas.
+  try {
+    const { error } = await db.from('agent_artifacts').upsert({
+      id: String(thread.id),
+      company_id: workspaceId,
+      agent: 'neel',
+      type: 'agent_mail_thread',
+      data: thread,
+      payload: thread,
+      tags: ['agent_runtime', 'agent_mail'],
+      saved_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
     if (error) throw error;
     return true;
   } catch (err) {
-    console.warn('[agent_mail_threads]', err?.message || err);
+    console.warn('[agent_mail thread artifact]', err?.message || err);
     return false;
   }
 }
@@ -212,7 +232,15 @@ export async function getAgentMailThread({ workspaceId, inboxId, threadId } = {}
     if (isUuidWorkspace(workspaceId)) q = q.eq('workspace_id', workspaceId);
     if (threadId) q = q.eq('thread_id', String(threadId));
     const { data, error } = threadId ? await q.maybeSingle() : await q.order('updated_at', { ascending: false }).limit(1);
-    if (error || !data) return null;
+    if (error || !data) {
+      if (!threadId) return null;
+      const artifactId = `mail_thread_${inboxId}_${threadId}`;
+      const fallback = await db.from('agent_artifacts').select('payload, data').eq('id', artifactId).maybeSingle();
+      if (fallback.error || !fallback.data) return null;
+      const value = fallback.data.payload || fallback.data.data || {};
+      if (value.status !== 'pending' || (value.expiresAt && Date.parse(value.expiresAt) <= Date.now())) return null;
+      return value;
+    }
     const row = Array.isArray(data) ? data[0] : data;
     if (!row || row.status !== 'pending' || (row.expires_at && Date.parse(row.expires_at) <= Date.now())) return null;
     return { ...row, workspaceId: row.workspace_id, inboxId: row.inbox_id, threadId: row.thread_id, connectorId: row.connector_id, userEmail: row.user_email, userName: row.user_name, expiresAt: row.expires_at };
@@ -224,7 +252,7 @@ export async function getAgentMailThread({ workspaceId, inboxId, threadId } = {}
 
 export async function claimAgentMailEvent(event) {
   const db = readClient();
-  if (!db || !event?.eventKey) return null;
+  if (!db || !event?.eventKey || !isUuidWorkspace(event.workspaceId)) return null;
   try {
     const { data, error } = await db.rpc('claim_agent_mail_event', {
       p_event_key: String(event.eventKey),
@@ -238,11 +266,35 @@ export async function claimAgentMailEvent(event) {
     });
     if (error) {
       if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(error.message || '')) console.warn('[agent_mail_events claim]', error.message);
-      return null;
+      if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(error.message || '')) return null;
+    } else {
+      return Boolean(data);
     }
-    return Boolean(data);
   } catch (err) {
     if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(err?.message || '')) console.warn('[agent_mail_events claim]', err?.message || err);
+    if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(err?.message || '')) return null;
+  }
+  // Compatibility path: deterministic artifact ID + INSERT gives an atomic
+  // duplicate barrier even before agent_mail_events is migrated.
+  try {
+    const artifactId = `mail_event_${event.eventKey}`;
+    const { error } = await db.from('agent_artifacts').insert({
+      id: artifactId,
+      company_id: isUuidWorkspace(event.workspaceId) ? event.workspaceId : null,
+      agent: 'neel',
+      type: 'agent_mail_event',
+      data: { ...event, status: 'processing' },
+      payload: { ...event, status: 'processing' },
+      tags: ['agent_runtime', 'agent_mail', 'idempotency'],
+      saved_at: new Date().toISOString(),
+    });
+    if (error) {
+      if (/duplicate|unique/i.test(error.message || '')) return false;
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[agent_mail event artifact]', err?.message || err);
     return null;
   }
 }
@@ -252,10 +304,24 @@ export async function completeAgentMailEvent({ eventKey, status = 'completed', d
   if (!db || !eventKey) return false;
   try {
     const { error } = await db.from('agent_mail_events').update({ status, deployment_ids: deploymentIds, updated_at: new Date().toISOString() }).eq('event_key', String(eventKey));
+    if (!error) return true;
+    if (!/agent_mail_events|schema cache|relation .* does not exist/i.test(error.message || '')) throw error;
+  } catch (err) {
+    if (!/agent_mail_events|schema cache|relation .* does not exist/i.test(err?.message || '')) {
+      console.warn('[agent_mail_events update]', err?.message || err);
+      return false;
+    }
+  }
+  try {
+    const artifactId = `mail_event_${eventKey}`;
+    const { data: existing, error: readError } = await db.from('agent_artifacts').select('payload, data').eq('id', artifactId).maybeSingle();
+    if (readError || !existing) return false;
+    const value = { ...(existing.payload || existing.data || {}), status, deploymentIds };
+    const { error } = await db.from('agent_artifacts').update({ data: value, payload: value, saved_at: new Date().toISOString() }).eq('id', artifactId);
     if (error) throw error;
     return true;
   } catch (err) {
-    console.warn('[agent_mail_events update]', err?.message || err);
+    console.warn('[agent_mail event artifact update]', err?.message || err);
     return false;
   }
 }
