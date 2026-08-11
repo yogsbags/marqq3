@@ -385,6 +385,7 @@ export async function claimDeploymentsFromSupabase({
   workspaceId = null,
   leaseSeconds = 300,
   limit = 10,
+  workspaceConcurrency = 2,
   force = false,
 } = {}) {
   const db = readClient();
@@ -395,6 +396,7 @@ export async function claimDeploymentsFromSupabase({
       p_lease_seconds: Number(leaseSeconds) || 300,
       p_workspace_id: isUuidWorkspace(workspaceId) ? workspaceId : null,
       p_limit: Number(limit) || 10,
+      p_workspace_concurrency: Math.max(1, Number(workspaceConcurrency) || 2),
       p_force: Boolean(force),
     });
     if (error) {

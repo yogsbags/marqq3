@@ -52,6 +52,15 @@ function isRetryableAgentError(err) {
   return !/(approval|permission|forbidden|unauthorized|policy|invalid|schema|not found)/i.test(message);
 }
 
+function workspaceConcurrencyLimit() {
+  return Math.max(1, Number(process.env.AGENT_WORKSPACE_CONCURRENCY_LIMIT || 2));
+}
+
+function activeLocalDeployments(queue, workspaceId) {
+  const key = String(workspaceId || 'marqq-ws-1');
+  return queue.filter((row) => String(row.workspaceId || row.companyId || 'marqq-ws-1') === key && row.status === 'running').length;
+}
+
 export function isDeploymentRunnable(entry, now = Date.now()) {
   if (!entry || !['pending', 'active'].includes(String(entry.status || ''))) return false;
   if (!entry.scheduledFor || entry.scheduledFor === 'next_cron_run') return true;
@@ -695,6 +704,7 @@ async function processSupabaseQueueTick({ workspaceId = null, force = false } = 
     workspaceId,
     leaseSeconds: Number(process.env.AGENT_DEPLOYMENT_LEASE_SECONDS || 300),
     limit: Number(process.env.AGENT_DEPLOYMENT_BATCH_SIZE || 10),
+    workspaceConcurrency: Number(process.env.AGENT_WORKSPACE_CONCURRENCY_LIMIT || 2),
     force,
   });
   if (claimed == null) return null;
@@ -745,6 +755,10 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
         ? ['pending', 'active'].includes(String(entry.status || ''))
         : isDeploymentRunnable(entry, now);
       if (!runnable) {
+        result.skipped += 1;
+        continue;
+      }
+      if (activeLocalDeployments(queue, entry.workspaceId) >= workspaceConcurrencyLimit()) {
         result.skipped += 1;
         continue;
       }
