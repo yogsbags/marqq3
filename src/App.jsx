@@ -151,13 +151,16 @@ export default function App() {
     const connectorId = params.get('connected') || params.get('connectorId') || params.get('connector_id');
     if (!connectorId) return;
     const marker = `${getActiveWorkspaceId()}:${connectorId}:${params.get('oauth_nonce') || 'legacy'}`;
-    if (sessionStorage.getItem('marqq_oauth_notice_sent') === marker) return;
-    sessionStorage.setItem('marqq_oauth_notice_sent', marker);
+    if (sessionStorage.getItem('marqq_oauth_notice_sent') === marker || sessionStorage.getItem('marqq_oauth_notice_inflight') === marker) return;
+    sessionStorage.setItem('marqq_oauth_notice_inflight', marker);
     void notifyAgentIntegrationConnected({
       companyId: getActiveWorkspaceId(),
       connectorId,
       userEmail: session.user.email || '',
       userName: session.user.user_metadata?.full_name || '',
+    }).then((sent) => {
+      sessionStorage.removeItem('marqq_oauth_notice_inflight');
+      if (sent) sessionStorage.setItem('marqq_oauth_notice_sent', marker);
     });
     window.history.replaceState({}, document.title, '/integrations');
   }, [session]);

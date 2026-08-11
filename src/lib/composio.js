@@ -74,15 +74,17 @@ export async function notifyAgentIntegrationConnected({ connectorId, companyId, 
     email = data?.user?.email || '';
     name = name || data?.user?.user_metadata?.full_name || '';
   }
-  if (!email) return;
+  if (!email) return false;
   try {
-    await apiFetch('/api/agents/integration-connected', {
+    const response = await apiFetch('/api/agents/integration-connected', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ connectorId, workspaceId: companyId, userEmail: email, userName: name }),
     });
+    return response.ok;
   } catch {
     // Ignore notification failures.
+    return false;
   }
 }
 
