@@ -11,9 +11,23 @@ import {
   loadAgentOsProfile,
   saveAgentOsProfile,
 } from './agentOsStore.js';
+import {
+  appendAgentEvent,
+  claimDeploymentsFromSupabase,
+  claimAgentAction,
+  getDeploymentFromSupabase,
+  heartbeatAgentDeployment,
+  persistAgentArtifact,
+  persistAgentRunStep,
+  persistAgentRun,
+  persistApprovalToSupabase,
+  persistDeploymentToSupabase,
+  updateAgentActionReceipt,
+} from './agentSupabase.js';
+import { isUuidWorkspace, useSupabasePersistence } from '../lib/persistence.js';
 import { notifyDeploymentResult } from './agentNotifications.js';
 import { executionModeFromAgentOs, isAutonomousMode } from './executionMode.js';
-import { chargeCredits } from './credits/index.js';
+import { chargeCredits, meteredStudioJson } from './credits/index.js';
 
 const PORT = () => Number(process.env.PORT || 3001);
 const INTERVAL_MS = Math.max(
@@ -23,8 +37,19 @@ const INTERVAL_MS = Math.max(
 
 let timer = null;
 let ticking = false;
+const WORKER_ID = `${process.env.HOSTNAME || 'marqq-worker'}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
 const AGENT_BY_ID = new Map(AGENT_CATALOG.map((a) => [a.id, a]));
+
+function retryDelayMinutes(attempt) {
+  const base = Math.max(1, Number(process.env.AGENT_RETRY_BASE_MINUTES || 2));
+  return Math.min(240, base * 2 ** Math.max(0, Number(attempt || 1) - 1));
+}
+
+function isRetryableAgentError(err) {
+  const message = String(err?.message || err || '').toLowerCase();
+  return !/(approval|permission|forbidden|unauthorized|policy|invalid|schema|not found)/i.test(message);
+}
 
 export function isDeploymentRunnable(entry, now = Date.now()) {
   if (!entry || !['pending', 'active'].includes(String(entry.status || ''))) return false;
@@ -64,6 +89,8 @@ export async function executeAgentRun({
   delivery_mode = 'draft',
   triggered_by = 'manual',
   execution_mode = null,
+  run_id = null,
+  deployment_record = null,
 } = {}) {
   const agent = AGENT_BY_ID.get(String(agentName || '').toLowerCase()) || {
     id: agentName,
@@ -74,7 +101,7 @@ export async function executeAgentRun({
   const depId = deployment_id || null;
   let deployment = null;
   if (depId) {
-    deployment = listDeployments({}).find((d) => d.id === depId) || null;
+    deployment = deployment_record || listDeployments({}).find((d) => d.id === depId) || null;
   }
 
   const ws =
@@ -103,6 +130,7 @@ export async function executeAgentRun({
   );
   const openScreen = deployment?.openScreen || agent.openScreen || 'approvals';
 
+  let createdApproval = null;
   updateDb((state) => {
     const next = ensureAgentCollections(state);
     const confidence = plan?.confidence || 'medium';
@@ -125,11 +153,13 @@ export async function executeAgentRun({
       sectionId: deployment?.sectionId || null,
       deliveryMode: delivery_mode || 'draft',
       executionMode: mode,
+      runId: run_id,
       createdAt: new Date().toISOString(),
       status: autonomous ? 'approved' : 'pending',
       decidedAt: autonomous ? new Date().toISOString() : null,
       decidedBy: autonomous ? 'autonomous' : null,
     };
+    createdApproval = approval;
     const approvals = [approval, ...(next.approvals || [])].slice(0, 60);
 
     const approvedActions = { ...(next.approvedActions || {}) };
@@ -182,6 +212,7 @@ export async function executeAgentRun({
 
     return { ...next, approvals, approvedActions, tasks, agentLogs, agent_os_by_workspace: agentOsByWorkspace };
   });
+  void persistApprovalToSupabase(createdApproval);
 
   // Meter agent draft run (fixed feature estimate; no LLM tokens on this path yet)
   const credit = chargeCredits({
@@ -198,6 +229,7 @@ export async function executeAgentRun({
     agentName: agent.id,
     agentDisplayName: agent.name,
     approvalId,
+    runId: run_id,
     deploymentId: depId,
     deliveryMode: delivery_mode || 'draft',
     executionMode: mode,
@@ -218,9 +250,425 @@ async function invokeLocalRun(entry) {
     company_id: entry.companyId || entry.workspaceId,
     query: buildDeploymentRunQuery(entry),
     deployment_id: entry.id,
+    run_id: entry.runId || null,
+    deployment_record: entry,
     delivery_mode: entry.deliveryMode || 'draft',
     triggered_by: 'scheduled_deployment',
   });
+}
+
+function startDeploymentHeartbeat(entry) {
+  const intervalMs = Math.max(15_000, Number(process.env.AGENT_HEARTBEAT_INTERVAL_MS || 30_000));
+  const timer = setInterval(() => {
+    heartbeatAgentDeployment({
+      deploymentId: entry.id,
+      workerId: WORKER_ID,
+      leaseSeconds: Number(process.env.AGENT_DEPLOYMENT_LEASE_SECONDS || 300),
+    }).catch(() => {});
+  }, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return timer;
+}
+
+async function processClaimedSupabaseDeployment(entry) {
+  const heartbeatTimer = startDeploymentHeartbeat(entry);
+  if (entry.executionPhase === 'execute' && entry.runId) {
+    return processApprovedExecution(entry, heartbeatTimer);
+  }
+  const recurring = entry.scheduleMode === 'recurring' || entry.scheduleMode === 'monitor';
+  const runId = entry.runId || `run_${randomUUID().slice(0, 12)}`;
+  const startedAt = new Date().toISOString();
+  await persistAgentRun({
+    id: runId,
+    deploymentId: entry.id,
+    workspaceId: entry.workspaceId,
+    agentName: entry.agentName,
+    trigger: entry.triggeredBy || 'scheduled_deployment',
+    status: 'running',
+    attemptCount: entry.attemptCount || 1,
+    currentStep: 'plan',
+    input: { query: buildDeploymentRunQuery(entry) },
+    startedAt,
+  });
+  await appendAgentEvent({
+    runId,
+    deploymentId: entry.id,
+    workspaceId: entry.workspaceId,
+    eventType: 'run.claimed',
+    payload: { workerId: WORKER_ID, attempt: entry.attemptCount || 1 },
+  });
+  await persistAgentRunStep({
+    id: `${runId}:plan`,
+    runId,
+    workspaceId: entry.workspaceId,
+    stepIndex: 1,
+    stepKey: 'plan',
+    status: 'running',
+    input: { query: buildDeploymentRunQuery(entry) },
+    attemptCount: entry.attemptCount || 1,
+    startedAt,
+  });
+
+  try {
+    const run = await invokeLocalRun({ ...entry, runId });
+    const completed = {
+      ...entry,
+      status: recurring ? 'active' : 'completed',
+      runId,
+      lastRunAt: new Date().toISOString(),
+      runCount: Number(entry.runCount || 0) + 1,
+      lastApprovalId: run.approvalId,
+      scheduledFor: recurring ? resolveDeploymentNextRun(entry) : entry.scheduledFor,
+      completedAt: recurring ? null : new Date().toISOString(),
+      leaseExpiresAt: null,
+      workerId: null,
+      heartbeatAt: null,
+      error: null,
+    };
+    await persistDeploymentToSupabase(completed, { runtime: true });
+    await persistAgentRunStep({
+      id: `${runId}:plan`,
+      runId,
+      workspaceId: entry.workspaceId,
+      stepIndex: 1,
+      stepKey: 'plan',
+      status: 'completed',
+      input: { query: buildDeploymentRunQuery(entry) },
+      output: { agentName: run.agentName, approvalId: run.approvalId },
+      attemptCount: entry.attemptCount || 1,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    });
+    await persistAgentRunStep({
+      id: `${runId}:approval`,
+      runId,
+      workspaceId: entry.workspaceId,
+      stepIndex: 2,
+      stepKey: 'approval',
+      status: run.autonomous ? 'completed' : 'waiting_for_approval',
+      input: { approvalId: run.approvalId },
+      output: run.autonomous ? { decision: 'approved' } : null,
+      startedAt: new Date().toISOString(),
+      completedAt: run.autonomous ? new Date().toISOString() : null,
+    });
+    await persistAgentRun({
+      id: runId,
+      deploymentId: entry.id,
+      workspaceId: entry.workspaceId,
+      agentName: entry.agentName,
+      trigger: entry.triggeredBy || 'scheduled_deployment',
+      status: run.autonomous ? 'completed' : 'waiting_for_approval',
+      attemptCount: entry.attemptCount || 1,
+      currentStep: run.autonomous ? 'draft_ready' : 'approval',
+      output: { approvalId: run.approvalId },
+      completedAt: run.autonomous ? new Date().toISOString() : null,
+    });
+    await appendAgentEvent({
+      runId,
+      deploymentId: entry.id,
+      workspaceId: entry.workspaceId,
+      eventType: 'run.waiting_for_approval',
+      payload: { approvalId: run.approvalId },
+    });
+    void notifyDeploymentResult(completed, { ok: true, approvalId: run.approvalId });
+    clearInterval(heartbeatTimer);
+    return { id: entry.id, agentName: entry.agentName, approvalId: run.approvalId };
+  } catch (err) {
+    clearInterval(heartbeatTimer);
+    const message = err?.message || String(err);
+    const attempts = Number(entry.attemptCount || 1);
+    const maxAttempts = Number(entry.maxAttempts || process.env.AGENT_MAX_ATTEMPTS || 3);
+    const shouldRetry = isRetryableAgentError(err) && attempts < maxAttempts;
+    const failed = {
+      ...entry,
+      status: shouldRetry ? 'pending' : recurring ? 'active' : 'failed',
+      runId,
+      error: message,
+      lastError: message,
+      failedAt: shouldRetry ? null : new Date().toISOString(),
+      scheduledFor: shouldRetry
+        ? new Date(Date.now() + retryDelayMinutes(attempts) * 60_000).toISOString()
+        : recurring
+          ? resolveDeploymentNextRun(entry)
+          : entry.scheduledFor,
+      nextRetryAt: shouldRetry
+        ? new Date(Date.now() + retryDelayMinutes(attempts) * 60_000).toISOString()
+        : null,
+      leaseExpiresAt: null,
+      workerId: null,
+      heartbeatAt: null,
+    };
+    await persistDeploymentToSupabase(failed, { runtime: true });
+    await persistAgentRun({
+      id: runId,
+      deploymentId: entry.id,
+      workspaceId: entry.workspaceId,
+      agentName: entry.agentName,
+      trigger: entry.triggeredBy || 'scheduled_deployment',
+      status: 'failed',
+      attemptCount: entry.attemptCount || 1,
+      currentStep: 'plan',
+      error: message,
+      completedAt: new Date().toISOString(),
+    });
+    await appendAgentEvent({
+      runId,
+      deploymentId: entry.id,
+      workspaceId: entry.workspaceId,
+      eventType: 'run.failed',
+      payload: { error: message },
+    });
+    void notifyDeploymentResult(failed, { ok: false, error: message });
+    throw err;
+  }
+}
+
+async function processApprovedExecution(entry, heartbeatTimer = null) {
+  const runId = entry.runId;
+  const workspaceId = entry.workspaceId;
+  const startedAt = new Date().toISOString();
+  const safeSystem = `You are Marqq's approved execution planner.
+The user approved a draft, but this worker is still draft-safe.
+Return JSON only with this shape:
+{"status":"draft_ready|human_required|blocked","summary":"string","actions":[{"type":"draft_only|open_studio|request_connector|measure","label":"string","details":"string"}],"risks":["string"],"next_step":"string"}
+Never publish, spend money, send messages, change CRM records, or call an irreversible external action.
+If the requested action needs a connector or live side effect, use request_connector or human_required.`;
+  const user = [
+    `Approved deployment: ${entry.sectionTitle || entry.sectionId || entry.id}`,
+    `Agent: ${entry.agentName}`,
+    `Original brief: ${entry.summary || ''}`,
+    `Plays:\n${(entry.bullets || []).slice(0, 8).map((b) => `- ${b}`).join('\n')}`,
+    `Open screen: ${entry.openScreen || 'orchestration'}`,
+  ].join('\n');
+  const claimedActionKeys = [];
+
+  await persistAgentRun({
+    id: runId,
+    deploymentId: entry.id,
+    workspaceId,
+    agentName: entry.agentName,
+    trigger: 'approved_execution',
+    status: 'running',
+    attemptCount: entry.attemptCount || 1,
+    currentStep: 'execute',
+    input: { user },
+    startedAt,
+  });
+  await persistAgentRunStep({
+    id: `${runId}:execute`,
+    runId,
+    workspaceId,
+    stepIndex: 3,
+    stepKey: 'execute',
+    status: 'running',
+    input: { user },
+    attemptCount: entry.attemptCount || 1,
+    startedAt,
+  });
+  await appendAgentEvent({
+    runId,
+    deploymentId: entry.id,
+    workspaceId,
+    eventType: 'execution.started',
+    payload: { workerId: WORKER_ID },
+  });
+
+  try {
+    const result = await meteredStudioJson({
+      workspaceId,
+      feature: 'agent_execution',
+      system: safeSystem,
+      user,
+      temperature: 0.2,
+      max_tokens: 1800,
+      meta: { runId, deploymentId: entry.id, phase: 'approved_execution' },
+    });
+    const allowedStatuses = new Set(['draft_ready', 'human_required', 'blocked']);
+    const status = allowedStatuses.has(result?.status) ? result.status : 'human_required';
+    const output = {
+      status,
+      summary: String(result?.summary || 'Execution handoff created').slice(0, 1200),
+      actions: Array.isArray(result?.actions) ? result.actions.slice(0, 12) : [],
+      risks: Array.isArray(result?.risks) ? result.risks.slice(0, 12) : [],
+      next_step: String(result?.next_step || 'Review the execution handoff in the relevant studio.').slice(0, 500),
+      live_side_effects: false,
+    };
+    const actions = [];
+    for (const [index, action] of output.actions.entries()) {
+      const type = String(action?.type || 'human_required').slice(0, 80);
+      const label = String(action?.label || `Action ${index + 1}`).slice(0, 180);
+      const details = String(action?.details || '').slice(0, 800);
+      const actionKey = `${entry.id}:execute:${index}:${type}:${label}`.toLowerCase().replace(/\s+/g, '-');
+      const accepted = await claimAgentAction({
+        workspaceId,
+        runId,
+        stepKey: 'execute',
+        actionKey,
+        actionType: type,
+        request: { label, details, live: false },
+      });
+      if (accepted === true) claimedActionKeys.push(actionKey);
+      actions.push({
+        type,
+        label,
+        details,
+        actionKey,
+        idempotency: accepted === true ? 'claimed' : accepted === false ? 'duplicate' : 'unavailable',
+        dispatch: 'draft_only',
+      });
+    }
+    output.actions = actions;
+    const artifactSaved = await persistAgentArtifact({
+      id: `execution_${runId}`,
+      workspaceId,
+      agentName: entry.agentName,
+      type: 'agent_execution_handoff',
+      data: { runId, deploymentId: entry.id, ...output },
+      tags: ['agent_runtime', 'execution_handoff', status],
+    });
+    if (!artifactSaved) throw new Error('Execution handoff artifact could not be persisted');
+    for (const actionKey of claimedActionKeys) {
+      await updateAgentActionReceipt({
+        workspaceId,
+        actionKey,
+        status: 'completed',
+        response: { dispatch: 'draft_only', runId, status },
+      });
+    }
+    await persistAgentRunStep({
+      id: `${runId}:execute`,
+      runId,
+      workspaceId,
+      stepIndex: 3,
+      stepKey: 'execute',
+      status: 'completed',
+      input: { user },
+      output,
+      attemptCount: entry.attemptCount || 1,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    });
+    await persistAgentRun({
+      id: runId,
+      deploymentId: entry.id,
+      workspaceId,
+      agentName: entry.agentName,
+      trigger: 'approved_execution',
+      status: 'completed',
+      attemptCount: entry.attemptCount || 1,
+      currentStep: 'execution_handoff',
+      output,
+      completedAt: new Date().toISOString(),
+    });
+    await persistDeploymentToSupabase(
+      { ...entry, status: 'completed', executionPhase: 'completed', completedAt: new Date().toISOString(), workerId: null, leaseExpiresAt: null },
+      { runtime: true }
+    );
+    await appendAgentEvent({
+      runId,
+      deploymentId: entry.id,
+      workspaceId,
+      eventType: 'execution.completed',
+      payload: output,
+    });
+    void notifyDeploymentResult(
+      { ...entry, status: 'completed' },
+      { ok: true, execution: output }
+    );
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    return { id: entry.id, agentName: entry.agentName, runId, execution: output };
+  } catch (err) {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    const message = err?.message || String(err);
+    for (const actionKey of claimedActionKeys) {
+      await updateAgentActionReceipt({
+        workspaceId,
+        actionKey,
+        status: 'failed',
+        response: { error: message, runId },
+      });
+    }
+    const attempts = Number(entry.attemptCount || 1);
+    const maxAttempts = Number(entry.maxAttempts || process.env.AGENT_MAX_ATTEMPTS || 3);
+    const shouldRetry = isRetryableAgentError(err) && attempts < maxAttempts;
+    await persistDeploymentToSupabase(
+      {
+        ...entry,
+        status: shouldRetry ? 'pending' : 'failed',
+        executionPhase: shouldRetry ? 'execute' : 'failed',
+        scheduledFor: shouldRetry
+          ? new Date(Date.now() + retryDelayMinutes(attempts) * 60_000).toISOString()
+          : entry.scheduledFor,
+        nextRetryAt: shouldRetry
+          ? new Date(Date.now() + retryDelayMinutes(attempts) * 60_000).toISOString()
+          : null,
+        lastError: message,
+        failedAt: shouldRetry ? null : new Date().toISOString(),
+        workerId: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+      },
+      { runtime: true }
+    );
+    await persistAgentRunStep({
+      id: `${runId}:execute`,
+      runId,
+      workspaceId,
+      stepIndex: 3,
+      stepKey: 'execute',
+      status: 'failed',
+      input: { user },
+      error: message,
+      attemptCount: entry.attemptCount || 1,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    });
+    await persistAgentRun({
+      id: runId,
+      deploymentId: entry.id,
+      workspaceId,
+      agentName: entry.agentName,
+      trigger: 'approved_execution',
+      status: 'failed',
+      attemptCount: entry.attemptCount || 1,
+      currentStep: 'execute',
+      error: message,
+      completedAt: new Date().toISOString(),
+    });
+    await appendAgentEvent({
+      runId,
+      deploymentId: entry.id,
+      workspaceId,
+      eventType: 'execution.failed',
+      payload: { error: message },
+    });
+    void notifyDeploymentResult(
+      { ...entry, status: shouldRetry ? 'pending' : 'failed' },
+      { ok: false, error: shouldRetry ? `Execution paused and will retry: ${message}` : message }
+    );
+    throw err;
+  }
+}
+
+async function processSupabaseQueueTick({ workspaceId = null, force = false } = {}) {
+  if (!useSupabasePersistence()) return null;
+  const claimed = await claimDeploymentsFromSupabase({
+    workerId: WORKER_ID,
+    workspaceId,
+    leaseSeconds: Number(process.env.AGENT_DEPLOYMENT_LEASE_SECONDS || 300),
+    limit: Number(process.env.AGENT_DEPLOYMENT_BATCH_SIZE || 10),
+    force,
+  });
+  if (claimed == null) return null;
+  const result = { ran: [], failed: [], skipped: 0, source: 'supabase' };
+  for (const entry of claimed) {
+    try {
+      result.ran.push(await processClaimedSupabaseDeployment(entry));
+    } catch (err) {
+      result.failed.push({ id: entry.id, error: err?.message || String(err) });
+    }
+  }
+  return result;
 }
 
 export async function processDeploymentQueueTick({ force = false, workspaceId = null } = {}) {
@@ -228,6 +676,16 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
   ticking = true;
   const result = { ran: [], failed: [], skipped: 0 };
   try {
+    const supabaseResult = await processSupabaseQueueTick({ workspaceId, force });
+    if (supabaseResult) {
+      result.ran.push(...supabaseResult.ran);
+      result.failed.push(...supabaseResult.failed);
+      if (supabaseResult.ran.length || supabaseResult.failed.length) {
+        console.log(
+          `[agent-scheduler] supabase ran=${supabaseResult.ran.length} failed=${supabaseResult.failed.length}`
+        );
+      }
+    }
     const db = ensureAgentCollections(getDb());
     const queue = [...(db.agent_deployments || [])];
     const now = Date.now();
@@ -235,6 +693,12 @@ export async function processDeploymentQueueTick({ force = false, workspaceId = 
 
     for (let i = 0; i < queue.length; i += 1) {
       const entry = queue[i];
+      // UUID workspaces are claimed from Supabase when the runtime migration
+      // is installed. Legacy/non-UUID workspaces continue using JSON DB.
+      if (supabaseResult && isUuidWorkspace(entry.workspaceId)) {
+        result.skipped += 1;
+        continue;
+      }
       if (ws && entry.workspaceId && entry.workspaceId !== ws) {
         result.skipped += 1;
         continue;

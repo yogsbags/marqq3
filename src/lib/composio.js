@@ -1,4 +1,7 @@
 /** Turn API/error payloads into a toast-safe string (avoids `[object Object]`). */
+import { supabase } from './supabase.js';
+import { apiFetch } from './apiFetch.js';
+
 export function formatConnectorError(error, fallback = 'Connect failed') {
   if (error == null) return fallback;
   if (typeof error === 'string') {
@@ -64,12 +67,19 @@ export async function waitForConnectorActive(
 }
 
 async function notifyAgentIntegrationConnected({ connectorId, companyId, userEmail, userName }) {
-  if (!userEmail) return;
+  let email = userEmail;
+  let name = userName;
+  if (!email) {
+    const { data } = await supabase.auth.getUser();
+    email = data?.user?.email || '';
+    name = name || data?.user?.user_metadata?.full_name || '';
+  }
+  if (!email) return;
   try {
-    await fetch('/api/agents/integration-connected', {
+    await apiFetch('/api/agents/integration-connected', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ connectorId, workspaceId: companyId, userEmail, userName }),
+      body: JSON.stringify({ connectorId, workspaceId: companyId, userEmail: email, userName: name }),
     });
   } catch {
     // Ignore notification failures.

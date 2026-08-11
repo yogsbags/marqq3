@@ -43,29 +43,34 @@ export async function createAgentNotification(notification) {
   }
 }
 
-export async function notifyDeploymentResult(entry, { ok, approvalId, error } = {}) {
+export async function notifyDeploymentResult(entry, { ok, approvalId, error, execution = null } = {}) {
   try {
     const userId = await resolveDeploymentNotificationUserId(entry);
     if (!userId) return null;
     const agentName = String(entry.agentName || 'agent').toLowerCase();
+    const isHandoff = Boolean(ok && execution);
     return createAgentNotification({
       user_id: userId,
       workspace_id: entry.workspaceId || entry.companyId || null,
       agent_name: agentName,
       agent_role: entry.agentDisplayName || agentName,
       task_type: entry.scheduleMode || 'deployment',
-      title: ok
-        ? `${entry.sectionTitle || 'Agent run'} ready for review`
+      title: isHandoff
+        ? `${entry.sectionTitle || 'Agent run'} handoff ready`
+        : ok
+          ? `${entry.sectionTitle || 'Agent run'} ready for review`
         : `${entry.sectionTitle || 'Agent run'} failed`,
-      summary: ok
-        ? `Draft queued${approvalId ? ` (${approvalId})` : ''}. Open Approvals or the studio to continue.`
+      summary: isHandoff
+        ? `${String(execution.summary || 'Approved execution produced a safe handoff.').slice(0, 360)}${execution.next_step ? ` Next: ${String(execution.next_step).slice(0, 220)}` : ''}`
+        : ok
+          ? `Draft queued${approvalId ? ` (${approvalId})` : ''}. Open Approvals or the studio to continue.`
         : String(error || 'Run failed').slice(0, 400),
       status: ok ? 'success' : 'error',
       read: false,
       action_items: ok
         ? [
             {
-              label: 'Review draft',
+              label: isHandoff ? 'Open handoff' : 'Review draft',
               priority: 'high',
               url: entry.openScreen || 'approvals',
             },
@@ -75,6 +80,7 @@ export async function notifyDeploymentResult(entry, { ok, approvalId, error } = 
         deploymentId: entry.id,
         approvalId: approvalId || null,
         openScreen: entry.openScreen || null,
+        execution: isHandoff ? execution : null,
       },
     });
   } catch (err) {

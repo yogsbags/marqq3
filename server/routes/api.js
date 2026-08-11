@@ -164,7 +164,7 @@ import {
   sendCreditsError,
 } from '../services/credits/index.js';
 import workspacesRouter from './workspaces.js';
-import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { optionalAuth, requireAuth, requireWorkspaceMember } from '../middleware/auth.js';
 import { useSupabasePersistence, isUuidWorkspace } from '../lib/persistence.js';
 import {
   upsertGtmModule,
@@ -182,7 +182,17 @@ import {
   appendAskMarqqMessages,
 } from '../services/askMarqqConversations.js';
 import { upsertCompanyFromBrand, loadCompanyBrand } from '../services/companiesStore.js';
-import { persistDeploymentToSupabase } from '../services/agentSupabase.js';
+import {
+  appendAgentEvent,
+  getDeploymentFromSupabase,
+  getApprovalFromSupabase,
+  listAgentExecutionSummaries,
+  listApprovalsForUserFromSupabase,
+  persistAgentRun,
+  persistAgentRunStep,
+  persistApprovalToSupabase,
+  persistDeploymentToSupabase,
+} from '../services/agentSupabase.js';
 import { generateFullStrategyDocument } from '../services/gtmFullStrategy.js';
 import {
   listScheduledContent,
@@ -194,6 +204,11 @@ import { getSupabaseWriteClient, getSupabaseReadClient } from '../lib/supabase.j
 import { generateCofounderDigest } from '../services/cofounderDigest.js';
 import { runDigestForAllWorkspaces } from '../services/cofounderDigestScheduler.js';
 import { queueOvernightAsk, listOvernightAsks } from '../services/askMarqqOvernight.js';
+import {
+  handleAgentMailInbound,
+  sendIntegrationSuggestionEmail,
+  verifyAgentMailWebhook,
+} from '../services/agentMail.js';
 import { recordCorrection, EDIT_TYPES } from '../services/draftCorrections.js';
 import { getAgentReportCard, getWorkspaceReportCards } from '../services/agentReportCard.js';
 import { getActiveInstructions } from '../services/agentInstructions.js';
@@ -216,8 +231,10 @@ router.use(optionalAuth);
 // Marqq2-parity workspace membership API
 router.use('/workspaces', workspacesRouter);
 
-// Ensure scheduler is up even when API is imported by tests/smokes
-startDeploymentScheduler();
+// Tests and embedded callers can still start schedulers by default. The
+// production API process sets MARQQ_START_SCHEDULERS=0; server/worker.js owns
+// all background scheduling in that mode.
+if (process.env.MARQQ_START_SCHEDULERS !== '0') startDeploymentScheduler();
 
 /** GET /api/gtm/modules — list modules for workspace */
 router.get('/gtm/modules', async (req, res) => {
@@ -778,6 +795,12 @@ router.get('/agents/deployments', async (req, res) => {
   res.json({ ok: true, deployments });
 });
 
+router.get('/agents/execution-summaries', requireWorkspaceMember, async (req, res) => {
+  const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
+  const summaries = await listAgentExecutionSummaries(workspaceId);
+  res.json({ ok: true, summaries: summaries || [] });
+});
+
 router.post('/agents/deployments', (req, res) => {
   const workspaceId = String(req.body?.workspaceId || req.body?.companyId || DEFAULT_WS).trim();
   const agentName = String(req.body?.agentName || '').trim().toLowerCase();
@@ -1232,6 +1255,7 @@ router.post('/automations/scheduled/:id/run', async (req, res) => {
 router.post('/approvals/decide', async (req, res) => {
   const { id, decision, editType, note, edited } = req.body; // decision: 'approved' or 'rejected'
   let matchedApproval = null;
+  const persistedApproval = await getApprovalFromSupabase(id);
   const db = updateDb((state) => {
     const nextApproved = { ...state.approvedActions, [id]: decision };
     const approvals = (state.approvals || []).map((a) => {
@@ -1239,8 +1263,82 @@ router.post('/approvals/decide', async (req, res) => {
       matchedApproval = a;
       return { ...a, status: decision, decidedAt: new Date().toISOString(), editType: editType || null, note: note || null };
     });
+    if (!matchedApproval && persistedApproval) {
+      matchedApproval = persistedApproval;
+      approvals.unshift({
+        ...persistedApproval,
+        status: decision,
+        decidedAt: new Date().toISOString(),
+        editType: editType || null,
+        note: note || null,
+      });
+    }
     return { ...state, approvedActions: nextApproved, approvals };
   });
+
+  if (matchedApproval?.workspaceId && isUuidWorkspace(matchedApproval.workspaceId)) {
+    const wasAlreadyApproved = matchedApproval.status === 'approved';
+    const decidedApproval = {
+      ...matchedApproval,
+      status: decision,
+      decidedAt: new Date().toISOString(),
+      editType: editType || null,
+      note: note || null,
+    };
+    void persistApprovalToSupabase(decidedApproval);
+
+    if (matchedApproval.runId) {
+      const approved = decision === 'approved';
+      void persistAgentRun({
+        id: matchedApproval.runId,
+        deploymentId: matchedApproval.deploymentId,
+        workspaceId: matchedApproval.workspaceId,
+        agentName: matchedApproval.agentName,
+        status: approved ? 'running' : 'cancelled',
+        currentStep: approved ? 'approved_pending_execution' : 'approval_rejected',
+        output: { approvalId: id, decision },
+        error: approved ? null : 'Approval rejected',
+        completedAt: approved ? null : new Date().toISOString(),
+      });
+      void persistAgentRunStep({
+        id: `${matchedApproval.runId}:approval`,
+        runId: matchedApproval.runId,
+        workspaceId: matchedApproval.workspaceId,
+        stepIndex: 2,
+        stepKey: 'approval',
+        status: approved ? 'completed' : 'skipped',
+        input: { approvalId: id },
+        output: { decision },
+        completedAt: new Date().toISOString(),
+      });
+      void appendAgentEvent({
+        runId: matchedApproval.runId,
+        deploymentId: matchedApproval.deploymentId,
+        workspaceId: matchedApproval.workspaceId,
+        eventType: approved ? 'approval.approved' : 'approval.rejected',
+        payload: { approvalId: id, decision, editType: editType || null },
+      });
+
+      if (approved && !wasAlreadyApproved && matchedApproval.deploymentId) {
+        const deployment = await getDeploymentFromSupabase(matchedApproval.deploymentId);
+        if (deployment) {
+          const queued = {
+            ...deployment,
+            status: 'active',
+            executionPhase: 'execute',
+            runId: matchedApproval.runId,
+            scheduledFor: new Date().toISOString(),
+            lastError: null,
+            failedAt: null,
+          };
+          void persistDeploymentToSupabase(queued, { runtime: true });
+          processDeploymentQueueTick({ workspaceId: matchedApproval.workspaceId }).catch((err) =>
+            console.warn('[approval execution] scheduler handoff failed:', err?.message || err)
+          );
+        }
+      }
+    }
+  }
 
   // Fire-and-forget correction capture — never blocks the decision itself.
   if (matchedApproval?.workspaceId && isUuidWorkspace(matchedApproval.workspaceId)) {
@@ -1264,7 +1362,18 @@ router.post('/approvals/decide', async (req, res) => {
 });
 
 // GET approvals queue
-router.get('/approvals', (req, res) => {
+router.get('/approvals', async (req, res) => {
+  if (req.authUserId) {
+    const persisted = await listApprovalsForUserFromSupabase(req.authUserId);
+    if (persisted !== null) {
+      return res.json({
+        approvals: persisted,
+        approvedActions: Object.fromEntries(
+          persisted.filter((a) => a.status && a.status !== 'pending').map((a) => [a.id, a.status])
+        ),
+      });
+    }
+  }
   const db = getDb();
   res.json({
     approvals: db.approvals,
@@ -2345,6 +2454,36 @@ router.post('/integrations/connect', async (req, res) => {
   } catch (err) {
     console.error(`[composio] connect exception for ${connectorId}:`, err?.message || err);
     res.json({ ok: false, error: err?.message || 'Composio connect failed' });
+  }
+});
+
+router.post('/agents/integration-connected', requireWorkspaceMember, async (req, res) => {
+  const connectorId = String(req.body?.connectorId || '').trim();
+  const workspaceId = String(req.body?.workspaceId || req.body?.companyId || '').trim();
+  const userEmail = String(req.body?.userEmail || req.user?.email || '').trim();
+  if (!connectorId || !workspaceId) return res.status(400).json({ ok: false, error: 'connectorId and workspaceId are required' });
+  try {
+    const result = await sendIntegrationSuggestionEmail({
+      connectorId,
+      workspaceId,
+      userEmail,
+      userName: req.body?.userName || req.user?.user_metadata?.full_name || '',
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.warn('[agentmail suggestion]', err?.message || err);
+    res.status(502).json({ ok: false, error: 'Could not send proactive automation email' });
+  }
+});
+
+router.post('/webhooks/agentmail/inbound', express.json(), async (req, res) => {
+  if (!verifyAgentMailWebhook(req)) return res.status(401).json({ ok: false, error: 'Invalid webhook signature' });
+  try {
+    const result = await handleAgentMailInbound(req.body || {});
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[agentmail inbound]', err?.message || err);
+    res.status(500).json({ ok: false, error: 'AgentMail webhook processing failed' });
   }
 });
 

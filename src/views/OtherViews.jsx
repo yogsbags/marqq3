@@ -22,6 +22,7 @@ import {
 import {  loadAgentOs, saveAgentOs  } from '../lib/agents/persist';
 import {  planAgentTask  } from '../lib/agents/planTask';
 import {  sectionBriefForScreen  } from '../lib/journeyHandoff';
+import { apiFetch } from '../lib/apiFetch.js';
 import { GtmControlLoopPanel } from '../components/GtmControlLoopPanel.jsx';
 import GeoCitationPanel from '../components/seo/GeoCitationPanel.jsx';
 
@@ -1879,6 +1880,7 @@ export function OrchestrationView({ setActiveScreen }) {
   const ws = getActiveWorkspaceId();
   const [os, setOs] = useState(osLocal);
   const [deployments, setDeployments] = useState([]);
+  const [executionSummaries, setExecutionSummaries] = useState([]);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [ticking, setTicking] = useState(false);
   const [activating, setActivating] = useState(false);
@@ -1887,16 +1889,18 @@ export function OrchestrationView({ setActiveScreen }) {
   const [modeBusy, setModeBusy] = useState(false);
 
   const refresh = async () => {
-    const [osRes, dep, app] = await Promise.all([
+    const [osRes, dep, app, execution] = await Promise.all([
       fetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/agents/execution-summaries?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
     ]);
     if (osRes?.agentOs) {
       saveAgentOs(osRes.agentOs);
       setOs(osRes.agentOs);
     }
     setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
+    setExecutionSummaries(Array.isArray(execution.summaries) ? execution.summaries : []);
     const approvals = Array.isArray(app.approvals) ? app.approvals : [];
     const decided = app.approvedActions || {};
     setPendingApprovals(approvals.filter((a) => !decided[a.id] && a.status !== 'approved' && a.status !== 'rejected').length);
@@ -1904,6 +1908,8 @@ export function OrchestrationView({ setActiveScreen }) {
 
   useEffect(() => {
     refresh().catch(() => {});
+    const poll = setInterval(() => refresh().catch(() => {}), 30_000);
+    return () => clearInterval(poll);
   }, []);
 
   const loop = os?.control_loop;
@@ -1923,6 +1929,16 @@ export function OrchestrationView({ setActiveScreen }) {
     os?.execution_mode === 'autonomous' || os?.executionMode === 'autonomous'
       ? 'autonomous'
       : 'human_gated';
+
+  const executionLabel = (summary) => {
+    if (summary?.handoff) return summary.handoff.status === 'blocked' ? 'Needs attention' : 'Handoff ready';
+    if (summary?.run?.status === 'running' || summary?.status === 'running') return 'Executing';
+    if (summary?.status === 'failed' || summary?.run?.status === 'failed') return 'Retrying or failed';
+    if (summary?.status === 'completed') return 'Completed';
+    if (summary?.executionPhase === 'execute') return 'Approved · queued';
+    if (summary?.status === 'pending' || summary?.status === 'active') return 'Waiting for approval';
+    return 'Scheduled';
+  };
 
   const setExecutionMode = async (nextMode) => {
     setModeBusy(true);
@@ -2074,6 +2090,48 @@ export function OrchestrationView({ setActiveScreen }) {
       </div>
 
       <GtmControlLoopPanel onOsChange={(next) => setOs(next)} />
+
+      {executionSummaries.length ? (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+            <div>
+              <h3 style={{ margin: 0 }}>Recent execution results</h3>
+              <p className="card-body" style={{ margin: '6px 0 0' }}>Plain-language progress from approval to a safe handoff.</p>
+            </div>
+            <span className="text-muted" style={{ fontSize: 11 }}>Updates automatically</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14 }}>
+            {executionSummaries.slice(0, 8).map((summary) => {
+              const handoff = summary.handoff;
+              const label = executionLabel(summary);
+              const tone = label === 'Needs attention' || label === 'Retrying or failed' ? 'var(--color-accent)' : label === 'Handoff ready' || label === 'Completed' ? '#15803d' : 'var(--color-muted)';
+              return (
+                <div key={summary.id} style={{ border: '1px solid var(--color-divider)', padding: 12, background: 'var(--color-surface)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <strong>{summary.sectionTitle}</strong>
+                      <div className="text-muted" style={{ fontSize: 11, marginTop: 3 }}>{summary.agentDisplayName}</div>
+                    </div>
+                    <span style={{ color: tone, fontWeight: 800, fontSize: 11, whiteSpace: 'nowrap' }}>{label}</span>
+                  </div>
+                  {handoff ? (
+                    <>
+                      <div style={{ fontSize: 12, marginTop: 9, lineHeight: 1.45 }}>{handoff.summary}</div>
+                      {handoff.next_step ? <div className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>Next: {handoff.next_step}</div> : null}
+                      {handoff.risks?.length ? <div style={{ color: 'var(--color-accent)', fontSize: 11, marginTop: 6 }}>Risk: {handoff.risks[0]}</div> : null}
+                      {setActiveScreen && summary.openScreen ? (
+                        <button type="button" className="btn btn-ghost" style={{ marginTop: 8, fontSize: 11 }} onClick={() => setActiveScreen(summary.openScreen)}>Open studio</button>
+                      ) : null}
+                    </>
+                  ) : summary.lastError ? (
+                    <div className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>We’ll retry this safely{summary.nextRetryAt ? ` · next attempt ${new Date(summary.nextRetryAt).toLocaleString()}` : ''}.</div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Active agents</h3>

@@ -10,6 +10,11 @@ function writeClient() {
   return getSupabaseWriteClient();
 }
 
+function readClient() {
+  if (!useSupabasePersistence()) return null;
+  return getSupabaseReadClient();
+}
+
 const OS_ARTIFACT_TYPE = 'agent_os';
 
 export async function persistAgentOsToSupabase(profile, workspaceId) {
@@ -57,21 +62,39 @@ export async function loadAgentOsFromSupabase(workspaceId) {
   }
 }
 
-export async function persistDeploymentToSupabase(deployment) {
+export async function persistDeploymentToSupabase(deployment, { runtime = false } = {}) {
   const db = writeClient();
   const workspaceId = deployment?.workspaceId || deployment?.workspace_id;
   if (!db || !deployment?.id || !isUuidWorkspace(workspaceId)) return false;
   try {
-    const { error } = await db.from('agent_deployments').upsert(
-      {
+    const base = {
         id: String(deployment.id),
         workspace_id: workspaceId,
         company_id: deployment.companyId || workspaceId,
         status: deployment.status || 'pending',
         scheduled_for: deployment.scheduledFor || deployment.scheduled_for || null,
+        created_at: deployment.createdAt || deployment.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
         payload: deployment,
-      },
+    };
+    const runtimeFields = runtime
+      ? {
+          worker_id: deployment.workerId || deployment.worker_id || null,
+          claimed_at: deployment.claimedAt || deployment.claimed_at || null,
+          lease_expires_at: deployment.leaseExpiresAt || deployment.lease_expires_at || null,
+          heartbeat_at: deployment.heartbeatAt || deployment.heartbeat_at || null,
+          attempt_count: Number(deployment.attemptCount || deployment.attempt_count || 0),
+          max_attempts: Number(deployment.maxAttempts || deployment.max_attempts || 3),
+          next_retry_at: deployment.nextRetryAt || deployment.next_retry_at || null,
+          last_error: deployment.lastError || deployment.last_error || null,
+          run_id: deployment.runId || deployment.run_id || null,
+          started_at: deployment.startedAt || deployment.started_at || null,
+          completed_at: deployment.completedAt || deployment.completed_at || null,
+          failed_at: deployment.failedAt || deployment.failed_at || null,
+        }
+      : {};
+    const { error } = await db.from('agent_deployments').upsert(
+      { ...base, ...runtimeFields },
       { onConflict: 'id' }
     );
     if (error) {
@@ -81,6 +104,259 @@ export async function persistDeploymentToSupabase(deployment) {
     return true;
   } catch (err) {
     console.warn('[agent_deployments]', err.message);
+    return false;
+  }
+}
+
+export async function heartbeatAgentDeployment({ deploymentId, workerId, leaseSeconds = 300 } = {}) {
+  const db = writeClient();
+  if (!db || !deploymentId || !workerId) return false;
+  try {
+    const now = new Date().toISOString();
+    const lease = new Date(Date.now() + Math.max(30, Number(leaseSeconds) || 300) * 1000).toISOString();
+    const { error } = await db
+      .from('agent_deployments')
+      .update({ heartbeat_at: now, lease_expires_at: lease, updated_at: now })
+      .eq('id', String(deploymentId))
+      .eq('worker_id', String(workerId))
+      .eq('status', 'running');
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_deployments heartbeat]', err?.message || err);
+    return false;
+  }
+}
+
+export async function getDeploymentFromSupabase(deploymentId) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !deploymentId) return null;
+  try {
+    const { data, error } = await db
+      .from('agent_deployments')
+      .select('*')
+      .eq('id', String(deploymentId))
+      .maybeSingle();
+    if (error || !data) return null;
+    return {
+      ...(data.payload || {}),
+      id: data.id,
+      workspaceId: data.workspace_id,
+      companyId: data.company_id || data.workspace_id,
+      status: data.status,
+      runId: data.run_id,
+      workerId: data.worker_id,
+      attemptCount: data.attempt_count,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function persistAgentArtifact(artifact) {
+  const db = writeClient();
+  if (!db || !artifact?.id || !isUuidWorkspace(artifact.workspaceId || artifact.workspace_id)) return false;
+  try {
+    const { error } = await db.from('agent_artifacts').upsert(
+      {
+        id: String(artifact.id),
+        company_id: artifact.workspaceId || artifact.workspace_id,
+        agent: artifact.agentName || artifact.agent || 'agent',
+        type: artifact.type || 'agent_runtime_artifact',
+        data: artifact.data || {},
+        payload: artifact.data || {},
+        tags: artifact.tags || ['agent_runtime'],
+        saved_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_artifacts]', err?.message || err);
+    return false;
+  }
+}
+
+export async function claimAgentAction({
+  workspaceId,
+  runId,
+  stepKey = 'execute',
+  actionKey,
+  actionType,
+  request = {},
+} = {}) {
+  const db = readClient();
+  if (!db || !isUuidWorkspace(workspaceId) || !runId || !actionKey || !actionType) return null;
+  try {
+    const { data, error } = await db.rpc('claim_agent_action', {
+      p_workspace_id: workspaceId,
+      p_run_id: String(runId),
+      p_step_key: String(stepKey),
+      p_action_key: String(actionKey),
+      p_action_type: String(actionType),
+      p_request: request || {},
+    });
+    if (error) {
+      console.warn('[agent_action_receipts]', error.message);
+      return null;
+    }
+    return Boolean(data);
+  } catch (err) {
+    console.warn('[agent_action_receipts]', err?.message || err);
+    return null;
+  }
+}
+
+export async function updateAgentActionReceipt({
+  workspaceId,
+  actionKey,
+  status,
+  response = null,
+} = {}) {
+  const db = writeClient();
+  if (!db || !isUuidWorkspace(workspaceId) || !actionKey) return false;
+  if (!['claimed', 'completed', 'skipped', 'failed'].includes(String(status))) return false;
+  try {
+    const { error } = await db
+      .from('agent_action_receipts')
+      .update({ status, response: response || null, updated_at: new Date().toISOString() })
+      .eq('workspace_id', workspaceId)
+      .eq('action_key', String(actionKey));
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_action_receipts update]', err?.message || err);
+    return false;
+  }
+}
+
+/** Atomically claim due deployments through the Postgres lease function. */
+export async function claimDeploymentsFromSupabase({
+  workerId,
+  workspaceId = null,
+  leaseSeconds = 300,
+  limit = 10,
+  force = false,
+} = {}) {
+  const db = readClient();
+  if (!db || !workerId) return null;
+  try {
+    const { data, error } = await db.rpc('claim_agent_deployments', {
+      p_worker_id: String(workerId),
+      p_lease_seconds: Number(leaseSeconds) || 300,
+      p_workspace_id: isUuidWorkspace(workspaceId) ? workspaceId : null,
+      p_limit: Number(limit) || 10,
+      p_force: Boolean(force),
+    });
+    if (error) {
+      // The migration may not have been applied yet. Returning null lets the
+      // legacy JSON scheduler remain the safe local fallback.
+      if (!/claim_agent_deployments|function .* does not exist|schema cache/i.test(error.message || '')) {
+        console.warn('[agent_deployments claim]', error.message);
+      }
+      return null;
+    }
+    return (data || []).map((row) => ({
+      ...(row.payload || {}),
+      id: row.id,
+      workspaceId: row.workspace_id,
+      companyId: row.company_id || row.workspace_id,
+      status: row.status,
+      workerId: row.worker_id,
+      claimedAt: row.claimed_at,
+      leaseExpiresAt: row.lease_expires_at,
+      heartbeatAt: row.heartbeat_at,
+      attemptCount: row.attempt_count,
+      maxAttempts: row.max_attempts,
+      nextRetryAt: row.next_retry_at,
+      runId: row.run_id,
+      startedAt: row.started_at,
+    }));
+  } catch (err) {
+    if (!/claim_agent_deployments|function .* does not exist|schema cache/i.test(err?.message || '')) {
+      console.warn('[agent_deployments claim]', err?.message || err);
+    }
+    return null;
+  }
+}
+
+export async function persistAgentRun(run) {
+  const db = writeClient();
+  if (!db || !run?.id || !isUuidWorkspace(run.workspaceId || run.workspace_id)) return false;
+  const row = {
+    id: String(run.id),
+    deployment_id: String(run.deploymentId || run.deployment_id || ''),
+    workspace_id: run.workspaceId || run.workspace_id,
+    agent_name: String(run.agentName || run.agent_name || 'agent'),
+    status: run.status || 'running',
+    trigger: run.trigger || run.triggeredBy || null,
+    attempt_count: Number(run.attemptCount || run.attempt_count || 0),
+    current_step: run.currentStep || run.current_step || null,
+    input: run.input || {},
+    output: run.output || null,
+    error: run.error || null,
+    started_at: run.startedAt || run.started_at || new Date().toISOString(),
+    heartbeat_at: run.heartbeatAt || run.heartbeat_at || new Date().toISOString(),
+    completed_at: run.completedAt || run.completed_at || null,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { error } = await db.from('agent_runs').upsert(row, { onConflict: 'id' });
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_runs]', err?.message || err);
+    return false;
+  }
+}
+
+export async function persistAgentRunStep(step) {
+  const db = writeClient();
+  if (!db || !step?.id || !step?.runId || !isUuidWorkspace(step.workspaceId || step.workspace_id)) return false;
+  try {
+    const { error } = await db.from('agent_run_steps').upsert(
+      {
+        id: String(step.id),
+        run_id: String(step.runId || step.run_id),
+        workspace_id: step.workspaceId || step.workspace_id,
+        step_index: Number(step.stepIndex ?? step.step_index ?? 0),
+        step_key: String(step.stepKey || step.step_key || 'step'),
+        status: step.status || 'pending',
+        input: step.input || {},
+        output: step.output || null,
+        error: step.error || null,
+        attempt_count: Number(step.attemptCount || step.attempt_count || 0),
+        started_at: step.startedAt || step.started_at || null,
+        completed_at: step.completedAt || step.completed_at || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_run_steps]', err?.message || err);
+    return false;
+  }
+}
+
+export async function appendAgentEvent(event) {
+  const db = writeClient();
+  if (!db || !event?.runId || !isUuidWorkspace(event.workspaceId || event.workspace_id)) return false;
+  try {
+    const { error } = await db.from('agent_events').insert({
+      run_id: String(event.runId),
+      deployment_id: event.deploymentId || null,
+      workspace_id: event.workspaceId || event.workspace_id,
+      event_type: String(event.eventType || event.event_type || 'runtime.event'),
+      step_key: event.stepKey || event.step_key || null,
+      payload: event.payload || {},
+    });
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_events]', err?.message || err);
     return false;
   }
 }
@@ -99,6 +375,73 @@ export async function listDeploymentsFromSupabase(workspaceId, status) {
     if (error) return null;
     return (data || []).map((row) => row.payload || { id: row.id, status: row.status, workspaceId });
   } catch {
+    return null;
+  }
+}
+
+/** User-safe execution summaries for the Orchestration view. */
+export async function listAgentExecutionSummaries(workspaceId, { limit = 20 } = {}) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !isUuidWorkspace(workspaceId)) return null;
+  try {
+    const [{ data: deployments, error: deploymentsError }, { data: runs, error: runsError }, { data: artifacts, error: artifactsError }] = await Promise.all([
+      db.from('agent_deployments')
+        .select('id, status, payload, run_id, attempt_count, next_retry_at, last_error, started_at, completed_at, failed_at, updated_at')
+        .eq('workspace_id', workspaceId)
+        .order('updated_at', { ascending: false })
+        .limit(Number(limit) || 20),
+      db.from('agent_runs')
+        .select('id, deployment_id, agent_name, status, current_step, output, error, started_at, completed_at, updated_at')
+        .eq('workspace_id', workspaceId)
+        .order('updated_at', { ascending: false })
+        .limit((Number(limit) || 20) * 2),
+      db.from('agent_artifacts')
+        .select('id, type, data, payload, saved_at')
+        .eq('company_id', workspaceId)
+        .eq('type', 'agent_execution_handoff')
+        .order('saved_at', { ascending: false })
+        .limit(Number(limit) || 20),
+    ]);
+    if (deploymentsError || runsError || artifactsError) return null;
+    const runByDeployment = new Map((runs || []).map((run) => [String(run.deployment_id), run]));
+    const artifactByDeployment = new Map();
+    for (const row of artifacts || []) {
+      const data = row.payload || row.data || {};
+      if (data.deploymentId && !artifactByDeployment.has(String(data.deploymentId))) {
+        artifactByDeployment.set(String(data.deploymentId), { ...data, savedAt: row.saved_at });
+      }
+    }
+    return (deployments || []).map((row) => {
+      const payload = row.payload || {};
+      const run = runByDeployment.get(String(row.id)) || null;
+      return {
+        id: row.id,
+        agentName: payload.agentName || run?.agent_name || 'agent',
+        agentDisplayName: payload.agentDisplayName || payload.agentName || run?.agent_name || 'Agent',
+        sectionTitle: payload.sectionTitle || payload.sectionId || 'Agent deployment',
+        openScreen: payload.openScreen || null,
+        status: row.status || payload.status || 'pending',
+        executionPhase: payload.executionPhase || null,
+        scheduledFor: payload.scheduledFor || null,
+        attemptCount: row.attempt_count || 0,
+        nextRetryAt: row.next_retry_at || null,
+        lastError: row.last_error || null,
+        updatedAt: row.updated_at || null,
+        run: run ? {
+          id: run.id,
+          status: run.status,
+          currentStep: run.current_step,
+          output: run.output || null,
+          error: run.error || null,
+          startedAt: run.started_at,
+          completedAt: run.completed_at,
+          updatedAt: run.updated_at,
+        } : null,
+        handoff: artifactByDeployment.get(String(row.id)) || null,
+      };
+    });
+  } catch (err) {
+    console.warn('[agent execution summaries]', err?.message || err);
     return null;
   }
 }
@@ -143,6 +486,45 @@ export async function listApprovalsFromSupabase(workspaceId) {
       .order('created_at', { ascending: false });
     if (error) return null;
     return (data || []).map((row) => row.payload || { id: row.id, status: row.status });
+  } catch {
+    return null;
+  }
+}
+
+export async function listApprovalsForUserFromSupabase(userId) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !userId) return null;
+  try {
+    const { data: memberships, error: memberError } = await db
+      .from('workspace_members')
+      .select('workspace_id')
+      .eq('user_id', userId);
+    if (memberError) return null;
+    const workspaceIds = (memberships || []).map((row) => row.workspace_id).filter(isUuidWorkspace);
+    if (!workspaceIds.length) return [];
+    const { data, error } = await db
+      .from('draft_approvals')
+      .select('*')
+      .in('workspace_id', workspaceIds)
+      .order('created_at', { ascending: false });
+    if (error) return null;
+    return (data || []).map((row) => row.payload || { id: row.id, status: row.status });
+  } catch {
+    return null;
+  }
+}
+
+export async function getApprovalFromSupabase(approvalId) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !approvalId) return null;
+  try {
+    const { data, error } = await db
+      .from('draft_approvals')
+      .select('*')
+      .eq('id', String(approvalId))
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.payload || { id: data.id, status: data.status, workspaceId: data.workspace_id };
   } catch {
     return null;
   }
