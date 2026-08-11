@@ -4,7 +4,8 @@ import Sidebar from './components/common/Sidebar.jsx';
 import ModalContainer from './components/common/ModalContainer.jsx';
 import { ensureElevateWorkspace, isOnboardingComplete } from './lib/workspaceBootstrap.js';
 import { supabase } from './lib/supabase.js';
-import { ensureUserWorkspace, getActiveWorkspaceId } from './lib/workspace.js';
+import { ensureUserWorkspace, getActiveWorkspaceId, setActiveWorkspace, WORKSPACE_CHANGED_EVENT } from './lib/workspace.js';
+import { notifyAgentIntegrationConnected } from './lib/composio.js';
 
 import CommandCenter from './views/CommandCenter.jsx';
 import AskMarqq from './views/AskMarqq.jsx';
@@ -65,6 +66,13 @@ export default function App() {
   const [session, setSession] = useState(null);
   // Default to login so Railway / fresh browsers never open the app shell first
   const [activeScreen, setActiveScreenState] = useState('login');
+  const [, setWorkspaceRevision] = useState(0);
+
+  useEffect(() => {
+    const onWorkspaceChanged = () => setWorkspaceRevision((value) => value + 1);
+    window.addEventListener(WORKSPACE_CHANGED_EVENT, onWorkspaceChanged);
+    return () => window.removeEventListener(WORKSPACE_CHANGED_EVENT, onWorkspaceChanged);
+  }, []);
 
   useEffect(() => {
     ensureElevateWorkspace();
@@ -135,6 +143,24 @@ export default function App() {
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
+
+  // Same-tab OAuth fallback has no opener window to receive the callback.
+  useEffect(() => {
+    if (!session) return;
+    const params = new URLSearchParams(window.location.search);
+    const connectorId = params.get('connected') || params.get('connectorId') || params.get('connector_id');
+    if (!connectorId) return;
+    const marker = `${getActiveWorkspaceId()}:${connectorId}:${params.get('oauth_nonce') || 'legacy'}`;
+    if (sessionStorage.getItem('marqq_oauth_notice_sent') === marker) return;
+    sessionStorage.setItem('marqq_oauth_notice_sent', marker);
+    void notifyAgentIntegrationConnected({
+      companyId: getActiveWorkspaceId(),
+      connectorId,
+      userEmail: session.user.email || '',
+      userName: session.user.user_metadata?.full_name || '',
+    });
+    window.history.replaceState({}, document.title, '/integrations');
+  }, [session]);
 
   const setActiveScreen = (screen) => {
     const target = String(screen || 'login');
@@ -501,7 +527,21 @@ export default function App() {
         activeModal={activeModal}
         onClose={() => setActiveModal(null)}
         onCreateCampaign={handleCreateCampaign}
-        onCreateWorkspace={(name) => alert(`Workspace "${name}" created!`)}
+        onCreateWorkspace={async (name) => {
+          try {
+            const res = await fetch('/api/workspaces', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name }),
+            });
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok || !json.workspace) throw new Error(json.error || 'Workspace creation failed');
+            setActiveWorkspace(json.workspace);
+            setActiveScreen('command');
+          } catch (err) {
+            window.alert(err.message || 'Workspace creation failed');
+          }
+        }}
       />
     </div>
   );

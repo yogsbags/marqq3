@@ -2403,7 +2403,7 @@ function extractRedirectUrl(data) {
 
 // POST /api/integrations/connect
 router.post('/integrations/connect', async (req, res) => {
-  const { companyId, connectorId } = req.body;
+  const { companyId, connectorId, oauthNonce } = req.body;
   const apiKey = process.env.COMPOSIO_API_KEY;
   const authConfigId = getAuthConfigId(connectorId);
   const authEnvKey =
@@ -2436,7 +2436,7 @@ router.post('/integrations/connect', async (req, res) => {
         auth_config_id: authConfigId,
         user_id: companyId,
         // Marqq2-style callback: popup lands here, posts success to opener, then closes
-        callback_url: `${appUrl}/integrations?connected=${encodeURIComponent(connectorId)}`,
+        callback_url: `${appUrl}/integrations?connected=${encodeURIComponent(connectorId)}${oauthNonce ? `&oauth_nonce=${encodeURIComponent(String(oauthNonce).slice(0, 120))}` : ''}`,
         allow_multiple: false
       })
     });

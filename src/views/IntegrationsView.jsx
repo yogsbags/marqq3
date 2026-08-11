@@ -5,6 +5,7 @@ import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
 import { getActiveWorkspaceId } from '../lib/workspace.js';
 
 export function IntegrationsView({ setActiveScreen }) {
+  const [workspaceId, setWorkspaceId] = useState(getActiveWorkspaceId());
   const [connectors, setConnectors] = useState([
     { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
     { id: 'linkedin', name: 'LinkedIn', connected: false, status: 'not_connected' },
@@ -32,8 +33,8 @@ export function IntegrationsView({ setActiveScreen }) {
   const [pickerConnectorId, setPickerConnectorId] = useState(null);
   const [connectError, setConnectError] = useState('');
 
-  const fetchPreferences = () => {
-    fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
+  const fetchPreferences = (targetWorkspaceId = workspaceId) => {
+    fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(targetWorkspaceId)}`)
       .then(r => r.json())
       .then(data => {
         if (data?.preferences) {
@@ -44,7 +45,7 @@ export function IntegrationsView({ setActiveScreen }) {
   };
 
   useEffect(() => {
-    fetch(`/api/integrations?companyId=${encodeURIComponent(getActiveWorkspaceId())}`)
+    fetch(`/api/integrations?companyId=${encodeURIComponent(workspaceId)}`)
       .then(r => r.json())
       .then(data => {
         if (data?.connectors && data.connectors.length > 0) {
@@ -53,7 +54,13 @@ export function IntegrationsView({ setActiveScreen }) {
       })
       .catch(() => {});
 
-    fetchPreferences();
+    fetchPreferences(workspaceId);
+  }, [workspaceId]);
+
+  useEffect(() => {
+    const onWorkspaceChanged = (event) => setWorkspaceId(event.detail?.id || getActiveWorkspaceId());
+    window.addEventListener('marqq:workspace-changed', onWorkspaceChanged);
+    return () => window.removeEventListener('marqq:workspace-changed', onWorkspaceChanged);
   }, []);
 
   const handleConnect = async (connectorId) => {
@@ -61,7 +68,7 @@ export function IntegrationsView({ setActiveScreen }) {
     setConnectError('');
     try {
       const res = await connectComposioConnector({
-        companyId: getActiveWorkspaceId(),
+        companyId: workspaceId,
         connectorId,
         onConnected: (id) => {
           setConnectors(prev => prev.map(c => c.id === id ? { ...c, connected: true, status: 'active' } : c));
@@ -215,7 +222,7 @@ export function IntegrationsView({ setActiveScreen }) {
       {pickerConnectorId && (
         <ResourcePickerModal
           connectorId={pickerConnectorId}
-          companyId={getActiveWorkspaceId()}
+          companyId={workspaceId}
           onClose={() => setPickerConnectorId(null)}
           onSaved={() => {
             fetchPreferences();

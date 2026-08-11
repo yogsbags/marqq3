@@ -34,7 +34,8 @@ const AGENT_COLOURS = {
 };
 
 const AGENT_INITIALS = {
-  zara: 'ZA', maya: 'MA', riya: 'RI', arjun: 'AR', dev: 'DV', priya: 'PR', neel: 'NE',
+  veena: 'VE', isha: 'IS', neel: 'NE', zara: 'ZA', dev: 'DV', priya: 'PR', tara: 'TA',
+  sam: 'SA', kiran: 'KI', maya: 'MA', riya: 'RI', arjun: 'AR',
 };
 
 function formatTimeAgo(timestamp) {
@@ -337,7 +338,7 @@ export default function NotificationsPanel({
 
         {activeTab === 'ai-team' && (
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', padding: '8px 10px', borderBottom: '1px solid var(--color-divider)' }}>
-            {['all', 'zara', 'maya', 'riya', 'arjun', 'dev', 'priya', 'neel'].map((name) => (
+            {['all', 'veena', 'isha', 'neel', 'zara', 'dev', 'priya', 'tara', 'sam', 'kiran', 'maya', 'riya', 'arjun'].map((name) => (
               <button
                 key={name}
                 type="button"

@@ -66,7 +66,7 @@ export async function waitForConnectorActive(
   return false;
 }
 
-async function notifyAgentIntegrationConnected({ connectorId, companyId, userEmail, userName }) {
+export async function notifyAgentIntegrationConnected({ connectorId, companyId, userEmail, userName }) {
   let email = userEmail;
   let name = userName;
   if (!email) {
@@ -112,6 +112,9 @@ export async function connectComposioConnector({
     'composio_oauth',
     'width=600,height=700,left=200,top=100'
   );
+  const oauthNonce = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   if (popup) {
     try {
@@ -129,7 +132,7 @@ export async function connectComposioConnector({
     response = await fetch('/api/integrations/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ companyId, connectorId }),
+      body: JSON.stringify({ companyId, connectorId, oauthNonce }),
     });
     json = await response.json().catch(() => ({}));
   } catch (networkErr) {

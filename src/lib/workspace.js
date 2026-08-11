@@ -5,6 +5,7 @@ import { apiFetch } from './apiFetch.js';
 
 export const WORKSPACE_STORAGE_KEY = 'marqq_workspace_id';
 export const ACTIVE_WORKSPACE_KEY = 'marqq_active_workspace';
+export const WORKSPACE_CHANGED_EVENT = 'marqq:workspace-changed';
 
 /** Legacy shared entity — only for Composio fallbacks when no UUID yet. */
 export const LEGACY_WORKSPACE_ID = 'marqq-ws-1';
@@ -54,6 +55,9 @@ export function setActiveWorkspace(workspace) {
     } catch {
       /* ignore */
     }
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(WORKSPACE_CHANGED_EVENT, { detail: workspace }));
   }
 }
 

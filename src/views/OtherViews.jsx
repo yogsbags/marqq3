@@ -1877,7 +1877,8 @@ export function WorkflowsView({ setActiveScreen }) {
 
 export function OrchestrationView({ setActiveScreen }) {
   const osLocal = loadAgentOs();
-  const ws = getActiveWorkspaceId();
+  const [workspaceId, setWorkspaceId] = useState(getActiveWorkspaceId());
+  const ws = workspaceId;
   const [os, setOs] = useState(osLocal);
   const [deployments, setDeployments] = useState([]);
   const [executionSummaries, setExecutionSummaries] = useState([]);
@@ -1886,6 +1887,7 @@ export function OrchestrationView({ setActiveScreen }) {
   const [activating, setActivating] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+  const [executionError, setExecutionError] = useState('');
   const [modeBusy, setModeBusy] = useState(false);
 
   const refresh = async () => {
@@ -1893,7 +1895,11 @@ export function OrchestrationView({ setActiveScreen }) {
       fetch(`/api/agent-os?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch(`/api/agents/deployments?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
       fetch('/api/approvals').then((r) => r.json()).catch(() => ({})),
-      apiFetch(`/api/agents/execution-summaries?workspaceId=${encodeURIComponent(ws)}`).then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/agents/execution-summaries?workspaceId=${encodeURIComponent(ws)}`).then(async (r) => {
+        const json = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(json.error || 'Execution history unavailable');
+        return json;
+      }).catch((err) => ({ error: err.message || 'Execution history unavailable' })),
     ]);
     if (osRes?.agentOs) {
       saveAgentOs(osRes.agentOs);
@@ -1901,6 +1907,7 @@ export function OrchestrationView({ setActiveScreen }) {
     }
     setDeployments(Array.isArray(dep.deployments) ? dep.deployments : []);
     setExecutionSummaries(Array.isArray(execution.summaries) ? execution.summaries : []);
+    setExecutionError(execution.error || '');
     const approvals = Array.isArray(app.approvals) ? app.approvals : [];
     const decided = app.approvedActions || {};
     setPendingApprovals(approvals.filter((a) => !decided[a.id] && a.status !== 'approved' && a.status !== 'rejected').length);
@@ -1910,6 +1917,12 @@ export function OrchestrationView({ setActiveScreen }) {
     refresh().catch(() => {});
     const poll = setInterval(() => refresh().catch(() => {}), 30_000);
     return () => clearInterval(poll);
+  }, [ws]);
+
+  useEffect(() => {
+    const onWorkspaceChanged = (event) => setWorkspaceId(event.detail?.id || getActiveWorkspaceId());
+    window.addEventListener('marqq:workspace-changed', onWorkspaceChanged);
+    return () => window.removeEventListener('marqq:workspace-changed', onWorkspaceChanged);
   }, []);
 
   const loop = os?.control_loop;
@@ -1974,11 +1987,13 @@ export function OrchestrationView({ setActiveScreen }) {
     setError('');
     setMsg('');
     try {
-      await fetch('/api/agents/scheduler/tick', {
+      const response = await fetch('/api/agents/scheduler/tick', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ force: true, workspaceId: ws }),
       });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json.error || 'Scheduler tick failed');
       await refresh();
       setMsg(
         executionMode === 'autonomous'
@@ -2039,6 +2054,7 @@ export function OrchestrationView({ setActiveScreen }) {
 
       {msg ? <div className="card">{msg}</div> : null}
       {error ? <div className="card" style={{ color: 'var(--color-accent)' }}>{error}</div> : null}
+      {executionError ? <div className="card" role="alert" style={{ color: 'var(--color-accent)' }}>Execution history unavailable: {executionError}</div> : null}
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
