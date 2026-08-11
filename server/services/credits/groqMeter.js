@@ -79,7 +79,10 @@ export async function meteredGroqChat(opts = {}) {
         messages,
         temperature,
         max_tokens,
-        ...(isGptOssModel(resolved) && gptOssBuiltInToolsEnabled()
+        // Groq currently rejects response_format=json_object together with
+        // GPT-OSS built-in tool calling. JSON agent calls keep strict output;
+        // text calls get browser search/code execution.
+        ...(isGptOssModel(resolved) && !json && gptOssBuiltInToolsEnabled()
           ? {
               tools: [{ type: 'browser_search' }, { type: 'code_interpreter' }],
               tool_choice: 'auto',
