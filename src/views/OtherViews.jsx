@@ -2236,6 +2236,49 @@ export function OrchestrationView({ setActiveScreen }) {
                       <div style={{ fontSize: 12, marginTop: 9, lineHeight: 1.45 }}>{handoff.summary}</div>
                       {handoff.next_step ? <div className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>Next: {handoff.next_step}</div> : null}
                       {handoff.risks?.length ? <div style={{ color: 'var(--color-accent)', fontSize: 11, marginTop: 6 }}>Risk: {handoff.risks[0]}</div> : null}
+                      {handoff.graph?.synthesis ? (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>View synthesized plan</summary>
+                          <div style={{ marginTop: 10, display: 'grid', gap: 9, fontSize: 12 }}>
+                            {handoff.graph.synthesis.north_star_metric ? (
+                              <div><strong>North-star metric:</strong> {handoff.graph.synthesis.north_star_metric}</div>
+                            ) : null}
+                            {Array.isArray(handoff.graph.synthesis.diagnosis) && handoff.graph.synthesis.diagnosis.length ? (
+                              <div>
+                                <strong>Diagnosis</strong>
+                                <ul style={{ margin: '5px 0 0 18px' }}>
+                                  {handoff.graph.synthesis.diagnosis.slice(0, 6).map((item, index) => <li key={`diagnosis-${index}`}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>)}
+                                </ul>
+                              </div>
+                            ) : null}
+                            {Array.isArray(handoff.graph.synthesis.prioritized_actions) && handoff.graph.synthesis.prioritized_actions.length ? (
+                              <div>
+                                <strong>Prioritized actions</strong>
+                                <ol style={{ margin: '5px 0 0 18px' }}>
+                                  {handoff.graph.synthesis.prioritized_actions.slice(0, 8).map((action, index) => (
+                                    <li key={`action-${index}`}>
+                                      <strong>{action.action || 'Action'}</strong>
+                                      {action.owner ? ` · owner: ${action.owner}` : ''}
+                                      {action.metric ? ` · metric: ${action.metric}` : ''}
+                                      {action.why ? <div className="text-muted" style={{ marginTop: 2 }}>{action.why}</div> : null}
+                                    </li>
+                                  ))}
+                                </ol>
+                              </div>
+                            ) : null}
+                            {Array.isArray(handoff.graph.synthesis.experiments) && handoff.graph.synthesis.experiments.length ? (
+                              <div>
+                                <strong>Experiments</strong>
+                                <ul style={{ margin: '5px 0 0 18px' }}>
+                                  {handoff.graph.synthesis.experiments.slice(0, 6).map((item, index) => <li key={`experiment-${index}`}>{typeof item === 'string' ? item : JSON.stringify(item)}</li>)}
+                                </ul>
+                              </div>
+                            ) : null}
+                            {handoff.graph.synthesis.required_connectors?.length ? <div><strong>Required connectors:</strong> {handoff.graph.synthesis.required_connectors.join(', ')}</div> : null}
+                            {handoff.graph.synthesis.confidence ? <div><strong>Confidence:</strong> {handoff.graph.synthesis.confidence}</div> : null}
+                          </div>
+                        </details>
+                      ) : null}
                       {setActiveScreen && summary.openScreen ? (
                         <button type="button" className="btn btn-ghost" style={{ marginTop: 8, fontSize: 11 }} onClick={() => setActiveScreen(summary.openScreen)}>Open studio</button>
                       ) : null}
