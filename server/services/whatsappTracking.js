@@ -12,6 +12,7 @@ const byMessageId = new Map();
 const eventsByRun = new Map();
 /** Inbound WhatsApp replies (run-linked when phone matches a prospect) */
 const inboundReplies = [];
+const inboundMessageIds = new Set();
 
 function pushRunEvent(runId, event) {
   if (!runId) return;
@@ -133,6 +134,10 @@ export function handleWhatsAppWebhookPayload(payload = {}, { resolveProspectByPh
 
         const contacts = Array.isArray(value.contacts) ? value.contacts : [];
         for (const msg of Array.isArray(value.messages) ? value.messages : []) {
+          if (msg.id && inboundMessageIds.has(String(msg.id))) {
+            results.push({ kind: 'inbound', status: 'duplicate', id: msg.id });
+            continue;
+          }
           if (msg.type && msg.type !== 'text' && !msg.text?.body && !msg.button?.text) {
             results.push({ kind: 'inbound', status: 'ignored', reason: `unsupported_type:${msg.type}`, id: msg.id });
             continue;
@@ -160,6 +165,7 @@ export function handleWhatsAppWebhookPayload(payload = {}, { resolveProspectByPh
             prospect_id: linked?.prospectId || null,
             prospect_name: linked?.prospectName || null,
           };
+          if (msg.id) inboundMessageIds.add(String(msg.id));
           inboundReplies.unshift(reply);
           if (inboundReplies.length > 500) inboundReplies.length = 500;
           if (linked?.runId) pushRunEvent(linked.runId, { type: 'inbound', ...reply });

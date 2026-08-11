@@ -33,6 +33,10 @@ export function IntegrationsView({ setActiveScreen }) {
   const [connectingId, setConnectingId] = useState(null);
   const [pickerConnectorId, setPickerConnectorId] = useState(null);
   const [connectError, setConnectError] = useState('');
+  const [webhookEndpoints, setWebhookEndpoints] = useState([]);
+  const [webhookProvider, setWebhookProvider] = useState('');
+  const [webhookBusy, setWebhookBusy] = useState(false);
+  const [webhookNotice, setWebhookNotice] = useState('');
 
   const fetchPreferences = (targetWorkspaceId = workspaceId) => {
     fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(targetWorkspaceId)}`)
@@ -56,6 +60,10 @@ export function IntegrationsView({ setActiveScreen }) {
       .catch(() => {});
 
     fetchPreferences(workspaceId);
+    fetch(`/api/integrations/webhooks?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then(r => r.json())
+      .then(data => setWebhookEndpoints(data?.endpoints || []))
+      .catch(() => setWebhookEndpoints([]));
   }, [workspaceId]);
 
   useEffect(() => {
@@ -110,6 +118,57 @@ export function IntegrationsView({ setActiveScreen }) {
     (c) => isConnectorActive(c) && ['ga4', 'gsc', 'meta_ads', 'google_ads', 'google_sheets'].includes(c.id)
   );
 
+  const rotateWebhook = async () => {
+    if (!webhookProvider) return;
+    setWebhookBusy(true);
+    setWebhookNotice('');
+    try {
+      const response = await fetch('/api/integrations/webhooks/rotate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          provider: webhookProvider,
+          connectedAccountId: getAccountValueForConnector(webhookProvider),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.endpoint) throw new Error(data?.error || 'Could not create webhook endpoint');
+      await navigator.clipboard?.writeText(data.endpoint.secret || '');
+      setWebhookNotice(`Endpoint created. Secret copied — configure ${webhookProvider} with the URL and secret now.`);
+      setWebhookEndpoints(prev => [data.endpoint, ...prev.filter(item => item.provider !== webhookProvider)]);
+    } catch (err) {
+      setWebhookNotice(err.message || 'Could not create webhook endpoint');
+    } finally {
+      setWebhookBusy(false);
+    }
+  };
+
+  const revealWebhook = async (endpointId) => {
+    try {
+      const response = await fetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/reveal`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Could not reveal secret');
+      await navigator.clipboard?.writeText(data.endpoint.secret || '');
+      setWebhookNotice('Secret copied to clipboard.');
+    } catch (err) { setWebhookNotice(err.message || 'Could not reveal secret'); }
+  };
+
+  const revokeWebhook = async (endpointId) => {
+    setWebhookBusy(true);
+    try {
+      const response = await fetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/revoke`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
+      });
+      if (!response.ok) throw new Error('Could not revoke endpoint');
+      setWebhookEndpoints(prev => prev.filter(item => item.id !== endpointId));
+      setWebhookNotice('Webhook endpoint revoked.');
+    } catch (err) { setWebhookNotice(err.message || 'Could not revoke endpoint'); }
+    finally { setWebhookBusy(false); }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -145,6 +204,41 @@ export function IntegrationsView({ setActiveScreen }) {
           </button>
         </div>
       ) : null}
+      <div className="card" style={{ padding: '16px' }}>
+        <div className="card-kicker">Provider webhooks</div>
+        <p className="card-body" style={{ margin: '4px 0 12px' }}>
+          Generate a private callback URL for a connected provider. Secrets are workspace-scoped and never shared as Railway environment variables.
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select value={webhookProvider} onChange={event => setWebhookProvider(event.target.value)} style={{ minWidth: 180 }}>
+            <option value="">Choose provider</option>
+            {connectors.filter(item => ['apollo', 'instantly', 'heyreach', 'whatsapp'].includes(item.id)).map(item => (
+              <option key={item.id} value={item.id}>{item.name || item.id}</option>
+            ))}
+          </select>
+          <button type="button" className="btn btn-secondary" onClick={rotateWebhook} disabled={!webhookProvider || webhookBusy}>
+            {webhookBusy ? 'Working...' : 'Generate / rotate endpoint'}
+          </button>
+        </div>
+        {webhookNotice ? <p className="text-muted" role="status" style={{ margin: '10px 0 0', fontSize: 12 }}>{webhookNotice}</p> : null}
+        {webhookEndpoints.length > 0 ? (
+          <div style={{ marginTop: 14, display: 'grid', gap: 8 }}>
+            {webhookEndpoints.map(endpoint => (
+              <div key={endpoint.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
+                <div>
+                  <strong>{endpoint.provider}</strong>
+                  <div className="text-muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>{endpoint.endpointUrl}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => navigator.clipboard?.writeText(endpoint.endpointUrl)}>Copy URL</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => revealWebhook(endpoint.id)}>Copy secret</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => revokeWebhook(endpoint.id)} disabled={webhookBusy}>Revoke</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
       <div className="card">
         <div className="table-container">
           <table className="data-table">

@@ -175,5 +175,5 @@ export async function handleAgentMailInbound(payload = {}) {
 
 export function verifyAgentMailWebhook(req) {
   const secret = String(process.env.AGENTMAIL_WEBHOOK_SECRET || '').trim();
-  return !secret || String(req.headers['x-agentmail-signature'] || '') === secret;
+  return Boolean(secret) && String(req.headers['x-agentmail-signature'] || '') === secret;
 }

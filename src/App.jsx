@@ -250,13 +250,13 @@ export default function App() {
 
       try {
         const [dashRes, analyticsRes, campRes, agRes, appRes, prosRes, taskRes, creditRes] = await Promise.all([
-          safeFetchJson('/api/dashboard'),
+          safeFetchJson(`/api/dashboard?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
           safeFetchJson(`/api/analytics/dashboard?period=30d&companyId=${encodeURIComponent(getActiveWorkspaceId())}`),
-          safeFetchJson('/api/campaigns'),
+          safeFetchJson(`/api/campaigns?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
           safeFetchJson('/api/agents'),
           safeFetchJson('/api/approvals'),
-          safeFetchJson('/api/outreach/prospects'),
-          safeFetchJson('/api/tasks'),
+          safeFetchJson(`/api/outreach/prospects?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
+          safeFetchJson(`/api/tasks?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
           safeFetchJson(`/api/credits?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`),
         ]);
         if (creditRes?.wallet) {
@@ -351,7 +351,7 @@ export default function App() {
       fetch('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(created)
+        body: JSON.stringify({ ...created, workspaceId: getActiveWorkspaceId() })
       });
     } catch (e) { }
   };
@@ -362,7 +362,7 @@ export default function App() {
       fetch(`/api/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, workspaceId: getActiveWorkspaceId() })
       });
     } catch (e) { }
   };

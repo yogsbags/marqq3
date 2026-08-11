@@ -166,7 +166,7 @@ import {
   sendCreditsError,
 } from '../services/credits/index.js';
 import workspacesRouter from './workspaces.js';
-import { optionalAuth, requireAuth, requireWorkspaceMember, requireDeploymentMember, requireApprovalMember } from '../middleware/auth.js';
+import { optionalAuth, requireAuth, requireWorkspaceMember, requireDeploymentMember, requireApprovalMember, requireResourceMember } from '../middleware/auth.js';
 import { useSupabasePersistence, isUuidWorkspace } from '../lib/persistence.js';
 import {
   upsertGtmModule,
@@ -216,6 +216,14 @@ import { getAgentReportCard, getWorkspaceReportCards } from '../services/agentRe
 import { getActiveInstructions } from '../services/agentInstructions.js';
 import { reviewAgent } from '../services/agentSelfReview.js';
 import { runWeeklyReviewForAllWorkspaces } from '../services/agentSelfReviewScheduler.js';
+import {
+  listWorkspaceWebhookEndpoints,
+  createOrRotateWorkspaceWebhookEndpoint,
+  revealWorkspaceWebhookSecret,
+  revokeWorkspaceWebhookEndpoint,
+  verifyWorkspaceWebhookSecret,
+  recordWorkspaceWebhookEvent,
+} from '../services/workspaceWebhooks.js';
 
 const router = express.Router();
 const DEFAULT_WS = 'marqq-ws-1';
@@ -239,7 +247,7 @@ router.use('/workspaces', workspacesRouter);
 if (process.env.MARQQ_START_SCHEDULERS !== '0') startDeploymentScheduler();
 
 /** GET /api/gtm/modules — list modules for workspace */
-router.get('/gtm/modules', async (req, res) => {
+router.get('/gtm/modules', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const modules = await listGtmModules(workspaceId);
@@ -247,7 +255,7 @@ router.get('/gtm/modules', async (req, res) => {
 });
 
 /** GET /api/gtm/modules/active — active module (wizard hydrate) */
-router.get('/gtm/modules/active', async (req, res) => {
+router.get('/gtm/modules/active', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const module = await getActiveGtmModule(workspaceId);
@@ -255,7 +263,7 @@ router.get('/gtm/modules/active', async (req, res) => {
 });
 
 /** POST /api/gtm/modules — create a NEW module (product / service / app / business_line) */
-router.post('/gtm/modules', async (req, res) => {
+router.post('/gtm/modules', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const result = await createGtmModule({
@@ -275,7 +283,7 @@ router.post('/gtm/modules', async (req, res) => {
 });
 
 /** PUT /api/gtm/modules — upsert wizard draft on a module (or active) */
-router.put('/gtm/modules', async (req, res) => {
+router.put('/gtm/modules', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const result = await upsertGtmModule({
@@ -298,7 +306,7 @@ router.put('/gtm/modules', async (req, res) => {
 });
 
 /** PATCH /api/gtm/modules/:id — rename / type / set active */
-router.patch('/gtm/modules/:id', async (req, res) => {
+router.patch('/gtm/modules/:id', requireWorkspaceMember, async (req, res) => {
   const moduleId = String(req.params.id || '').trim();
   const workspaceId = String(req.body?.workspaceId || req.query.workspaceId || '').trim();
   if (!moduleId) return res.status(400).json({ error: 'module id required' });
@@ -325,7 +333,7 @@ router.patch('/gtm/modules/:id', async (req, res) => {
 });
 
 /** GET /api/gtm/modules/:id — one module */
-router.get('/gtm/modules/:id', async (req, res) => {
+router.get('/gtm/modules/:id', requireWorkspaceMember, async (req, res) => {
   const moduleId = String(req.params.id || '').trim();
   const workspaceId = String(req.query.workspaceId || '').trim();
   if (!moduleId) return res.status(400).json({ error: 'module id required' });
@@ -335,7 +343,7 @@ router.get('/gtm/modules/:id', async (req, res) => {
 });
 
 /** POST /api/gtm/modules/lock — lock strategy as ready+active */
-router.post('/gtm/modules/lock', async (req, res) => {
+router.post('/gtm/modules/lock', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   if (!workspaceId) return res.status(400).json({ error: 'workspaceId required' });
   const result = await lockGtmStrategy({
@@ -349,7 +357,7 @@ router.post('/gtm/modules/lock', async (req, res) => {
 });
 
 /** GET /api/ask-marqq/chat — load persisted Ask Marqq channel history */
-router.get('/ask-marqq/chat', async (req, res) => {
+router.get('/ask-marqq/chat', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query.workspaceId || '').trim();
   const channel = String(req.query.channel || '').trim();
   const moduleId = String(req.query.moduleId || 'active').trim() || 'active';
@@ -367,7 +375,7 @@ router.get('/ask-marqq/chat', async (req, res) => {
 });
 
 /** POST /api/ask-marqq/chat/messages — append user/assistant turns */
-router.post('/ask-marqq/chat/messages', async (req, res) => {
+router.post('/ask-marqq/chat/messages', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.body?.workspaceId || '').trim();
   const channel = String(req.body?.channel || '').trim();
   const moduleId = String(req.body?.moduleId || 'active').trim() || 'active';
@@ -386,7 +394,7 @@ router.post('/ask-marqq/chat/messages', async (req, res) => {
 });
 
 /** POST /api/ask-marqq/chat/complete — metered Groq compound chat (server-side) */
-router.post('/ask-marqq/chat/complete', async (req, res) => {
+router.post('/ask-marqq/chat/complete', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const systemPrompt = String(req.body?.systemPrompt || req.body?.system || '').trim();
@@ -526,7 +534,7 @@ router.post('/cofounder-digest/read', requireAuth, async (req, res) => {
 });
 
 /** GET /api/agents/report-card?workspaceId=&agentName= — single agent's report card */
-router.get('/agents/report-card', async (req, res) => {
+router.get('/agents/report-card', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query.workspaceId || '').trim();
     const agentName = String(req.query.agentName || '').trim();
@@ -542,7 +550,7 @@ router.get('/agents/report-card', async (req, res) => {
 });
 
 /** GET /api/agents/report-cards?workspaceId= — every catalog agent's report card (grid view) */
-router.get('/agents/report-cards', async (req, res) => {
+router.get('/agents/report-cards', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query.workspaceId || '').trim();
     if (!workspaceId) return res.status(400).json({ ok: false, error: 'workspaceId required' });
@@ -555,7 +563,7 @@ router.get('/agents/report-cards', async (req, res) => {
 });
 
 /** GET /api/agents/instructions?workspaceId=&agentName= — current versioned instructions ("workflow.md") */
-router.get('/agents/instructions', async (req, res) => {
+router.get('/agents/instructions', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query.workspaceId || '').trim();
     const agentName = String(req.query.agentName || '').trim();
@@ -577,7 +585,7 @@ router.get('/agents/edit-types', (req, res) => {
 
 /** POST /api/agents/self-review — manual "run the weekly review now" trigger (also used by tests).
  *  { workspaceId, agentName } for one pair, or omit both to run every workspace x catalog agent. */
-router.post('/agents/self-review', async (req, res) => {
+router.post('/agents/self-review', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = req.body?.workspaceId ? String(req.body.workspaceId).trim() : null;
     const agentName = req.body?.agentName ? String(req.body.agentName).trim() : null;
@@ -595,7 +603,7 @@ router.post('/agents/self-review', async (req, res) => {
 });
 
 /** POST /api/gtm/strategy/generate — full 16-section doc with Marqq2 skill playbooks */
-router.post('/gtm/strategy/generate', async (req, res) => {
+router.post('/gtm/strategy/generate', requireAuth, async (req, res) => {
   try {
     const result = await generateFullStrategyDocument(req.body || {});
     res.json(result);
@@ -620,7 +628,7 @@ router.get('/gtm/strategy-section-skills/:sectionId', async (req, res) => {
 });
 
 /** POST /api/gtm/auto-sections/generate — GTM Wizard market→timeline briefs */
-router.post('/gtm/auto-sections/generate', async (req, res) => {
+router.post('/gtm/auto-sections/generate', requireAuth, async (req, res) => {
   try {
     const result = await generateAutoSection(req.body || {});
     res.json({ ok: true, ...result });
@@ -634,7 +642,7 @@ router.post('/gtm/auto-sections/generate', async (req, res) => {
 });
 
 /** POST /api/gtm/interview/question-options — LLM options for one interview question */
-router.post('/gtm/interview/question-options', async (req, res) => {
+router.post('/gtm/interview/question-options', requireAuth, async (req, res) => {
   try {
     const { question, draftAnswers, context } = req.body || {};
     if (!question || !question.id || !question.question) {
@@ -649,7 +657,7 @@ router.post('/gtm/interview/question-options', async (req, res) => {
 });
 
 /** POST /api/gtm/marketing-ideas/generate — marketing-ideas skill vs locked GTM strategy */
-router.post('/gtm/marketing-ideas/generate', async (req, res) => {
+router.post('/gtm/marketing-ideas/generate', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     const result = await generateMarketingIdeas({
@@ -668,7 +676,7 @@ router.post('/gtm/marketing-ideas/generate', async (req, res) => {
 });
 
 /** POST /api/market/research — live competitor / category refresh (Compound Mini) */
-router.post('/market/research', async (req, res) => {
+router.post('/market/research', requireWorkspaceMember, async (req, res) => {
   try {
     const body = req.body || {};
     const result = await runMarketResearch({
@@ -687,7 +695,7 @@ router.post('/market/research', async (req, res) => {
 });
 
 /** GET /api/apify/status — token + wired Marqq2 actors */
-router.get('/apify/status', (_req, res) => {
+router.get('/apify/status', requireAuth, (_req, res) => {
   res.json({
     ok: true,
     configured: Boolean(apifyToken()),
@@ -696,7 +704,7 @@ router.get('/apify/status', (_req, res) => {
 });
 
 /** POST /api/apify/website-signals — apify/website-content-crawler */
-router.post('/apify/website-signals', async (req, res) => {
+router.post('/apify/website-signals', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     const result = await fetchWebsiteSignals({
@@ -712,7 +720,7 @@ router.post('/apify/website-signals', async (req, res) => {
 });
 
 /** POST /api/apify/competitor-ads — LinkedIn / Facebook / Google ad library actors */
-router.post('/apify/competitor-ads', async (req, res) => {
+router.post('/apify/competitor-ads', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     const result = await scrapeCompetitorAds({
@@ -731,31 +739,35 @@ router.post('/apify/competitor-ads', async (req, res) => {
 
 
 // GET workspace & dashboard overview
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', requireWorkspaceMember, (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
   const db = getDb();
   res.json({
     workspace: db.workspace,
     kpis: db.kpis,
     changes: db.changes,
     priorities: db.priorities,
-    campaigns: db.campaigns,
+    campaigns: (db.campaigns || []).filter((campaign) => campaign.workspaceId === workspaceId),
     agents: defaultUiAgents().slice(0, 3)
   });
 });
 
 // GET all campaigns
-router.get('/campaigns', (req, res) => {
+router.get('/campaigns', requireWorkspaceMember, (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
   const db = getDb();
-  const campaigns = Array.isArray(db.campaigns) ? db.campaigns : [];
+  const campaigns = (Array.isArray(db.campaigns) ? db.campaigns : []).filter((campaign) => campaign.workspaceId === workspaceId);
   res.json({ campaigns });
 });
 
 // POST create campaign
-router.post('/campaigns', (req, res) => {
+router.post('/campaigns', requireWorkspaceMember, (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || req.body?.companyId || '').trim();
   const { name, objective, channels, budget } = req.body;
   const db = updateDb(state => {
     const newCamp = {
       id: `c${(state.campaigns || []).length + 1}`,
+      workspaceId,
       name: name || 'New Campaign',
       objective: objective || 'Pipeline',
       channels: channels || 'Multi-channel',
@@ -876,7 +888,7 @@ router.patch('/agents/deployments/:id', requireDeploymentMember, (req, res) => {
 });
 
 /** Content calendar (Marqq2 content-studio scheduled posts) */
-router.get('/content-studio/scheduled', async (req, res) => {
+router.get('/content-studio/scheduled', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || '').trim();
     if (!companyId) return res.status(400).json({ error: 'companyId is required' });
@@ -887,7 +899,7 @@ router.get('/content-studio/scheduled', async (req, res) => {
   }
 });
 
-router.post('/content-studio/distribute', async (req, res) => {
+router.post('/content-studio/distribute', requireWorkspaceMember, async (req, res) => {
   try {
     const result = await distributeContent({
       companyId: req.body?.companyId || req.body?.workspaceId,
@@ -904,7 +916,7 @@ router.post('/content-studio/distribute', async (req, res) => {
   }
 });
 
-router.patch('/content-studio/scheduled/:id', async (req, res) => {
+router.patch('/content-studio/scheduled/:id', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.query?.companyId || '').trim();
     const item = await rescheduleContent(req.params.id, companyId, req.body?.publishAt);
@@ -914,7 +926,7 @@ router.patch('/content-studio/scheduled/:id', async (req, res) => {
   }
 });
 
-router.delete('/content-studio/scheduled/:id', async (req, res) => {
+router.delete('/content-studio/scheduled/:id', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.body?.companyId || '').trim();
     const item = await cancelScheduledContent(req.params.id, companyId);
@@ -972,7 +984,7 @@ router.post('/agents/scheduler/tick', requireWorkspaceMember, async (req, res) =
 });
 
 // GET agent logs & stats
-router.get('/agents/:id', (req, res) => {
+router.get('/agents/:id', requireAuth, (req, res) => {
   const db = getDb();
   const agents = defaultUiAgents();
   const agent = agents.find((a) => a.id === req.params.id) || agents[0];
@@ -1077,7 +1089,7 @@ router.patch('/agent-os/action-mode', requireWorkspaceMember, (req, res) => {
 });
 
 /** ── Credits / metering (Groq tokens + Fal USD → credits) ── */
-router.get('/credits', async (req, res) => {
+router.get('/credits', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   try {
     await hydrateWalletFromSupabase(workspaceId);
@@ -1096,13 +1108,13 @@ router.get('/credits', async (req, res) => {
   });
 });
 
-router.get('/credits/ledger', (req, res) => {
+router.get('/credits/ledger', requireWorkspaceMember, (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   const limit = Number(req.query?.limit || 50);
   res.json({ ok: true, workspaceId, ledger: listLedger(workspaceId, { limit }) });
 });
 
-router.post('/credits/plan', (req, res) => {
+router.post('/credits/plan', requireWorkspaceMember, (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const plan = req.body?.plan || 'workspace';
@@ -1113,7 +1125,7 @@ router.post('/credits/plan', (req, res) => {
   }
 });
 
-router.post('/credits/estimate', (req, res) => {
+router.post('/credits/estimate', requireWorkspaceMember, (req, res) => {
   const feature = req.body?.feature || 'groq_chat';
   const estimatedCredits = estimateFeatureCredits(feature, {
     estimatedCredits: req.body?.estimatedCredits,
@@ -1131,7 +1143,7 @@ router.post('/credits/estimate', (req, res) => {
 });
 
 /** ── Control loop: Measure → Diagnose → Recommend → Approve → Execute (Marqq2) ── */
-router.get('/control-loop', async (req, res) => {
+router.get('/control-loop', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
     const data = await getControlLoop(workspaceId);
@@ -1141,7 +1153,7 @@ router.get('/control-loop', async (req, res) => {
   }
 });
 
-router.post('/control-loop/measure', async (req, res) => {
+router.post('/control-loop/measure', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const data = await measureControlLoop(workspaceId, {
@@ -1155,7 +1167,7 @@ router.post('/control-loop/measure', async (req, res) => {
   }
 });
 
-router.post('/control-loop/diagnose', async (req, res) => {
+router.post('/control-loop/diagnose', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const data = await diagnoseControlLoop(workspaceId, { notes: req.body?.notes });
@@ -1165,7 +1177,7 @@ router.post('/control-loop/diagnose', async (req, res) => {
   }
 });
 
-router.post('/control-loop/interventions', async (req, res) => {
+router.post('/control-loop/interventions', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const data = await proposeControlLoopInterventions(workspaceId, {
@@ -1177,7 +1189,7 @@ router.post('/control-loop/interventions', async (req, res) => {
   }
 });
 
-router.post('/control-loop/interventions/:interventionId/decide', async (req, res) => {
+router.post('/control-loop/interventions/:interventionId/decide', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const data = await decideControlLoopIntervention(
@@ -1191,7 +1203,7 @@ router.post('/control-loop/interventions/:interventionId/decide', async (req, re
   }
 });
 
-router.post('/control-loop/roster/refresh', async (req, res) => {
+router.post('/control-loop/roster/refresh', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
     const data = await refreshControlLoopRoster(workspaceId);
@@ -1201,7 +1213,7 @@ router.post('/control-loop/roster/refresh', async (req, res) => {
   }
 });
 
-router.post('/agents/:name/run', async (req, res) => {
+router.post('/agents/:name/run', requireWorkspaceMember, async (req, res) => {
   try {
     const result = await executeAgentRun({
       agentName: req.params.name,
@@ -1217,13 +1229,13 @@ router.post('/agents/:name/run', async (req, res) => {
   }
 });
 
-router.get('/automations/scheduled', (req, res) => {
+router.get('/automations/scheduled', requireWorkspaceMember, (req, res) => {
   const companyId = String(req.query?.companyId || DEFAULT_WS).trim();
   res.json({ ok: true, automations: listScheduledAutomations(companyId) });
 });
 
 /** PATCH /api/automations/scheduled/:id — pause / resume */
-router.patch('/automations/scheduled/:id', (req, res) => {
+router.patch('/automations/scheduled/:id', requireWorkspaceMember, (req, res) => {
   const id = String(req.params.id || '').trim();
   const companyId = String(req.body?.companyId || req.query?.companyId || DEFAULT_WS).trim();
   let updated = null;
@@ -1245,7 +1257,7 @@ router.patch('/automations/scheduled/:id', (req, res) => {
 });
 
 /** POST /api/automations/scheduled/:id/run — force-due + tick (enqueue deployment) */
-router.post('/automations/scheduled/:id/run', async (req, res) => {
+router.post('/automations/scheduled/:id/run', requireWorkspaceMember, async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     const companyId = String(req.body?.companyId || req.query?.companyId || DEFAULT_WS).trim();
@@ -1404,13 +1416,14 @@ router.get('/approvals', requireAuth, async (req, res) => {
 });
 
 // GET prospects & outreach (legacy mock list)
-router.get('/outreach/prospects', (req, res) => {
+router.get('/outreach/prospects', requireWorkspaceMember, (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
   const db = getDb();
-  res.json(db.prospects);
+  res.json((db.prospects || []).filter((prospect) => prospect.workspaceId === workspaceId || prospect.companyId === workspaceId));
 });
 
 /** POST /api/outreach/runs — Apollo fetch into a run */
-router.post('/outreach/runs', async (req, res) => {
+router.post('/outreach/runs', requireWorkspaceMember, async (req, res) => {
   try {
     const run = await createOutreachRun(req.body || {});
     res.json({
@@ -1434,7 +1447,7 @@ router.post('/outreach/runs', async (req, res) => {
   }
 });
 
-router.get('/outreach/runs/:runId', async (req, res) => {
+router.get('/outreach/runs/:runId', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   const run = await getOutreachRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   const sent = (run.prospects || [])
@@ -1459,7 +1472,7 @@ router.get('/outreach/runs/:runId', async (req, res) => {
   });
 });
 
-router.patch('/outreach/runs/:runId/prospects/:prospectId', async (req, res) => {
+router.patch('/outreach/runs/:runId/prospects/:prospectId', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const prospect = await patchProspect(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, prospect });
@@ -1469,7 +1482,7 @@ router.patch('/outreach/runs/:runId/prospects/:prospectId', async (req, res) => 
   }
 });
 
-router.post('/outreach/runs/:runId/prospects/:prospectId/copy', async (req, res) => {
+router.post('/outreach/runs/:runId/prospects/:prospectId/copy', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const prospect = await generateProspectCopy(req.params.runId, req.params.prospectId, {
       channels: req.body?.channels,
@@ -1483,7 +1496,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/copy', async (req, res)
   }
 });
 
-router.post('/outreach/runs/:runId/prospects/:prospectId/gmail-draft', async (req, res) => {
+router.post('/outreach/runs/:runId/prospects/:prospectId/gmail-draft', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await saveGmailDraft(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1494,7 +1507,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/gmail-draft', async (re
   }
 });
 
-router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', async (req, res) => {
+router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await sendProspectEmail(req.params.runId, req.params.prospectId, {
       subject: req.body?.subject,
@@ -1510,7 +1523,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', async (req, 
 });
 
 /** Instantly / HeyReach / WhatsApp go-live (delivery: draft|live) */
-router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', async (req, res) => {
+router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await goLiveProspect(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1521,7 +1534,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', async (req, r
 });
 
 /** Generate 4-step email sequence (first + 3 follow-ups) for Instantly / Gmail drip */
-router.post('/outreach/runs/:runId/generate-sequence', async (req, res) => {
+router.post('/outreach/runs/:runId/generate-sequence', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await generateRunEmailSequence(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1531,7 +1544,7 @@ router.post('/outreach/runs/:runId/generate-sequence', async (req, res) => {
   }
 });
 
-router.put('/outreach/runs/:runId/sequence', async (req, res) => {
+router.put('/outreach/runs/:runId/sequence', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const emails = req.body?.sequence_emails || req.body?.emails || req.body;
     const result = await setRunEmailSequence(req.params.runId, emails);
@@ -1543,7 +1556,7 @@ router.put('/outreach/runs/:runId/sequence', async (req, res) => {
 });
 
 /** Process due Gmail drip sends (also runs on a 60s scheduler) */
-router.post('/outreach/process-due', async (req, res) => {
+router.post('/outreach/process-due', requireAuth, async (req, res) => {
   try {
     const result = await processDueOutreachSends();
     res.json({ ok: true, ...result });
@@ -1555,7 +1568,7 @@ router.post('/outreach/process-due', async (req, res) => {
 });
 
 /** Approved WhatsApp message templates for the connected WABA */
-router.get('/outreach/whatsapp/templates', async (req, res) => {
+router.get('/outreach/whatsapp/templates', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || 'marqq-ws-1').trim();
     const data = await getWhatsAppTemplatesForCompany(companyId);
@@ -1566,7 +1579,7 @@ router.get('/outreach/whatsapp/templates', async (req, res) => {
 });
 
 /** Delivery statuses + inbound for a run (Meta webhook + in-memory index) */
-router.get('/outreach/runs/:runId/whatsapp/statuses', async (req, res) => {
+router.get('/outreach/runs/:runId/whatsapp/statuses', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     res.json({ ok: true, ...(await getWhatsAppDeliveryForRun(req.params.runId)) });
   } catch (err) {
@@ -1574,7 +1587,7 @@ router.get('/outreach/runs/:runId/whatsapp/statuses', async (req, res) => {
   }
 });
 
-router.post('/outreach/whatsapp/poll-statuses', async (req, res) => {
+router.post('/outreach/whatsapp/poll-statuses', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.query.companyId || 'marqq-ws-1').trim();
     const result = await pollWhatsAppStatuses(companyId);
@@ -1584,7 +1597,7 @@ router.post('/outreach/whatsapp/poll-statuses', async (req, res) => {
   }
 });
 
-router.post('/outreach/runs/:runId/poll-gmail-replies', async (req, res) => {
+router.post('/outreach/runs/:runId/poll-gmail-replies', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await pollGmailReplies(req.params.runId);
     res.json({ ok: true, ...result });
@@ -1595,7 +1608,7 @@ router.post('/outreach/runs/:runId/poll-gmail-replies', async (req, res) => {
   }
 });
 
-router.post('/outreach/runs/:runId/replies/:replyId/regenerate-draft', async (req, res) => {
+router.post('/outreach/runs/:runId/replies/:replyId/regenerate-draft', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await regenerateReplyDraft(req.params.runId, req.params.replyId);
     res.json({ ok: true, ...result });
@@ -1606,7 +1619,7 @@ router.post('/outreach/runs/:runId/replies/:replyId/regenerate-draft', async (re
   }
 });
 
-router.patch('/outreach/runs/:runId/replies/:replyId/draft', (req, res) => {
+router.patch('/outreach/runs/:runId/replies/:replyId/draft', requireResourceMember((req) => getOutreachRun(req.params.runId)), (req, res) => {
   try {
     const reply = updateReplyDraft(req.params.runId, req.params.replyId, req.body || {});
     res.json({ ok: true, reply });
@@ -1615,7 +1628,7 @@ router.patch('/outreach/runs/:runId/replies/:replyId/draft', (req, res) => {
   }
 });
 
-router.post('/outreach/runs/:runId/replies/:replyId/reject', (req, res) => {
+router.post('/outreach/runs/:runId/replies/:replyId/reject', requireResourceMember((req) => getOutreachRun(req.params.runId)), (req, res) => {
   try {
     const reply = rejectReplyDraft(req.params.runId, req.params.replyId);
     res.json({ ok: true, reply });
@@ -1624,7 +1637,7 @@ router.post('/outreach/runs/:runId/replies/:replyId/reject', (req, res) => {
   }
 });
 
-router.post('/outreach/runs/:runId/replies/:replyId/approve', async (req, res) => {
+router.post('/outreach/runs/:runId/replies/:replyId/approve', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
     const result = await approveReplyDraft(req.params.runId, req.params.replyId, {
       send: req.body?.send !== false,
@@ -1638,14 +1651,14 @@ router.post('/outreach/runs/:runId/replies/:replyId/approve', async (req, res) =
   }
 });
 
-router.get('/outreach/workspaces/:workspaceId/summary', (req, res) => {
+router.get('/outreach/workspaces/:workspaceId/summary', requireWorkspaceMember, (req, res) => {
   res.json({ ok: true, ...getWorkspaceSummary(req.params.workspaceId) });
 });
 
 // ── GEO / LLMO citation scanner (Maya) ──────────────────────────────────────
 
 /** POST /api/geo/scan — live AI Overview + Perplexity citation probe */
-router.post('/geo/scan', async (req, res) => {
+router.post('/geo/scan', requireWorkspaceMember, async (req, res) => {
   try {
     const body = req.body || {};
     const scan = await runGeoCitationScan({
@@ -1668,7 +1681,7 @@ router.post('/geo/scan', async (req, res) => {
 });
 
 /** GET /api/geo/scans/latest?workspaceId= */
-router.get('/geo/scans/latest', (req, res) => {
+router.get('/geo/scans/latest', requireWorkspaceMember, (req, res) => {
   const ws = String(req.query.workspaceId || req.query.companyId || '').trim();
   if (!ws) return res.status(400).json({ ok: false, error: 'workspaceId required' });
   const scan = getLatestGeoScan(ws);
@@ -1677,7 +1690,7 @@ router.get('/geo/scans/latest', (req, res) => {
 });
 
 /** GET /api/geo/scans/:scanId */
-router.get('/geo/scans/:scanId', (req, res) => {
+router.get('/geo/scans/:scanId', requireResourceMember((req) => getGeoScan(req.params.scanId)), (req, res) => {
   const scan = getGeoScan(req.params.scanId);
   if (!scan) return res.status(404).json({ ok: false, error: 'Scan not found' });
   res.json({ ok: true, scan });
@@ -1699,7 +1712,7 @@ router.post('/geo/queries/preview', (req, res) => {
 
 // ── Content Studio (SEO → Blog) ─────────────────────────────────────────────
 
-router.post('/content/runs', async (req, res) => {
+router.post('/content/runs', requireWorkspaceMember, async (req, res) => {
   try {
     const run = await createContentRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -1710,7 +1723,7 @@ router.post('/content/runs', async (req, res) => {
   }
 });
 
-router.get('/content/runs/:runId', (req, res) => {
+router.get('/content/runs/:runId', requireResourceMember((req) => getContentRun(req.params.runId)), (req, res) => {
   const run = getContentRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   res.json({
@@ -1735,7 +1748,7 @@ router.get('/content/runs/:runId', (req, res) => {
   });
 });
 
-router.post('/content/runs/:runId/research', async (req, res) => {
+router.post('/content/runs/:runId/research', requireResourceMember((req) => getContentRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runContentResearch(req.params.runId);
     res.json({ ok: true, ...result });
@@ -1746,7 +1759,7 @@ router.post('/content/runs/:runId/research', async (req, res) => {
   }
 });
 
-router.post('/content/runs/:runId/brief', async (req, res) => {
+router.post('/content/runs/:runId/brief', requireResourceMember((req) => getContentRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runContentBrief(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1757,7 +1770,7 @@ router.post('/content/runs/:runId/brief', async (req, res) => {
   }
 });
 
-router.post('/content/runs/:runId/draft', async (req, res) => {
+router.post('/content/runs/:runId/draft', requireResourceMember((req) => getContentRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runContentDraft(req.params.runId);
     res.json({ ok: true, ...result });
@@ -1768,7 +1781,7 @@ router.post('/content/runs/:runId/draft', async (req, res) => {
   }
 });
 
-router.patch('/content/runs/:runId/article', (req, res) => {
+router.patch('/content/runs/:runId/article', requireResourceMember((req) => getContentRun(req.params.runId)), (req, res) => {
   try {
     const result = patchContentArticle(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1777,7 +1790,7 @@ router.patch('/content/runs/:runId/article', (req, res) => {
   }
 });
 
-router.post('/content/runs/:runId/approve', (req, res) => {
+router.post('/content/runs/:runId/approve', requireResourceMember((req) => getContentRun(req.params.runId)), (req, res) => {
   try {
     const result = approveContentArticle(req.params.runId);
     res.json({ ok: true, ...result });
@@ -1786,7 +1799,7 @@ router.post('/content/runs/:runId/approve', (req, res) => {
   }
 });
 
-router.post('/content/runs/:runId/publish', async (req, res) => {
+router.post('/content/runs/:runId/publish', requireResourceMember((req) => getContentRun(req.params.runId)), async (req, res) => {
   try {
     const result = await publishContentArticle(req.params.runId, {
       publish_live: req.body?.publish_live === true,
@@ -1810,7 +1823,7 @@ router.post('/content/runs/:runId/publish', async (req, res) => {
 
 // ── Landing Pages (Tara + Sam · page-cro / copywriting / form-cro) ───────────
 
-router.post('/landing/runs', (req, res) => {
+router.post('/landing/runs', requireWorkspaceMember, (req, res) => {
   try {
     const run = createLandingRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -1819,13 +1832,13 @@ router.post('/landing/runs', (req, res) => {
   }
 });
 
-router.get('/landing/runs/:runId', (req, res) => {
+router.get('/landing/runs/:runId', requireResourceMember((req) => getLandingRun(req.params.runId)), (req, res) => {
   const run = getLandingRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Not found' });
   res.json({ ok: true, run });
 });
 
-router.post('/landing/runs/:runId/generate', async (req, res) => {
+router.post('/landing/runs/:runId/generate', requireResourceMember((req) => getLandingRun(req.params.runId)), async (req, res) => {
   try {
     const run = await generateLandingPage(req.params.runId, req.body || {});
     res.json({ ok: true, run });
@@ -1835,7 +1848,7 @@ router.post('/landing/runs/:runId/generate', async (req, res) => {
   }
 });
 
-router.patch('/landing/runs/:runId/page', (req, res) => {
+router.patch('/landing/runs/:runId/page', requireResourceMember((req) => getLandingRun(req.params.runId)), (req, res) => {
   try {
     const run = patchLandingPage(req.params.runId, req.body || {});
     res.json({ ok: true, run });
@@ -1844,7 +1857,7 @@ router.patch('/landing/runs/:runId/page', (req, res) => {
   }
 });
 
-router.post('/landing/runs/:runId/approve', (req, res) => {
+router.post('/landing/runs/:runId/approve', requireResourceMember((req) => getLandingRun(req.params.runId)), (req, res) => {
   try {
     const run = approveLandingPage(req.params.runId);
     res.json({ ok: true, run });
@@ -1853,7 +1866,7 @@ router.post('/landing/runs/:runId/approve', (req, res) => {
   }
 });
 
-router.post('/landing/runs/:runId/publish', async (req, res) => {
+router.post('/landing/runs/:runId/publish', requireResourceMember((req) => getLandingRun(req.params.runId)), async (req, res) => {
   try {
     const result = await publishLandingPage(req.params.runId, {
       publish_live: req.body?.publish_live === true,
@@ -1868,7 +1881,7 @@ router.post('/landing/runs/:runId/publish', async (req, res) => {
 
 // ── Lead Magnets (Riya concept · Tara/Sam gated LP) ─────────────────────────
 
-router.post('/lead-magnets/runs', (req, res) => {
+router.post('/lead-magnets/runs', requireWorkspaceMember, (req, res) => {
   try {
     const run = createLeadMagnetRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -1877,13 +1890,13 @@ router.post('/lead-magnets/runs', (req, res) => {
   }
 });
 
-router.get('/lead-magnets/runs/:runId', (req, res) => {
+router.get('/lead-magnets/runs/:runId', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), (req, res) => {
   const run = getLeadMagnetRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Not found' });
   res.json({ ok: true, run });
 });
 
-router.post('/lead-magnets/runs/:runId/design', async (req, res) => {
+router.post('/lead-magnets/runs/:runId/design', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), async (req, res) => {
   try {
     const run = await designLeadMagnet(req.params.runId, req.body || {});
     res.json({ ok: true, run });
@@ -1893,7 +1906,7 @@ router.post('/lead-magnets/runs/:runId/design', async (req, res) => {
   }
 });
 
-router.post('/lead-magnets/runs/:runId/generate', async (req, res) => {
+router.post('/lead-magnets/runs/:runId/generate', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), async (req, res) => {
   try {
     const run = await generateLeadMagnetPage(req.params.runId, req.body || {});
     res.json({ ok: true, run });
@@ -1903,7 +1916,7 @@ router.post('/lead-magnets/runs/:runId/generate', async (req, res) => {
   }
 });
 
-router.patch('/lead-magnets/runs/:runId/page', (req, res) => {
+router.patch('/lead-magnets/runs/:runId/page', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), (req, res) => {
   try {
     const run = patchLeadMagnetPage(req.params.runId, req.body || {});
     res.json({ ok: true, run });
@@ -1912,7 +1925,7 @@ router.patch('/lead-magnets/runs/:runId/page', (req, res) => {
   }
 });
 
-router.post('/lead-magnets/runs/:runId/approve', (req, res) => {
+router.post('/lead-magnets/runs/:runId/approve', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), (req, res) => {
   try {
     const run = approveLeadMagnet(req.params.runId);
     res.json({ ok: true, run });
@@ -1921,7 +1934,7 @@ router.post('/lead-magnets/runs/:runId/approve', (req, res) => {
   }
 });
 
-router.post('/lead-magnets/runs/:runId/publish', async (req, res) => {
+router.post('/lead-magnets/runs/:runId/publish', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), async (req, res) => {
   try {
     const result = await publishLeadMagnet(req.params.runId, {
       publish_live: req.body?.publish_live === true,
@@ -1948,7 +1961,7 @@ router.post('/leads/capture', async (req, res) => {
 
 // ── Social Studio (Kiran text) ──────────────────────────────────────────────
 
-router.post('/social/runs', async (req, res) => {
+router.post('/social/runs', requireWorkspaceMember, async (req, res) => {
   try {
     const run = await createSocialRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -1959,13 +1972,13 @@ router.post('/social/runs', async (req, res) => {
   }
 });
 
-router.get('/social/runs/:runId', (req, res) => {
+router.get('/social/runs/:runId', requireResourceMember((req) => getSocialRun(req.params.runId)), (req, res) => {
   const run = getSocialRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   res.json({ ok: true, run });
 });
 
-router.post('/social/runs/:runId/brief', async (req, res) => {
+router.post('/social/runs/:runId/brief', requireResourceMember((req) => getSocialRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runSocialBrief(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1976,7 +1989,7 @@ router.post('/social/runs/:runId/brief', async (req, res) => {
   }
 });
 
-router.post('/social/runs/:runId/compose', async (req, res) => {
+router.post('/social/runs/:runId/compose', requireResourceMember((req) => getSocialRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runSocialCompose(req.params.runId);
     res.json({ ok: true, ...result });
@@ -1987,7 +2000,7 @@ router.post('/social/runs/:runId/compose', async (req, res) => {
   }
 });
 
-router.patch('/social/runs/:runId/posts/:postId', (req, res) => {
+router.patch('/social/runs/:runId/posts/:postId', requireResourceMember((req) => getSocialRun(req.params.runId)), (req, res) => {
   try {
     const result = patchSocialPost(req.params.runId, req.params.postId, req.body || {});
     res.json({ ok: true, ...result });
@@ -1996,7 +2009,7 @@ router.patch('/social/runs/:runId/posts/:postId', (req, res) => {
   }
 });
 
-router.post('/social/runs/:runId/approve', (req, res) => {
+router.post('/social/runs/:runId/approve', requireResourceMember((req) => getSocialRun(req.params.runId)), (req, res) => {
   try {
     const result = approveSocialRun(req.params.runId);
     res.json({ ok: true, ...result });
@@ -2006,7 +2019,7 @@ router.post('/social/runs/:runId/approve', (req, res) => {
 });
 
 /** Per-post Composio publish (LinkedIn / IG / FB / X / YouTube) */
-router.post('/social/runs/:runId/posts/:postId/go-live', async (req, res) => {
+router.post('/social/runs/:runId/posts/:postId/go-live', requireResourceMember((req) => getSocialRun(req.params.runId)), async (req, res) => {
   try {
     const result = await goLiveSocialPost(req.params.runId, req.params.postId, req.body || {});
     res.json({ ok: Boolean(result.result?.ok), ...result });
@@ -2016,7 +2029,7 @@ router.post('/social/runs/:runId/posts/:postId/go-live', async (req, res) => {
   }
 });
 
-router.get('/social/publish-readiness', async (req, res) => {
+router.get('/social/publish-readiness', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || 'marqq-ws-1').trim();
     const data = await getSocialPublishReadiness(companyId);
@@ -2027,7 +2040,7 @@ router.get('/social/publish-readiness', async (req, res) => {
 });
 
 /** Agent / generic outcome go-live for organic social kinds */
-router.post('/outcomes/go-live', async (req, res) => {
+router.post('/outcomes/go-live', requireWorkspaceMember, async (req, res) => {
   try {
     const body = req.body || {};
     const kind = String(body.kind || '').toLowerCase();
@@ -2055,7 +2068,7 @@ router.post('/outcomes/go-live', async (req, res) => {
 
 // ── Creative Studio (image + video) ─────────────────────────────────────────
 
-router.post('/creative/runs', async (req, res) => {
+router.post('/creative/runs', requireWorkspaceMember, async (req, res) => {
   try {
     const run = await createCreativeRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -2066,13 +2079,13 @@ router.post('/creative/runs', async (req, res) => {
   }
 });
 
-router.get('/creative/runs/:runId', (req, res) => {
+router.get('/creative/runs/:runId', requireResourceMember((req) => getCreativeRun(req.params.runId)), (req, res) => {
   const run = getCreativeRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   res.json({ ok: true, run });
 });
 
-router.post('/creative/runs/:runId/concept', async (req, res) => {
+router.post('/creative/runs/:runId/concept', requireResourceMember((req) => getCreativeRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runCreativeConcept(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -2083,7 +2096,7 @@ router.post('/creative/runs/:runId/concept', async (req, res) => {
   }
 });
 
-router.post('/creative/runs/:runId/image', async (req, res) => {
+router.post('/creative/runs/:runId/image', requireResourceMember((req) => getCreativeRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runCreativeImage(req.params.runId);
     res.json({ ok: true, ...result });
@@ -2094,7 +2107,7 @@ router.post('/creative/runs/:runId/image', async (req, res) => {
   }
 });
 
-router.post('/creative/runs/:runId/video', async (req, res) => {
+router.post('/creative/runs/:runId/video', requireResourceMember((req) => getCreativeRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runCreativeVideo(req.params.runId, {
       generate: req.body?.generate !== false,
@@ -2107,7 +2120,7 @@ router.post('/creative/runs/:runId/video', async (req, res) => {
   }
 });
 
-router.post('/creative/runs/:runId/video/poll', async (req, res) => {
+router.post('/creative/runs/:runId/video/poll', requireResourceMember((req) => getCreativeRun(req.params.runId)), async (req, res) => {
   try {
     const result = await pollCreativeVideo(req.params.runId);
     res.json({ ok: true, ...result });
@@ -2118,7 +2131,7 @@ router.post('/creative/runs/:runId/video/poll', async (req, res) => {
   }
 });
 
-router.post('/creative/runs/:runId/approve', (req, res) => {
+router.post('/creative/runs/:runId/approve', requireResourceMember((req) => getCreativeRun(req.params.runId)), (req, res) => {
   try {
     const result = approveCreativeRun(req.params.runId);
     res.json({ ok: true, ...result });
@@ -2129,7 +2142,7 @@ router.post('/creative/runs/:runId/approve', (req, res) => {
 
 // ── Paid Studio (Zara draft Meta campaign) ──────────────────────────────────
 
-router.post('/paid/runs', async (req, res) => {
+router.post('/paid/runs', requireWorkspaceMember, async (req, res) => {
   try {
     const run = await createPaidRun(req.body || {});
     res.json({ ok: true, runId: run.id, run });
@@ -2140,13 +2153,13 @@ router.post('/paid/runs', async (req, res) => {
   }
 });
 
-router.get('/paid/runs/:runId', (req, res) => {
+router.get('/paid/runs/:runId', requireResourceMember((req) => getPaidRun(req.params.runId)), (req, res) => {
   const run = getPaidRun(req.params.runId);
   if (!run) return res.status(404).json({ ok: false, error: 'Run not found' });
   res.json({ ok: true, run });
 });
 
-router.patch('/paid/runs/:runId/goals', (req, res) => {
+router.patch('/paid/runs/:runId/goals', requireResourceMember((req) => getPaidRun(req.params.runId)), (req, res) => {
   try {
     const result = patchPaidGoals(req.params.runId, req.body || {});
     res.json({ ok: true, ...result });
@@ -2155,7 +2168,7 @@ router.patch('/paid/runs/:runId/goals', (req, res) => {
   }
 });
 
-router.post('/paid/runs/:runId/plan', async (req, res) => {
+router.post('/paid/runs/:runId/plan', requireResourceMember((req) => getPaidRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runPaidPlan(req.params.runId);
     res.json({ ok: true, ...result });
@@ -2166,7 +2179,7 @@ router.post('/paid/runs/:runId/plan', async (req, res) => {
   }
 });
 
-router.post('/paid/runs/:runId/creative-draft', async (req, res) => {
+router.post('/paid/runs/:runId/creative-draft', requireResourceMember((req) => getPaidRun(req.params.runId)), async (req, res) => {
   try {
     const result = await runPaidCreativeDraft(req.params.runId, {
       generateImage: req.body?.generateImage !== false,
@@ -2179,7 +2192,7 @@ router.post('/paid/runs/:runId/creative-draft', async (req, res) => {
   }
 });
 
-router.post('/paid/runs/:runId/approve', (req, res) => {
+router.post('/paid/runs/:runId/approve', requireResourceMember((req) => getPaidRun(req.params.runId)), (req, res) => {
   try {
     const result = approvePaidRun(req.params.runId);
     if (result.run?.creativeDraft?.meta_campaign_id || result.run?.creativeDraft?.meta_ad_id) {
@@ -2228,19 +2241,21 @@ router.post('/ai/ask', (req, res) => {
 });
 
 // GET tasks & update tasks
-router.get('/tasks', (req, res) => {
+router.get('/tasks', requireWorkspaceMember, (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
   const db = getDb();
-  const tasks = Array.isArray(db.tasks) ? db.tasks : [];
+  const tasks = (Array.isArray(db.tasks) ? db.tasks : []).filter((task) => task.workspaceId === workspaceId);
   res.json({ tasks });
 });
 
-router.patch('/tasks/:id', (req, res) => {
+router.patch('/tasks/:id', requireWorkspaceMember, (req, res) => {
   const id = String(req.params.id || '').trim();
+  const workspaceId = String(req.body?.workspaceId || req.body?.companyId || '').trim();
   let updated = null;
   const db = updateDb((state) => {
     const tasks = (state.tasks || []).map((t) => {
-      if (String(t.id) !== id) return t;
-      updated = { ...t, ...req.body, id: t.id, updatedAt: new Date().toISOString() };
+      if (String(t.id) !== id || t.workspaceId !== workspaceId) return t;
+      updated = { ...t, ...req.body, workspaceId, id: t.id, updatedAt: new Date().toISOString() };
       return updated;
     });
     return { ...state, tasks };
@@ -2351,7 +2366,7 @@ function mapConnectedAccounts(items, connectedMap, allowedEntityIds = null) {
 }
 
 // GET /api/integrations?companyId=X
-router.get('/integrations', async (req, res) => {
+router.get('/integrations', requireWorkspaceMember, async (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
   const apiKey = process.env.COMPOSIO_API_KEY;
 
@@ -2427,7 +2442,7 @@ function extractRedirectUrl(data) {
 }
 
 // POST /api/integrations/connect
-router.post('/integrations/connect', async (req, res) => {
+router.post('/integrations/connect', requireWorkspaceMember, async (req, res) => {
   const { companyId, connectorId, oauthNonce } = req.body;
   const apiKey = process.env.COMPOSIO_API_KEY;
   const authConfigId = getAuthConfigId(connectorId);
@@ -2501,6 +2516,59 @@ router.post('/agents/integration-connected', requireWorkspaceMember, async (req,
   }
 });
 
+// Customer/provider webhook credentials are workspace-scoped. The plaintext
+// secret is returned only for an explicit rotate/reveal action.
+router.get('/integrations/webhooks', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
+    const endpoints = await listWorkspaceWebhookEndpoints({ workspaceId, provider: req.query.provider });
+    res.json({ ok: true, endpoints });
+  } catch (err) {
+    console.error('[integrations/webhooks/list]', err?.message || err);
+    res.status(500).json({ ok: false, error: 'Could not load webhook endpoints' });
+  }
+});
+
+router.post('/integrations/webhooks/rotate', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.body?.companyId || '').trim();
+    const result = await createOrRotateWorkspaceWebhookEndpoint({
+      workspaceId,
+      provider: req.body?.provider || req.body?.connectorId,
+      connectedAccountId: req.body?.connectedAccountId || null,
+      events: req.body?.events || [],
+    });
+    res.status(201).json({ ok: true, endpoint: result, warning: 'Store this secret securely. It will not be shown in endpoint listings.' });
+  } catch (err) {
+    console.error('[integrations/webhooks/rotate]', err?.message || err);
+    res.status(400).json({ ok: false, error: err?.message || 'Could not rotate webhook endpoint' });
+  }
+});
+
+router.post('/integrations/webhooks/:endpointId/reveal', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.query.workspaceId || req.query.companyId || '').trim();
+    const endpoint = await revealWorkspaceWebhookSecret({ workspaceId, endpointId: req.params.endpointId });
+    if (!endpoint) return res.status(404).json({ ok: false, error: 'Webhook endpoint not found' });
+    res.json({ ok: true, endpoint });
+  } catch (err) {
+    console.error('[integrations/webhooks/reveal]', err?.message || err);
+    res.status(500).json({ ok: false, error: 'Could not reveal webhook secret' });
+  }
+});
+
+router.post('/integrations/webhooks/:endpointId/revoke', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.query.workspaceId || req.query.companyId || '').trim();
+    const revoked = await revokeWorkspaceWebhookEndpoint({ workspaceId, endpointId: req.params.endpointId });
+    if (!revoked) return res.status(404).json({ ok: false, error: 'Webhook endpoint not found' });
+    res.json({ ok: true, revoked: true });
+  } catch (err) {
+    console.error('[integrations/webhooks/revoke]', err?.message || err);
+    res.status(500).json({ ok: false, error: 'Could not revoke webhook endpoint' });
+  }
+});
+
 router.post('/webhooks/agentmail/inbound', express.json(), async (req, res) => {
   if (!verifyAgentMailWebhook(req)) return res.status(401).json({ ok: false, error: 'Invalid webhook signature' });
   try {
@@ -2512,8 +2580,61 @@ router.post('/webhooks/agentmail/inbound', express.json(), async (req, res) => {
   }
 });
 
+// Generic provider callback. Providers only need the generated URL and
+// workspace secret; no customer has to configure a Railway env var.
+router.all('/webhooks/:provider/:endpointId', async (req, res, next) => {
+  if (req.params.provider === 'agentmail') return next();
+  const provider = String(req.params.provider || '').trim().toLowerCase();
+  const receivedSecret = [
+    req.get('x-webhook-secret'),
+    req.get(`x-${provider}-webhook-secret`),
+    req.get('x-api-key'),
+    req.query?.secret,
+    req.query?.['hub.verify_token'],
+  ].map((value) => String(value || '').trim()).find(Boolean);
+  try {
+    const endpoint = await verifyWorkspaceWebhookSecret({
+      endpointId: req.params.endpointId,
+      provider,
+      receivedSecret,
+    });
+    if (!endpoint) return res.status(401).json({ ok: false, error: 'Invalid webhook endpoint or secret' });
+
+    if (req.method === 'GET' && provider === 'whatsapp' && req.query['hub.challenge']) {
+      return res.status(200).send(String(req.query['hub.challenge']));
+    }
+    if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
+
+    const payload = req.body || {};
+    const eventKey = req.get('x-event-id') || req.get('x-webhook-id') || req.get('x-request-id') || payload.id || payload.event_id || null;
+    const stored = await recordWorkspaceWebhookEvent({
+      endpointId: endpoint.id,
+      workspaceId: endpoint.workspaceId,
+      provider,
+      eventKey,
+      payload,
+    });
+    if (stored.duplicate) return res.status(200).json({ ok: true, duplicate: true });
+
+    if (provider === 'apollo') {
+      const result = ingestApolloPhoneWebhook(payload, req.query || {}, { eventId: eventKey });
+      return res.status(200).json({ ok: true, ...result });
+    }
+    if (provider === 'whatsapp') {
+      const result = ingestWhatsAppWebhook(payload);
+      return res.status(200).json({ ok: true, ...result });
+    }
+    // Instantly, HeyReach, and future connectors are durably recorded above;
+    // their automation consumers can process the workspace event asynchronously.
+    return res.status(200).json({ ok: true, received: true });
+  } catch (err) {
+    console.error(`[webhook/${provider}]`, err?.message || err);
+    return res.status(200).json({ ok: false, error: 'Webhook accepted but processing failed' });
+  }
+});
+
 /** GET /api/analytics/dashboard — live GSC + Meta (+ GA4 status) scorecard */
-router.get('/analytics/dashboard', async (req, res) => {
+router.get('/analytics/dashboard', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || DEFAULT_WS).trim();
     const period = String(req.query.period || '30d');
@@ -2578,17 +2699,17 @@ async function handleCommandCenter(req, res) {
   }
 }
 
-router.get('/command-center', handleCommandCenter);
-router.post('/command-center', handleCommandCenter);
+router.get('/command-center', requireWorkspaceMember, handleCommandCenter);
+router.post('/command-center', requireWorkspaceMember, handleCommandCenter);
 
 // GET /api/integrations/preferences?companyId=X
-router.get('/integrations/preferences', (req, res) => {
+router.get('/integrations/preferences', requireWorkspaceMember, (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
   res.json({ preferences: getWorkspacePreferences(companyId) });
 });
 
 /** GET /api/integrations/resources?companyId=&connectorId= — detected provider resources. */
-router.get('/integrations/resources', async (req, res) => {
+router.get('/integrations/resources', requireWorkspaceMember, async (req, res) => {
   const companyId = String(req.query.companyId || req.query.workspaceId || 'default').trim();
   const connectorId = String(req.query.connectorId || '').trim();
   if (!connectorId) return res.status(400).json({ ok: false, error: 'connectorId required', resources: [] });
@@ -2601,7 +2722,7 @@ router.get('/integrations/resources', async (req, res) => {
 });
 
 // POST /api/integrations/preferences  { companyId, ...prefs }
-router.post('/integrations/preferences', (req, res) => {
+router.post('/integrations/preferences', requireWorkspaceMember, (req, res) => {
   const companyId = req.body.companyId || 'default';
   const patch = { ...(req.body || {}) };
   delete patch.companyId;
@@ -2610,7 +2731,7 @@ router.post('/integrations/preferences', (req, res) => {
 });
 
 /** CRM destination: HubSpot / Salesforce / Google Sheets fallback */
-router.get('/crm/destination', async (req, res) => {
+router.get('/crm/destination', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || 'marqq-ws-1').trim();
     const dest = await resolveCrmDestination(companyId);
@@ -2639,7 +2760,7 @@ router.get('/crm/destination', async (req, res) => {
 });
 
 /** Customer 360 — Sheets CRM leads + outreach prospects unified */
-router.get('/customer360', async (req, res) => {
+router.get('/customer360', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || 'marqq-ws-1').trim();
     const limit = Number(req.query.limit) || 75;
@@ -2652,7 +2773,7 @@ router.get('/customer360', async (req, res) => {
 });
 
 /** Apollo Signals — ICP account watchlist for news / jobs / org enrich */
-router.get('/apollo/signals/accounts', async (req, res) => {
+router.get('/apollo/signals/accounts', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || DEFAULT_WS).trim();
     const limit = Number(req.query.limit) || 15;
@@ -2665,14 +2786,12 @@ router.get('/apollo/signals/accounts', async (req, res) => {
 });
 
 /** POST /api/apollo/phone-enrich — bulk reveal phones via Apollo async webhook */
-router.post('/apollo/phone-enrich', async (req, res) => {
+router.post('/apollo/phone-enrich', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.body?.workspaceId || '').trim();
     const people = Array.isArray(req.body?.people) ? req.body.people : [];
-    const webhookBase =
-      String(req.body?.webhookBase || process.env.APP_URL || process.env.PUBLIC_BASE_URL || '').trim() ||
-      'https://marqq3-production.up.railway.app';
-    const result = await requestApolloPhoneReveal({ companyId, people, webhookBase });
+    const endpoint = await createOrRotateWorkspaceWebhookEndpoint({ workspaceId: companyId, provider: 'apollo', events: ['phone.reveal'] });
+    const result = await requestApolloPhoneReveal({ companyId, people, webhookBase: endpoint.endpointUrl, webhookSecret: endpoint.secret });
     res.json(result);
   } catch (err) {
     console.error('[apollo/phone-enrich]', err);
@@ -2681,22 +2800,23 @@ router.post('/apollo/phone-enrich', async (req, res) => {
 });
 
 /** GET /api/apollo/phone-enrich/:jobId — poll async phone webhook job */
-router.get('/apollo/phone-enrich/:jobId', (req, res) => {
+router.get('/apollo/phone-enrich/:jobId', requireResourceMember((req) => getPhoneEnrichJob(req.params.jobId)), (req, res) => {
   const job = getPhoneEnrichJob(req.params.jobId);
   if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
   res.json({ ok: true, job });
 });
 
 /** GET /api/apollo/phone-enrich — recent jobs + deliveries (debug) */
-router.get('/apollo/phone-enrich', (req, res) => {
+router.get('/apollo/phone-enrich', requireWorkspaceMember, (req, res) => {
+  const companyId = String(req.query.companyId || req.query.workspaceId || '').trim();
   res.json({
     ok: true,
-    jobs: listPhoneEnrichJobs(Number(req.query.limit) || 20),
-    deliveries: listPhoneDeliveries(Number(req.query.limit) || 20),
+    jobs: listPhoneEnrichJobs(Number(req.query.limit) || 20, companyId),
+    deliveries: listPhoneDeliveries(Number(req.query.limit) || 20, companyId),
   });
 });
 
-router.post('/apollo/signals', async (req, res) => {
+router.post('/apollo/signals', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.body?.workspaceId || DEFAULT_WS).trim();
     const payload = await runApolloSignals({
@@ -2714,7 +2834,7 @@ router.post('/apollo/signals', async (req, res) => {
 });
 
 /** Manual CRM/Sheets sync for prospects (smoke + CRM screen) */
-router.post('/crm/sync-leads', async (req, res) => {
+router.post('/crm/sync-leads', requireWorkspaceMember, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || req.body?.workspaceId || 'marqq-ws-1').trim();
     const prospects = Array.isArray(req.body?.prospects) ? req.body.prospects : [];
@@ -2743,7 +2863,7 @@ router.post('/crm/sync-leads', async (req, res) => {
 });
 
 // POST /api/brand-dna
-router.post('/brand-dna', async (req, res) => {
+router.post('/brand-dna', requireWorkspaceMember, async (req, res) => {
   const companyName = String(req.body?.companyName || req.body?.company || '').trim();
   const websiteUrl = String(req.body?.websiteUrl || req.body?.website || '').trim();
   const industry = String(req.body?.industry || req.body?.niche || '').trim();
@@ -2796,14 +2916,14 @@ router.post('/brand-dna', async (req, res) => {
 });
 
 // GET /api/brand-dna/context
-router.get('/brand-dna/context', async (req, res) => {
+router.get('/brand-dna/context', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
   const context = await loadCompanyBrand(workspaceId);
   res.json({ ok: true, context: context || null });
 });
 
 // POST /api/brand-dna/context
-router.post('/brand-dna/context', async (req, res) => {
+router.post('/brand-dna/context', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
     const { workspaceId: _ws, ...patch } = req.body || {};
@@ -2815,7 +2935,7 @@ router.post('/brand-dna/context', async (req, res) => {
 });
 
 // GET /api/brand-dna/knowledge-base
-router.get('/brand-dna/knowledge-base', async (req, res) => {
+router.get('/brand-dna/knowledge-base', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
   const files = await readBrandDnaManifest(workspaceId);
   res.json({
@@ -2825,7 +2945,7 @@ router.get('/brand-dna/knowledge-base', async (req, res) => {
 });
 
 // POST /api/brand-dna/knowledge-base
-router.post('/brand-dna/knowledge-base', async (req, res) => {
+router.post('/brand-dna/knowledge-base', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
     const files = Array.isArray(req.body?.files) ? req.body.files : [];
@@ -2857,7 +2977,7 @@ router.post('/brand-dna/knowledge-base', async (req, res) => {
 });
 
 // DELETE /api/brand-dna/knowledge-base/:fileId — permanent remove (fixes UI-only deletes coming back)
-router.delete('/brand-dna/knowledge-base/:fileId', async (req, res) => {
+router.delete('/brand-dna/knowledge-base/:fileId', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.query?.workspaceId || req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
     const fileId = String(req.params.fileId || '').trim();
@@ -2871,7 +2991,7 @@ router.delete('/brand-dna/knowledge-base/:fileId', async (req, res) => {
 });
 
 // POST /api/brand-dna/logo
-router.post('/brand-dna/logo', async (req, res) => {
+router.post('/brand-dna/logo', requireWorkspaceMember, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
     const file = await saveBrandDnaBinary({
@@ -2892,7 +3012,7 @@ router.post('/brand-dna/logo', async (req, res) => {
 });
 
 // GET /api/brand-dna/assets/:workspaceId/:fileId
-router.get('/brand-dna/assets/:workspaceId/:fileId', async (req, res) => {
+router.get('/brand-dna/assets/:workspaceId/:fileId', requireWorkspaceMember, async (req, res) => {
   const file = await findBrandDnaAsset(req.params.workspaceId, req.params.fileId);
   if (!file) return res.status(404).json({ ok: false, error: 'Asset not found' });
   res.setHeader('Content-Type', file.mime || 'application/octet-stream');
@@ -2901,7 +3021,7 @@ router.get('/brand-dna/assets/:workspaceId/:fileId', async (req, res) => {
 });
 
 // POST /api/voicebot/stt
-router.post('/voicebot/stt', async (req, res) => {
+router.post('/voicebot/stt', requireWorkspaceMember, async (req, res) => {
   try {
     const audioBase64 = req.body?.audioBase64 || req.body?.base64;
     const mimeType = req.body?.mimeType || req.body?.mime || 'audio/webm';
@@ -2941,65 +3061,27 @@ router.post('/voicebot/stt', async (req, res) => {
 // ── Outreach provider webhooks (MVP stubs — reply ingest later) ─────────────
 /** Apollo async phone reveal (reveal_phone_number=true → webhook_url) */
 router.post('/webhooks/apollo', (req, res) => {
-  try {
-    const result = ingestApolloPhoneWebhook(req.body || {}, req.query || {});
-    res.status(200).json(result);
-  } catch (err) {
-    console.error('[webhook/apollo]', err);
-    // Always 200 so Apollo does not retry forever on our parse bugs
-    res.status(200).json({ ok: false, error: err.message || 'Apollo webhook failed' });
-  }
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 router.get('/webhooks/apollo', (req, res) => {
-  const jobId = String(req.query.job || '').trim();
-  if (jobId) {
-    const job = getPhoneEnrichJob(jobId);
-    if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
-    return res.json({ ok: true, job });
-  }
-  res.json({ ok: true, jobs: listPhoneEnrichJobs(20), deliveries: listPhoneDeliveries(20) });
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 router.post('/webhooks/instantly', (req, res) => {
-  console.log('[webhook/instantly]', Object.keys(req.body || {}));
-  res.json({ ok: true, received: true });
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 router.post('/webhooks/heyreach', (req, res) => {
-  const secret = process.env.HEYREACH_WEBHOOK_SECRET || process.env.OUTREACH_WEBHOOK_SECRET;
-  if (secret) {
-    const got = req.get('x-heyreach-secret') || req.query.secret;
-    if (got !== secret) return res.status(401).json({ ok: false, error: 'unauthorized' });
-  }
-  console.log('[webhook/heyreach]', Object.keys(req.body || {}));
-  res.json({ ok: true, received: true });
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 router.get('/webhooks/whatsapp', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  const expected = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.OUTREACH_WEBHOOK_SECRET;
-  if (mode === 'subscribe' && expected && token === expected) {
-    return res.status(200).send(String(challenge || ''));
-  }
-  if (mode === 'subscribe' && !expected) {
-    return res.status(200).send(String(challenge || ''));
-  }
-  res.status(403).send('Forbidden');
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 router.post('/webhooks/whatsapp', (req, res) => {
-  try {
-    const result = ingestWhatsAppWebhook(req.body || {});
-    console.log('[webhook/whatsapp]', result.status, result.results?.length || 0);
-    // Always 200 so Meta / Composio keep the subscription
-    res.status(200).json({ ok: true, ...result });
-  } catch (err) {
-    console.error('[webhook/whatsapp]', err);
-    res.status(200).json({ ok: false, error: err.message || 'WhatsApp webhook failed' });
-  }
+  res.status(410).json({ ok: false, error: 'Use the workspace webhook URL from Settings → Integrations' });
 });
 
 export default router;

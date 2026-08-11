@@ -75,8 +75,10 @@ function normalizePeople(body = {}) {
   });
 }
 
-export function createPhoneEnrichJob({ companyId, people = [], webhookBase } = {}) {
+export function createPhoneEnrichJob({ companyId, people = [], webhookBase, webhookSecret } = {}) {
   const jobId = randomUUID();
+  const callbackBase = String(webhookBase || '').replace(/\/$/, '');
+  const callbackQuery = `job=${jobId}`;
   const job = {
     id: jobId,
     companyId: companyId || null,
@@ -91,7 +93,7 @@ export function createPhoneEnrichJob({ companyId, people = [], webhookBase } = {
     })),
     people: [],
     credits_consumed: null,
-    webhookUrl: `${String(webhookBase || '').replace(/\/$/, '')}/api/webhooks/apollo?job=${jobId}`,
+    webhookUrl: `${callbackBase.includes('/api/webhooks/') ? callbackBase : `${callbackBase}/api/webhooks/apollo`}?${callbackQuery}`,
     error: null,
   };
   jobs.set(jobId, job);
@@ -99,11 +101,18 @@ export function createPhoneEnrichJob({ companyId, people = [], webhookBase } = {
   return job;
 }
 
-export function ingestApolloPhoneWebhook(body = {}, query = {}) {
+export function ingestApolloPhoneWebhook(body = {}, query = {}, meta = {}) {
   const jobId = String(query.job || body.job_id || body.jobId || '').trim() || null;
+  const eventKey = String(
+    meta.eventId || body.event_id || body.eventId || body.idempotency_key || query.event_id || query.eventId || ''
+  ).trim() || null;
+  if (eventKey && deliveries.some((delivery) => delivery.eventKey === eventKey)) {
+    return { ok: true, duplicate: true, eventKey };
+  }
   const people = normalizePeople(body);
   const delivery = {
     id: randomUUID(),
+    eventKey,
     jobId,
     receivedAt: new Date().toISOString(),
     status: body.status || null,
@@ -167,14 +176,19 @@ export function getPhoneEnrichJob(jobId) {
   return jobs.get(String(jobId || '').trim()) || null;
 }
 
-export function listPhoneEnrichJobs(limit = 20) {
+export function listPhoneEnrichJobs(limit = 20, companyId = null) {
   return [...jobs.values()]
+    .filter((job) => !companyId || String(job.companyId || '') === String(companyId))
     .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
     .slice(0, limit);
 }
 
-export function listPhoneDeliveries(limit = 20) {
-  return deliveries.slice(0, limit);
+export function listPhoneDeliveries(limit = 20, companyId = null) {
+  if (!companyId) return deliveries.slice(0, limit);
+  const ownedJobIds = new Set([...jobs.values()]
+    .filter((job) => String(job.companyId || '') === String(companyId))
+    .map((job) => job.id));
+  return deliveries.filter((delivery) => ownedJobIds.has(delivery.jobId)).slice(0, limit);
 }
 
 /**
@@ -185,6 +199,7 @@ export async function requestApolloPhoneReveal({
   companyId,
   people = [],
   webhookBase,
+  webhookSecret,
 } = {}) {
   const base =
     webhookBase ||
@@ -195,7 +210,7 @@ export async function requestApolloPhoneReveal({
   if (!slice.length) throw new Error('people[] required (Apollo id and/or email)');
   if (!companyId) throw new Error('companyId required');
 
-  const job = createPhoneEnrichJob({ companyId, people: slice, webhookBase: base });
+  const job = createPhoneEnrichJob({ companyId, people: slice, webhookBase: base, webhookSecret });
   const details = slice.map((p) => {
     const row = {};
     if (p.id) row.id = p.id;
@@ -206,7 +221,12 @@ export async function requestApolloPhoneReveal({
     return row;
   });
 
-  const webhookUrl = encodeURIComponent(job.webhookUrl);
+  // Keep the credential out of the persisted job/API response while still
+  // giving Apollo the one callback URL containing its query secret.
+  const providerWebhookUrl = webhookSecret
+    ? `${job.webhookUrl}&secret=${encodeURIComponent(webhookSecret)}`
+    : job.webhookUrl;
+  const webhookUrl = encodeURIComponent(providerWebhookUrl);
   const endpoint = `https://api.apollo.io/api/v1/people/bulk_match?reveal_personal_emails=false&reveal_phone_number=true&webhook_url=${webhookUrl}`;
 
   const proxy = await executeComposioProxy({

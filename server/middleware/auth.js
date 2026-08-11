@@ -78,6 +78,9 @@ export async function requireWorkspaceMember(req, res, next) {
       return res.status(403).json({ error: 'You are not a member of this workspace' });
     }
   }
+  if (!workspaceId && getSupabaseAdminClient()) {
+    return res.status(400).json({ error: 'workspaceId required' });
+  }
   return next();
 }
 
@@ -119,4 +122,28 @@ export async function requireApprovalMember(req, res, next) {
   }
   if (!workspaceId && admin) return res.status(404).json({ error: 'Approval not found' });
   return next();
+}
+
+/** Build a guard for resources whose workspace must be resolved from storage. */
+export function requireResourceMember(resolveResource) {
+  return async (req, res, next) => {
+    const user = await resolveBearerUser(req);
+    if (!user?.id) return res.status(401).json({ error: 'Authentication required' });
+    req.user = user;
+    req.authUserId = user.id;
+    let resource = null;
+    try {
+      resource = await resolveResource(req);
+    } catch {
+      resource = null;
+    }
+    const workspaceId = resource?.workspaceId || resource?.workspace_id || resource?.companyId || resource?.company_id || null;
+    if (!resource || !workspaceId) return res.status(404).json({ error: 'Resource not found' });
+    if (getSupabaseAdminClient() && !(await assertWorkspaceMember(user.id, workspaceId))) {
+      return res.status(403).json({ error: 'You are not a member of this workspace' });
+    }
+    req.workspaceId = String(workspaceId);
+    req.authorizedResource = resource;
+    return next();
+  };
 }
