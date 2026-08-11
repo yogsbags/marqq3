@@ -3,12 +3,19 @@
  * Email is an event transport: replies become durable deployments, never
  * direct live actions.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getDb, updateDb } from '../db.js';
+import { updateDb } from '../db.js';
 import { ensureAgentCollections } from './agentOsStore.js';
+import {
+  claimAgentMailEvent,
+  completeAgentMailEvent,
+  getAgentMailThread,
+  persistAgentMailThread,
+  persistDeploymentToSupabase,
+} from './agentSupabase.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASE_URL = 'https://api.agentmail.to/v0';
@@ -93,7 +100,8 @@ export async function sendIntegrationSuggestionEmail({ connectorId, workspaceId,
   });
   const threadId = result?.thread_id || result?.message_id || randomUUID();
   const suggestions = await readSuggestions();
-  const record = { workspaceId, connectorId, userEmail, userName, inboxId: inbox.inbox_id, threadId, automations, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
+  const record = { id: `mail_thread_${inbox.inbox_id}_${threadId}`, workspaceId, connectorId, userEmail, userName, inboxId: inbox.inbox_id, threadId, automations, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(), status: 'pending' };
+  await persistAgentMailThread(record);
   suggestions[`${inbox.inbox_id}/${threadId}`] = record;
   suggestions[`inbox/${inbox.inbox_id}`] = record;
   await writeSuggestions(suggestions);
@@ -110,11 +118,28 @@ export async function handleAgentMailInbound(payload = {}) {
   const { from, text, html, subject, inbox_id: inboxId, thread_id: threadId, message_id: messageId } = payload;
   if (!from || !(text || html)) return { ignored: true, reason: 'missing from/text' };
   const suggestions = await readSuggestions();
-  const pending = (threadId && suggestions[`${inboxId}/${threadId}`]) || suggestions[`inbox/${inboxId}`];
+  const durablePending = await getAgentMailThread({ inboxId, threadId });
+  const pending = durablePending || (threadId && suggestions[`${inboxId}/${threadId}`]) || suggestions[`inbox/${inboxId}`];
   if (!pending) return { handled: false, reason: 'no_pending_suggestion' };
+  const bodyText = String(text || html || '').slice(0, 4000);
+  const eventKey = String(messageId || createHash('sha256').update(`${inboxId || ''}|${threadId || ''}|${from}|${bodyText}`).digest('hex'));
+  const claimed = await claimAgentMailEvent({
+    eventKey,
+    workspaceId: pending.workspaceId,
+    inboxId,
+    threadId,
+    messageId,
+    from,
+    subject,
+    payload: { ...payload, text: bodyText },
+  });
+  if (claimed === false) return { handled: false, duplicate: true, eventKey };
   const selectedIds = parseReply(text || html);
   const selected = selectedIds === null ? pending.automations : (selectedIds || []).map((id) => pending.automations.find((a) => a.id === id)).filter(Boolean);
-  if (!selected.length) return { handled: false, reason: 'no_automation_selection' };
+  if (!selected.length) {
+    if (claimed === true) await completeAgentMailEvent({ eventKey, status: 'failed' });
+    return { handled: false, reason: 'no_automation_selection' };
+  }
   const created = [];
   updateDb((state) => {
     const next = ensureAgentCollections(state);
@@ -142,6 +167,9 @@ export async function handleAgentMailInbound(payload = {}) {
     created.push(...entries);
     return { ...next, agent_deployments: [...entries, ...next.agent_deployments] };
   });
+  await Promise.all(created.map((entry) => persistDeploymentToSupabase(entry)));
+  if (claimed === true) await completeAgentMailEvent({ eventKey, deploymentIds: created.map((entry) => entry.id) });
+  if (pending.id) await persistAgentMailThread({ ...pending, status: 'consumed' });
   return { handled: true, type: 'automation_activation', workspaceId: pending.workspaceId, scheduled: created.map(({ id, sectionTitle }) => ({ id, name: sectionTitle })) };
 }
 

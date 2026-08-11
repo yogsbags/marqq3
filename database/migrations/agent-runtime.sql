@@ -102,6 +102,73 @@ CREATE TABLE IF NOT EXISTS agent_action_receipts (
 CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_run
   ON agent_action_receipts (run_id, created_at);
 
+-- AgentMail suggestions and inbound events must survive Railway restarts and
+-- be idempotent across multiple webhook deliveries/workers.
+CREATE TABLE IF NOT EXISTS agent_mail_threads (
+  id TEXT PRIMARY KEY,
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  inbox_id TEXT NOT NULL,
+  thread_id TEXT,
+  user_email TEXT,
+  user_name TEXT,
+  connector_id TEXT NOT NULL,
+  automations JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'consumed', 'expired')),
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (inbox_id, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_mail_threads_inbox_status
+  ON agent_mail_threads (inbox_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_mail_events (
+  event_key TEXT PRIMARY KEY,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+  inbox_id TEXT,
+  thread_id TEXT,
+  message_id TEXT,
+  from_email TEXT,
+  subject TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'processing'
+    CHECK (status IN ('processing', 'completed', 'failed')),
+  deployment_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_mail_events_thread
+  ON agent_mail_events (inbox_id, thread_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION claim_agent_mail_event(
+  p_event_key TEXT,
+  p_workspace_id UUID DEFAULT NULL,
+  p_inbox_id TEXT DEFAULT NULL,
+  p_thread_id TEXT DEFAULT NULL,
+  p_message_id TEXT DEFAULT NULL,
+  p_from_email TEXT DEFAULT NULL,
+  p_subject TEXT DEFAULT NULL,
+  p_payload JSONB DEFAULT '{}'::jsonb
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  inserted_count INTEGER;
+BEGIN
+  INSERT INTO agent_mail_events
+    (event_key, workspace_id, inbox_id, thread_id, message_id, from_email, subject, payload)
+  VALUES
+    (p_event_key, p_workspace_id, p_inbox_id, p_thread_id, p_message_id, p_from_email, p_subject, p_payload)
+  ON CONFLICT (event_key) DO NOTHING;
+  GET DIAGNOSTICS inserted_count = ROW_COUNT;
+  RETURN inserted_count = 1;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION claim_agent_action(
   p_workspace_id UUID,
   p_run_id TEXT,

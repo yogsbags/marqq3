@@ -178,6 +178,88 @@ export async function persistAgentArtifact(artifact) {
   }
 }
 
+export async function persistAgentMailThread(thread) {
+  const db = writeClient();
+  const workspaceId = thread?.workspaceId || thread?.workspace_id;
+  if (!db || !thread?.id || !isUuidWorkspace(workspaceId)) return false;
+  try {
+    const { error } = await db.from('agent_mail_threads').upsert({
+      id: String(thread.id),
+      workspace_id: workspaceId,
+      inbox_id: String(thread.inboxId || thread.inbox_id || ''),
+      thread_id: thread.threadId || thread.thread_id || null,
+      user_email: thread.userEmail || thread.user_email || null,
+      user_name: thread.userName || thread.user_name || null,
+      connector_id: String(thread.connectorId || thread.connector_id || 'unknown'),
+      automations: thread.automations || [],
+      status: thread.status || 'pending',
+      expires_at: thread.expiresAt || thread.expires_at || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_mail_threads]', err?.message || err);
+    return false;
+  }
+}
+
+export async function getAgentMailThread({ workspaceId, inboxId, threadId } = {}) {
+  const db = getSupabaseReadClient();
+  if (!db || !useSupabasePersistence() || !inboxId) return null;
+  try {
+    let q = db.from('agent_mail_threads').select('*').eq('inbox_id', String(inboxId));
+    if (isUuidWorkspace(workspaceId)) q = q.eq('workspace_id', workspaceId);
+    if (threadId) q = q.eq('thread_id', String(threadId));
+    const { data, error } = threadId ? await q.maybeSingle() : await q.order('updated_at', { ascending: false }).limit(1);
+    if (error || !data) return null;
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row || row.status !== 'pending' || (row.expires_at && Date.parse(row.expires_at) <= Date.now())) return null;
+    return { ...row, workspaceId: row.workspace_id, inboxId: row.inbox_id, threadId: row.thread_id, connectorId: row.connector_id, userEmail: row.user_email, userName: row.user_name, expiresAt: row.expires_at };
+  } catch (err) {
+    console.warn('[agent_mail_threads read]', err?.message || err);
+    return null;
+  }
+}
+
+export async function claimAgentMailEvent(event) {
+  const db = readClient();
+  if (!db || !event?.eventKey) return null;
+  try {
+    const { data, error } = await db.rpc('claim_agent_mail_event', {
+      p_event_key: String(event.eventKey),
+      p_workspace_id: isUuidWorkspace(event.workspaceId) ? event.workspaceId : null,
+      p_inbox_id: event.inboxId || null,
+      p_thread_id: event.threadId || null,
+      p_message_id: event.messageId || null,
+      p_from_email: event.from || null,
+      p_subject: event.subject || null,
+      p_payload: event.payload || {},
+    });
+    if (error) {
+      if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(error.message || '')) console.warn('[agent_mail_events claim]', error.message);
+      return null;
+    }
+    return Boolean(data);
+  } catch (err) {
+    if (!/agent_mail_events|claim_agent_mail_event|function .* does not exist|schema cache/i.test(err?.message || '')) console.warn('[agent_mail_events claim]', err?.message || err);
+    return null;
+  }
+}
+
+export async function completeAgentMailEvent({ eventKey, status = 'completed', deploymentIds = [] } = {}) {
+  const db = writeClient();
+  if (!db || !eventKey) return false;
+  try {
+    const { error } = await db.from('agent_mail_events').update({ status, deployment_ids: deploymentIds, updated_at: new Date().toISOString() }).eq('event_key', String(eventKey));
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    console.warn('[agent_mail_events update]', err?.message || err);
+    return false;
+  }
+}
+
 export async function claimAgentAction({
   workspaceId,
   runId,
