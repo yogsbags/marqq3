@@ -13,6 +13,7 @@ import { getDb, updateDb } from '../db.js';
 import { ensureAgentCollections } from './agentOsStore.js';
 import { AGENT_CATALOG, planAgentTask } from './agentOs.js';
 import { persistDeploymentToSupabase } from './agentSupabase.js';
+import { routeVeenaGoal } from './veenaGoalRouter.js';
 
 const AGENT_BY_ID = new Map(AGENT_CATALOG.map((a) => [a.id, a]));
 
@@ -70,9 +71,17 @@ export function queueOvernightAsk({
   const text = String(message || '').trim();
   if (!text) throw new Error('message required');
 
-  const sectionId = CHANNEL_TO_SECTION[channel] || null;
-  const plan = planAgentTask({ sectionId, target: null });
-  const resolvedAgentId = agentName && AGENT_BY_ID.has(agentName) ? agentName : plan.agentName || 'neel';
+  const routed = routeVeenaGoal(text, { channel });
+  const routedGoal = routed.matched ? routed.goal : null;
+  const sectionId = routedGoal?.sectionId || CHANNEL_TO_SECTION[channel] || null;
+  const plan = planAgentTask({
+    sectionId,
+    target: routedGoal?.target || null,
+  });
+  const requestedAgent = String(agentName || '').toLowerCase();
+  const resolvedAgentId = requestedAgent && AGENT_BY_ID.has(requestedAgent)
+    ? requestedAgent
+    : routedGoal?.agentName || plan.agentName || 'neel';
   const meta = agentMeta(resolvedAgentId);
 
   const id = `dep_ask_${randomUUID().slice(0, 8)}`;
@@ -80,7 +89,14 @@ export function queueOvernightAsk({
     id,
     agentName: resolvedAgentId,
     agentDisplayName: meta.name,
-    agentTarget: plan?.target || null,
+    agentTarget: routedGoal?.target || plan?.target || null,
+    goalId: routedGoal?.id || null,
+    goalTitle: routedGoal?.title || null,
+    goalCategory: routedGoal?.category || null,
+    routingConfidence: routed.confidence || 0,
+    routingReason: routed.reason || null,
+    requiredConnectors: plan?.requiredConnectors || [],
+    optionalConnectors: plan?.optionalConnectors || [],
     workspaceId: ws,
     companyId: companyId || ws,
     sectionId,
@@ -130,6 +146,10 @@ export function queueOvernightAsk({
     agentDisplayName: meta.name,
     openScreen: entry.openScreen,
     message: `Got it — ${meta.name} will work on this and it'll be in your next co-founder digest (and the Approvals queue) once ready. No live spend/publish without your review.`,
+    goalId: entry.goalId,
+    goalTitle: entry.goalTitle,
+    routingConfidence: entry.routingConfidence,
+    requiredConnectors: entry.requiredConnectors,
   };
 }
 

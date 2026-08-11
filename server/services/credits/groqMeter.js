@@ -2,7 +2,7 @@
  * Metered Groq chat — tracks prompt/completion tokens and settles workspace credits.
  */
 
-import { resolveGroqModel, withGroqReasoning } from '../groqReasoning.js';
+import { isGptOssModel, resolveGroqModel, withGroqReasoning } from '../groqReasoning.js';
 import { reserveCredits, settleCredits } from './wallet.js';
 import { estimateFeatureCredits } from './pricing.js';
 
@@ -10,6 +10,10 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 function groqKey() {
   return process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
+}
+
+function gptOssBuiltInToolsEnabled() {
+  return String(process.env.GROQ_GPT_OSS_BUILTIN_TOOLS || 'true').toLowerCase() !== 'false';
 }
 
 /**
@@ -75,6 +79,12 @@ export async function meteredGroqChat(opts = {}) {
         messages,
         temperature,
         max_tokens,
+        ...(isGptOssModel(resolved) && gptOssBuiltInToolsEnabled()
+          ? {
+              tools: [{ type: 'browser_search' }, { type: 'code_interpreter' }],
+              tool_choice: 'auto',
+            }
+          : {}),
         ...(json ? { response_format: { type: 'json_object' } } : {}),
       },
       resolved
@@ -133,6 +143,7 @@ export async function meteredGroqChat(opts = {}) {
       ok: true,
       content,
       model: resolved,
+      executedTools: data?.choices?.[0]?.message?.executed_tools || data?.executed_tools || [],
       usage: {
         promptTokens,
         completionTokens,

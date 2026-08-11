@@ -14,7 +14,7 @@ import {
 import { isUuidWorkspace } from '../lib/persistence.js';
 import { bootstrapControlLoop } from './gtmControlLoop.js';
 import { buildAgentRoster } from './gtmAgentRoster.js';
-import { normalizeExecutionMode, EXECUTION_MODES } from './executionMode.js';
+import { normalizeExecutionMode, EXECUTION_MODES, normalizeActionMode, ACTION_MODES } from './executionMode.js';
 
 const DEFAULT_WS = 'marqq-ws-1';
 
@@ -278,6 +278,7 @@ export function activateStrategyExecution({
           execution_mode: normalizeExecutionMode(
             agentOs.execution_mode ?? agentOs.executionMode ?? EXECUTION_MODES.HUMAN_GATED
           ),
+          action_mode: normalizeActionMode(agentOs.action_mode ?? agentOs.actionMode ?? ACTION_MODES.DRAFT_SAFE),
         }
       : {
           version: 1,
@@ -288,8 +289,10 @@ export function activateStrategyExecution({
           strategy_document: strategy,
           last_executed_task: null,
           execution_mode: EXECUTION_MODES.HUMAN_GATED,
+          action_mode: ACTION_MODES.DRAFT_SAFE,
         };
   profile.executionMode = profile.execution_mode;
+  profile.actionMode = profile.action_mode;
 
   const goalSystem = profile.goal_system || strategy.goalAlignment || null;
   if (goalSystem) {
@@ -407,6 +410,7 @@ export function setAgentExecutionMode(workspaceId = DEFAULT_WS, mode, { approveP
     agent_roster: null,
     strategy_document: null,
     last_executed_task: null,
+    action_mode: ACTION_MODES.DRAFT_SAFE,
   };
   const saved = saveAgentOsProfile(
     {
@@ -456,4 +460,24 @@ export function setAgentExecutionMode(workspaceId = DEFAULT_WS, mode, { approveP
   }
 
   return { agentOs: saved, executionMode: nextMode, autoApproved };
+}
+
+/** Persist the external side-effect policy independently of approval mode. */
+export function setAgentActionMode(workspaceId = DEFAULT_WS, mode) {
+  const nextMode = normalizeActionMode(mode);
+  const existing = loadAgentOsProfile(workspaceId) || {
+    version: 1,
+    workspaceId,
+    goal_system: null,
+    control_loop: null,
+    agent_roster: null,
+    strategy_document: null,
+    last_executed_task: null,
+    execution_mode: EXECUTION_MODES.HUMAN_GATED,
+  };
+  const saved = saveAgentOsProfile(
+    { ...existing, action_mode: nextMode, actionMode: nextMode },
+    workspaceId
+  );
+  return { agentOs: saved, actionMode: nextMode };
 }

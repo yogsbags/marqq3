@@ -26,8 +26,9 @@ import {
 } from './agentSupabase.js';
 import { isUuidWorkspace, useSupabasePersistence } from '../lib/persistence.js';
 import { notifyDeploymentResult } from './agentNotifications.js';
-import { executionModeFromAgentOs, isAutonomousMode } from './executionMode.js';
+import { executionModeFromAgentOs, isAutonomousMode, actionModeFromAgentOs } from './executionMode.js';
 import { chargeCredits, meteredStudioJson } from './credits/index.js';
+import { isComplexGtmGoal, runComplexGtmGoalGraph } from './complexGtmGraph.js';
 
 const PORT = () => Number(process.env.PORT || 3001);
 const INTERVAL_MS = Math.max(
@@ -113,6 +114,7 @@ export async function executeAgentRun({
       ? executionModeFromAgentOs({ execution_mode })
       : executionModeFromAgentOs(os);
   const autonomous = isAutonomousMode(mode);
+  const actionMode = actionModeFromAgentOs(os);
 
   const plan = planAgentTask({
     sectionId: deployment?.sectionId || null,
@@ -153,6 +155,7 @@ export async function executeAgentRun({
       sectionId: deployment?.sectionId || null,
       deliveryMode: delivery_mode || 'draft',
       executionMode: mode,
+      actionMode,
       runId: run_id,
       createdAt: new Date().toISOString(),
       status: autonomous ? 'approved' : 'pending',
@@ -185,6 +188,7 @@ export async function executeAgentRun({
       deploymentId: depId,
       triggered_by,
       executionMode: mode,
+      actionMode,
     };
     const agentLogs = { ...(next.agentLogs || {}) };
     const key = agent.id;
@@ -204,6 +208,7 @@ export async function executeAgentRun({
             at: new Date().toISOString(),
             triggered_by,
             executionMode: mode,
+            actionMode,
           },
           updatedAt: new Date().toISOString(),
         },
@@ -233,6 +238,7 @@ export async function executeAgentRun({
     deploymentId: depId,
     deliveryMode: delivery_mode || 'draft',
     executionMode: mode,
+    actionMode,
     autonomous,
     plan,
     credits: credit?.ok ? { actualCredits: credit.actualCredits, wallet: credit.wallet } : credit,
@@ -427,12 +433,17 @@ async function processApprovedExecution(entry, heartbeatTimer = null) {
   const runId = entry.runId;
   const workspaceId = entry.workspaceId;
   const startedAt = new Date().toISOString();
+  const actionMode = actionModeFromAgentOs(loadAgentOsProfile(workspaceId));
+  const actionPolicy = actionMode === 'live_publish'
+    ? 'The workspace permits live publishing, but only use explicit, supported, idempotent actions and never exceed the user brief.'
+    : actionMode === 'live_drafts'
+      ? 'The workspace permits creating provider-side drafts, but never publish, send, spend, or mutate live records.'
+      : 'The workspace is draft-safe: do not perform external writes.';
   const safeSystem = `You are Marqq's approved execution planner.
-The user approved a draft, but this worker is still draft-safe.
+${actionPolicy}
 Return JSON only with this shape:
-{"status":"draft_ready|human_required|blocked","summary":"string","actions":[{"type":"draft_only|open_studio|request_connector|measure","label":"string","details":"string"}],"risks":["string"],"next_step":"string"}
-Never publish, spend money, send messages, change CRM records, or call an irreversible external action.
-If the requested action needs a connector or live side effect, use request_connector or human_required.`;
+{"status":"draft_ready|human_required|blocked","summary":"string","actions":[{"type":"draft_only|provider_draft|live_publish|open_studio|request_connector|measure","label":"string","details":"string"}],"risks":["string"],"next_step":"string"}
+The worker will enforce the selected action mode before any external dispatch.`;
   const user = [
     `Approved deployment: ${entry.sectionTitle || entry.sectionId || entry.id}`,
     `Agent: ${entry.agentName}`,
@@ -474,15 +485,38 @@ If the requested action needs a connector or live side effect, use request_conne
   });
 
   try {
-    const result = await meteredStudioJson({
-      workspaceId,
-      feature: 'agent_execution',
-      system: safeSystem,
-      user,
-      temperature: 0.2,
-      max_tokens: 1800,
-      meta: { runId, deploymentId: entry.id, phase: 'approved_execution' },
-    });
+    let result;
+    let graph = null;
+    if (entry.goalId && isComplexGtmGoal({ goal: { id: entry.goalId, title: entry.goalTitle }, brief: entry.summary })) {
+      graph = await runComplexGtmGoalGraph({
+        workspaceId,
+        goal: { id: entry.goalId, title: entry.goalTitle, category: entry.goalCategory },
+        brief: entry.summary,
+        runId,
+      });
+      const synthesis = graph.synthesis || {};
+      result = {
+        status: 'draft_ready',
+        summary: synthesis.summary || `Complex GTM graph completed for ${entry.goalTitle || entry.goalId}`,
+        actions: (synthesis.prioritized_actions || []).slice(0, 12).map((action) => ({
+          type: 'draft_only',
+          label: action.action || 'Review prioritized GTM action',
+          details: `${action.owner || 'Agent'} · ${action.why || ''} · metric: ${action.metric || 'not specified'}`,
+        })),
+        risks: (synthesis.approval_requirements || []).slice(0, 12),
+        next_step: synthesis.next_review || 'Review the synthesized GTM plan.',
+      };
+    } else {
+      result = await meteredStudioJson({
+        workspaceId,
+        feature: 'agent_execution',
+        system: safeSystem,
+        user,
+        temperature: 0.2,
+        max_tokens: 1800,
+        meta: { runId, deploymentId: entry.id, phase: 'approved_execution' },
+      });
+    }
     const allowedStatuses = new Set(['draft_ready', 'human_required', 'blocked']);
     const status = allowedStatuses.has(result?.status) ? result.status : 'human_required';
     const output = {
@@ -491,6 +525,8 @@ If the requested action needs a connector or live side effect, use request_conne
       actions: Array.isArray(result?.actions) ? result.actions.slice(0, 12) : [],
       risks: Array.isArray(result?.risks) ? result.risks.slice(0, 12) : [],
       next_step: String(result?.next_step || 'Review the execution handoff in the relevant studio.').slice(0, 500),
+      action_mode: actionMode,
+      graph,
       live_side_effects: false,
     };
     const actions = [];
@@ -499,14 +535,16 @@ If the requested action needs a connector or live side effect, use request_conne
       const label = String(action?.label || `Action ${index + 1}`).slice(0, 180);
       const details = String(action?.details || '').slice(0, 800);
       const actionKey = `${entry.id}:execute:${index}:${type}:${label}`.toLowerCase().replace(/\s+/g, '-');
-      const accepted = await claimAgentAction({
+      const requestedLive = type === 'provider_draft' || type === 'live_publish';
+      const allowedByMode = actionMode === 'live_publish' || (actionMode === 'live_drafts' && type === 'provider_draft') || !requestedLive;
+      const accepted = allowedByMode ? await claimAgentAction({
         workspaceId,
         runId,
         stepKey: 'execute',
         actionKey,
         actionType: type,
         request: { label, details, live: false },
-      });
+      }) : false;
       if (accepted === true) claimedActionKeys.push(actionKey);
       actions.push({
         type,
@@ -514,7 +552,7 @@ If the requested action needs a connector or live side effect, use request_conne
         details,
         actionKey,
         idempotency: accepted === true ? 'claimed' : accepted === false ? 'duplicate' : 'unavailable',
-        dispatch: 'draft_only',
+        dispatch: allowedByMode ? 'draft_only' : 'blocked_by_action_mode',
       });
     }
     output.actions = actions;

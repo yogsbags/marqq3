@@ -20,6 +20,7 @@ export function IntegrationsView({ setActiveScreen }) {
     { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
     { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
     { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
+    { id: 'google_docs', name: 'Google Docs', connected: false, status: 'not_connected' },
     { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
     { id: 'instantly', name: 'Instantly', connected: false, status: 'not_connected' },
     { id: 'heyreach', name: 'HeyReach', connected: false, status: 'not_connected' },
@@ -96,6 +97,8 @@ export function IntegrationsView({ setActiveScreen }) {
       ga4: 'ga4_property_id',
       gsc: 'gsc_site_url',
       google_sheets: 'google_sheets_spreadsheet_id',
+      google_docs: 'google_docs_document_id',
+      github: 'github_repository',
       salesforce: 'salesforce_account_id',
       hubspot: 'hubspot_account_id'
     };

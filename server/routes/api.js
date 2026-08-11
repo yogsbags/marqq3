@@ -113,9 +113,11 @@ import {
   loadAgentOsProfileAsync,
   saveAgentOsProfile,
   setAgentExecutionMode,
+  setAgentActionMode,
 } from '../services/agentOsStore.js';
-import { normalizeExecutionMode } from '../services/executionMode.js';
+import { normalizeExecutionMode, normalizeActionMode } from '../services/executionMode.js';
 import { resolveComposioEntityIds } from '../lib/composioEntities.js';
+import { listIntegrationResources } from '../services/integrationResources.js';
 import {
   getControlLoop,
   measureControlLoop,
@@ -1051,6 +1053,27 @@ router.patch('/agent-os/execution-mode', (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     res.status(400).json({ ok: false, error: err?.message || 'Failed to set execution mode' });
+  }
+});
+
+/** POST/PATCH /api/agent-os/action-mode — draft_safe | live_drafts | live_publish */
+router.post('/agent-os/action-mode', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const mode = normalizeActionMode(req.body?.actionMode ?? req.body?.action_mode ?? req.body?.mode);
+    res.json({ ok: true, ...setAgentActionMode(workspaceId, mode) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Failed to set action mode' });
+  }
+});
+
+router.patch('/agent-os/action-mode', (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || DEFAULT_WS).trim();
+    const mode = normalizeActionMode(req.body?.actionMode ?? req.body?.action_mode ?? req.body?.mode);
+    res.json({ ok: true, ...setAgentActionMode(workspaceId, mode) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Failed to set action mode' });
   }
 });
 
@@ -2244,6 +2267,7 @@ const CONNECTOR_APP_MAP = {
   ga4: 'google_analytics',
   gsc: 'google_search_console',
   google_sheets: 'googlesheets',
+  google_docs: 'googledocs',
   google_drive: 'googledrive',
   instantly: 'instantly',
   heyreach: 'heyreach',
@@ -2268,6 +2292,7 @@ const AUTH_CONFIG_ENV_KEYS = {
   ga4: 'COMPOSIO_GOOGLE_ANALYTICS_AUTH_CONFIG_ID',
   gsc: 'COMPOSIO_GOOGLE_SEARCH_CONSOLE_AUTH_CONFIG_ID',
   google_sheets: 'COMPOSIO_GOOGLE_SHEETS_AUTH_CONFIG_ID',
+  google_docs: 'COMPOSIO_GOOGLE_DOCS_AUTH_CONFIG_ID',
   google_drive: 'COMPOSIO_GOOGLE_DRIVE_AUTH_CONFIG_ID',
   instantly: 'COMPOSIO_INSTANTLY_AUTH_CONFIG_ID',
   heyreach: 'COMPOSIO_HEYREACH_AUTH_CONFIG_ID',
@@ -2345,6 +2370,7 @@ router.get('/integrations', async (req, res) => {
     { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
     { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
     { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
+    { id: 'google_docs', name: 'Google Docs', connected: false, status: 'not_connected' },
     { id: 'google_drive', name: 'Google Drive', connected: false, status: 'not_connected' },
     { id: 'instantly', name: 'Instantly', connected: false, status: 'not_connected' },
     { id: 'heyreach', name: 'HeyReach', connected: false, status: 'not_connected' },
@@ -2437,7 +2463,7 @@ router.post('/integrations/connect', async (req, res) => {
         user_id: companyId,
         // Marqq2-style callback: popup lands here, posts success to opener, then closes
         callback_url: `${appUrl}/integrations?connected=${encodeURIComponent(connectorId)}${oauthNonce ? `&oauth_nonce=${encodeURIComponent(String(oauthNonce).slice(0, 120))}` : ''}`,
-        allow_multiple: false
+        allow_multiple: true
       })
     });
     const data = await compRes.json().catch(() => ({}));
@@ -2560,6 +2586,19 @@ router.post('/command-center', handleCommandCenter);
 router.get('/integrations/preferences', (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
   res.json({ preferences: getWorkspacePreferences(companyId) });
+});
+
+/** GET /api/integrations/resources?companyId=&connectorId= — detected provider resources. */
+router.get('/integrations/resources', async (req, res) => {
+  const companyId = String(req.query.companyId || req.query.workspaceId || 'default').trim();
+  const connectorId = String(req.query.connectorId || '').trim();
+  if (!connectorId) return res.status(400).json({ ok: false, error: 'connectorId required', resources: [] });
+  try {
+    const result = await listIntegrationResources(connectorId, companyId);
+    res.status(result.ok || !result.supported ? 200 : 502).json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, supported: true, connectorId, resources: [], error: err.message || 'Resource discovery failed' });
+  }
 });
 
 // POST /api/integrations/preferences  { companyId, ...prefs }

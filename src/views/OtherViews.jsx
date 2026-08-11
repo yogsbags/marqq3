@@ -8,6 +8,7 @@ import JourneyBar from '../components/JourneyBar.jsx';
 import GtmModuleSwitcher from '../components/GtmModuleSwitcher.jsx';
 import MarketingCalendarView from './MarketingCalendarView.jsx';
 import ExecutionModeToggle from '../components/ExecutionModeToggle.jsx';
+import AgentActionModeToggle from '../components/AgentActionModeToggle.jsx';
 import {  openSectionScreen, loadStrategyDoc, northStarLabel, stashJourneyHandoff  } from '../lib/journeyHandoff';
 import {  formatStrategySectionForChat  } from '../lib/askMarqqContext';
 import { 
@@ -1053,6 +1054,10 @@ export function BrandView({ setActiveScreen }) {
       brandSummary: data?.brandSummary || '',
       niche: data?.niche || localStorage.getItem('marqq_ob_niche') || '',
       icp: data?.icp || localStorage.getItem('marqq_ob_icp') || '',
+      outcome: data?.outcome || localStorage.getItem('marqq_ob_outcome') || '',
+      timeWindow: data?.timeWindow || localStorage.getItem('marqq_ob_timeWindow') || '',
+      target: data?.target || localStorage.getItem('marqq_ob_target') || '',
+      baseline: data?.baseline || localStorage.getItem('marqq_ob_baseline') || '',
       fonts: data?.fonts || '',
       colors: Array.isArray(data?.colors) ? data.colors.join(', ') : '',
       positioningTags: Array.isArray(data?.positioningTags) ? data.positioningTags.join(', ') : '',
@@ -1093,6 +1098,10 @@ export function BrandView({ setActiveScreen }) {
         brandSummary: draft.brandSummary,
         niche: draft.niche,
         icp: draft.icp,
+        outcome: draft.outcome,
+        timeWindow: draft.timeWindow,
+        target: draft.target,
+        baseline: draft.baseline,
         fonts: draft.fonts,
         colors,
         positioningTags,
@@ -1106,6 +1115,10 @@ export function BrandView({ setActiveScreen }) {
         localStorage.setItem('marqq_ob_tone', draft.toneOfVoice || '');
         localStorage.setItem('marqq_ob_niche', draft.niche || '');
         localStorage.setItem('marqq_ob_icp', draft.icp || '');
+        localStorage.setItem('marqq_ob_outcome', draft.outcome || '');
+        localStorage.setItem('marqq_ob_timeWindow', draft.timeWindow || '');
+        localStorage.setItem('marqq_ob_target', draft.target || '');
+        localStorage.setItem('marqq_ob_baseline', draft.baseline || '');
       } catch {
         /* ignore */
       }
@@ -1286,6 +1299,63 @@ export function BrandView({ setActiveScreen }) {
               <p style={{ color: 'var(--color-neutral-300)', marginTop: '6px', lineHeight: 1.55 }}>
                 {draft.brandSummary || ctx?.brandSummary || 'No summary yet — re-run Brand DNA.'}
               </p>
+            )}
+          </div>
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Onboarding answers</h3>
+            <p className="text-muted" style={{ marginTop: 6, fontSize: 13 }}>
+              The company context captured during onboarding and used by GTM strategy and agents.
+            </p>
+            {editing ? (
+              <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+                <div className="field">
+                  <label htmlFor="brand-onboarding-outcome">Business outcome</label>
+                  <textarea
+                    className="input"
+                    id="brand-onboarding-outcome"
+                    rows={3}
+                    value={draft.outcome || ''}
+                    onChange={(e) => setDraft({ ...draft, outcome: e.target.value })}
+                    placeholder="What should Marqq help the company achieve?"
+                  />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                  <div className="field">
+                    <label htmlFor="brand-onboarding-window">Target window</label>
+                    <input className="input" id="brand-onboarding-window" value={draft.timeWindow || ''} onChange={(e) => setDraft({ ...draft, timeWindow: e.target.value })} placeholder="90 days" />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="brand-onboarding-target">Quantified target</label>
+                    <input className="input" id="brand-onboarding-target" value={draft.target || ''} onChange={(e) => setDraft({ ...draft, target: e.target.value })} placeholder="$2M pipeline" />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="brand-onboarding-baseline">Current baseline</label>
+                    <input className="input" id="brand-onboarding-baseline" value={draft.baseline || ''} onChange={(e) => setDraft({ ...draft, baseline: e.target.value })} placeholder="$1.2M pipeline" />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
+                <div>
+                  <div className="text-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Business outcome</div>
+                  <div style={{ marginTop: 4, lineHeight: 1.5 }}>{draft.outcome || ctx?.outcome || 'Not set'}</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                  <div>
+                    <div className="text-muted" style={{ fontSize: 11 }}>Target window</div>
+                    <div style={{ marginTop: 4 }}>{draft.timeWindow || ctx?.timeWindow || 'Not set'}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted" style={{ fontSize: 11 }}>Quantified target</div>
+                    <div style={{ marginTop: 4 }}>{draft.target || ctx?.target || 'Not set'}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted" style={{ fontSize: 11 }}>Current baseline</div>
+                    <div style={{ marginTop: 4 }}>{draft.baseline || ctx?.baseline || 'Not set'}</div>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 
@@ -1889,6 +1959,7 @@ export function OrchestrationView({ setActiveScreen }) {
   const [error, setError] = useState('');
   const [executionError, setExecutionError] = useState('');
   const [modeBusy, setModeBusy] = useState(false);
+  const [actionModeBusy, setActionModeBusy] = useState(false);
 
   const refresh = async () => {
     const [osRes, dep, app, execution] = await Promise.all([
@@ -1942,6 +2013,9 @@ export function OrchestrationView({ setActiveScreen }) {
     os?.execution_mode === 'autonomous' || os?.executionMode === 'autonomous'
       ? 'autonomous'
       : 'human_gated';
+  const actionMode = ['draft_safe', 'live_drafts', 'live_publish'].includes(os?.action_mode || os?.actionMode)
+    ? (os.action_mode || os.actionMode)
+    : 'draft_safe';
 
   const executionLabel = (summary) => {
     if (summary?.handoff) return summary.handoff.status === 'blocked' ? 'Needs attention' : 'Handoff ready';
@@ -1979,6 +2053,31 @@ export function OrchestrationView({ setActiveScreen }) {
       setError(err.message || 'Mode update failed');
     } finally {
       setModeBusy(false);
+    }
+  };
+
+  const setActionMode = async (nextMode) => {
+    setActionModeBusy(true);
+    setError('');
+    setMsg('');
+    try {
+      const res = await fetch('/api/agent-os/action-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: ws, actionMode: nextMode }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to update action mode');
+      if (json.agentOs) {
+        saveAgentOs(json.agentOs);
+        setOs(json.agentOs);
+      }
+      await refresh();
+      setMsg(nextMode === 'draft_safe' ? 'Draft-safe mode on.' : nextMode === 'live_drafts' ? 'Live drafts mode on — provider drafts are allowed where supported.' : 'Live publish mode on — publishing requires connector support and action safeguards.');
+    } catch (err) {
+      setError(err.message || 'Action mode update failed');
+    } finally {
+      setActionModeBusy(false);
     }
   };
 
@@ -2061,13 +2160,15 @@ export function OrchestrationView({ setActiveScreen }) {
           <div style={{ flex: 1, minWidth: 220 }}>
             <h3 style={{ margin: 0 }}>Execution mode</h3>
             <p className="card-body" style={{ marginTop: 8, marginBottom: 12 }}>
-              {due.length} active/pending deployments · {pendingApprovals} approval(s) waiting · still draft-safe (no live spend).
+              {due.length} active/pending deployments · {pendingApprovals} approval(s) waiting.
             </p>
             <ExecutionModeToggle
               value={executionMode}
               disabled={modeBusy}
               onChange={setExecutionMode}
             />
+            <h3 style={{ margin: '18px 0 8px' }}>External action mode</h3>
+            <AgentActionModeToggle value={actionMode} disabled={actionModeBusy} onChange={setActionMode} />
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {!hasOs || !deployments.length ? (

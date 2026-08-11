@@ -11,6 +11,13 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
     description: 'Enter your 10-digit Google Ads Customer ID to authorize campaign management.',
     helpText: 'Found in the top right corner of your Google Ads manager dashboard (format: XXX-XXX-XXXX).'
   },
+  gsc: {
+    title: 'Configure Search Console Site',
+    field: 'gsc_site_url',
+    placeholder: 'https://yourdomain.com',
+    description: 'Select the verified Search Console site used for SEO reporting.',
+    helpText: 'Sites can be selected from your connected Google account or entered as a full URL.'
+  },
   meta_ads: {
     title: 'Configure Meta Ad Account',
     field: 'meta_ads_account_id',
@@ -32,12 +39,19 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
     description: 'Enter your Google Analytics 4 Property ID to track website funnel events.',
     helpText: 'Found in GA4 Admin → Property Settings (format: properties/XXXXXXXXX or numeric ID).'
   },
-  gsc: {
-    title: 'Configure Search Console Domain',
-    field: 'gsc_site_url',
-    placeholder: 'https://yourdomain.com',
-    description: 'Enter your verified Google Search Console site domain for rank monitoring.',
-    helpText: 'Enter full domain with https:// or sc-domain:yourdomain.com.'
+  facebook: {
+    title: 'Configure Facebook Page',
+    field: 'facebook_page_id',
+    placeholder: 'Page ID',
+    description: 'Select the Facebook Page used for publishing and page insights.',
+    helpText: 'Only Facebook Pages are supported; personal profiles are not selectable.'
+  },
+  instagram: {
+    title: 'Configure Instagram Account',
+    field: 'instagram_account_id',
+    placeholder: 'Instagram account ID',
+    description: 'Select the connected Instagram Business or Creator account.',
+    helpText: 'Personal Instagram accounts are not supported by the connected toolkit.'
   },
   google_sheets: {
     title: 'Configure Google Spreadsheet',
@@ -45,6 +59,20 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
     placeholder: '1VcoUynWArCt6RaKdSHfOfb0pPka3nPd0AzA28NeKAxk',
     description: 'Enter the spreadsheet ID used for lead capture / ops tables (from Marqq2).',
     helpText: 'From the Sheet URL: docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit'
+  },
+  google_docs: {
+    title: 'Configure Google Doc',
+    field: 'google_docs_document_id',
+    placeholder: '1AbCdEfGhIjKlMnOpQrStUvWxYz',
+    description: 'Select the Google Doc used for briefs, reports, or document delivery.',
+    helpText: 'From the Doc URL: docs.google.com/document/d/<DOCUMENT_ID>/edit'
+  },
+  github: {
+    title: 'Configure GitHub Repository',
+    field: 'github_repository',
+    placeholder: 'owner/repository',
+    description: 'Select the GitHub repository used for issues, code, and deployment workflows.',
+    helpText: 'Choose a detected repository or enter it manually as owner/repository.'
   },
   google_drive: {
     title: 'Configure Google Drive Folder (optional)',
@@ -79,10 +107,25 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
   };
 
   const [accountId, setAccountId] = useState('');
+  const [resources, setResources] = useState([]);
+  const [resourceError, setResourceError] = useState('');
+  const [discovering, setDiscovering] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setDiscovering(true);
+    setResourceError('');
+    fetch(`/api/integrations/resources?companyId=${encodeURIComponent(companyId)}&connectorId=${encodeURIComponent(connectorId)}`)
+      .then(r => r.json().catch(() => ({})))
+      .then(data => {
+        const found = Array.isArray(data?.resources) ? data.resources : [];
+        setResources(found);
+        if (data?.error && !found.length && data?.supported) setResourceError(data.error);
+      })
+      .catch(() => setResourceError('Could not detect available accounts.'))
+      .finally(() => setDiscovering(false));
+
     fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(companyId)}`)
       .then(r => r.json())
       .then(data => {
@@ -150,11 +193,38 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               
+              {resources.length > 0 ? (
+                <div className="field">
+                  <label htmlFor="detected-resource" style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px', display: 'block' }}>
+                    Select detected {config.label.toLowerCase()}
+                  </label>
+                  <select
+                    id="detected-resource"
+                    className="input"
+                    value={resources.some((resource) => resource.id === accountId) ? accountId : ''}
+                    onChange={(e) => setAccountId(e.target.value)}
+                    disabled={discovering}
+                    style={{ width: '100%', fontSize: '13px' }}
+                  >
+                    <option value="">Choose an account or property…</option>
+                    {resources.map((resource) => (
+                      <option key={resource.id} value={resource.id}>
+                        {resource.name} · {resource.id}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-muted" style={{ fontSize: '11px', marginTop: '6px', lineHeight: 1.4 }}>
+                    Detected from the connected {connectorLabel(connectorId)} account.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="field">
-                <label style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px', display: 'block' }}>
-                  Target Account / Property ID
+                <label htmlFor="manual-resource-id" style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px', display: 'block' }}>
+                  {resources.length ? 'Or enter an ID manually' : 'Target Account / Property ID'}
                 </label>
                 <input
+                  id="manual-resource-id"
                   type="text"
                   className="input"
                   placeholder={config.placeholder}
@@ -167,6 +237,8 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
                     {config.helpText}
                   </p>
                 )}
+                {discovering ? <p className="text-muted" style={{ fontSize: '11px', marginTop: '6px' }}>Detecting available accounts…</p> : null}
+                {resourceError ? <p className="text-muted" style={{ fontSize: '11px', marginTop: '6px', color: 'var(--color-accent)' }}>Detection unavailable — manual ID is still supported.</p> : null}
               </div>
 
             </div>

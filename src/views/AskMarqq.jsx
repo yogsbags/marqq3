@@ -555,9 +555,13 @@ export default function AskMarqq({ setActiveScreen }) {
       confidence: result.ok ? 'Queued' : 'Error',
       time: 'Just now',
       text: result.ok
-        ? result.message
+        ? `${result.message}${result.goalTitle ? `\n\nRouted goal: ${result.goalTitle} → ${result.agentDisplayName}${result.requiredConnectors?.length ? `\nConnector for this run: ${result.requiredConnectors.join(', ')}` : ''}` : ''}`
         : `Could not queue that for overnight work: ${result.error || 'unknown error'}. Try asking directly instead.`,
-      sources: result.ok ? `${result.agentDisplayName} · agent deployment queue` : undefined,
+      sources: result.ok
+        ? `${result.agentDisplayName}${result.goalId ? ` · ${result.goalId}` : ''} · agent deployment queue`
+        : undefined,
+      goalId: result.goalId || null,
+      agentName: result.agentName || null,
     };
     setMessagesByChannel((prev) => ({
       ...prev,

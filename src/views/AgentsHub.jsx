@@ -362,11 +362,16 @@ export default function AgentsHub({ agents = [], agentLogs = {}, approvedActions
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       {/* Header */}
-      <div>
-        <h1 style={{ marginBottom: '4px' }}>Agents</h1>
-        <p className="text-muted">
-          {safeAgents.length} agents · {activeCount} active
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ marginBottom: '4px' }}>Agents</h1>
+          <p className="text-muted">
+            {safeAgents.length} agents · {activeCount} active
+          </p>
+        </div>
+        <button type="button" className="btn btn-secondary" onClick={() => setActiveScreen && setActiveScreen('orchestration')}>
+          Execution settings
+        </button>
       </div>
 
       {/* Summary Stat Cards */}

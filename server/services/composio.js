@@ -1,4 +1,6 @@
 import { resolveComposioEntityIds } from '../lib/composioEntities.js';
+import { actionModeFromAgentOs } from './executionMode.js';
+import { loadAgentOsProfile } from './agentOsStore.js';
 
 const COMPOSIO_V3 = 'https://backend.composio.dev/api/v3';
 
@@ -15,6 +17,8 @@ const TOOLKIT = {
   youtube: 'youtube',
   google_sheets: 'googlesheets',
   googlesheets: 'googlesheets',
+  google_docs: 'googledocs',
+  googledocs: 'googledocs',
   hubspot: 'hubspot',
   salesforce: 'salesforce',
   ga4: 'google_analytics',
@@ -51,6 +55,44 @@ function errText(value) {
     }
   }
   return String(value);
+}
+
+const READ_ACTION_PREFIXES = [
+  'GET_', 'LIST_', 'SEARCH_', 'FIND_', 'FETCH_', 'LOOKUP_', 'QUERY_', 'CHECK_', 'IS_', 'RUN_',
+  'RETRIEVE_', 'DESCRIBE_', 'VERIFY_', 'VALIDATE_', 'COUNT_', 'DOWNLOAD_', 'EXPORT_',
+];
+
+function isReadOnlyComposioAction(actionSlug = '') {
+  const slug = String(actionSlug || '').toUpperCase();
+  const last = slug.split('_').slice(1).join('_');
+  return READ_ACTION_PREFIXES.some((prefix) => last.startsWith(prefix)) ||
+    /_(GET|LIST|SEARCH|FIND|FETCH|LOOKUP|QUERY|CHECK|RUN|RETRIEVE|DESCRIBE|VERIFY|VALIDATE|COUNT|DOWNLOAD|EXPORT)(_|$)/.test(slug);
+}
+
+function isProviderDraftAction(actionSlug = '') {
+  const slug = String(actionSlug || '').toUpperCase();
+  return /DRAFT|SAVE.*DRAFT|CREATE.*DRAFT|UPDATE.*DRAFT/.test(slug);
+}
+
+export function composioActionPermission(actionSlug, userId) {
+  const mode = actionModeFromAgentOs(loadAgentOsProfile(userId));
+  if (isReadOnlyComposioAction(actionSlug)) {
+    return { allowed: true, mode, kind: 'read' };
+  }
+  if (mode === 'live_publish') {
+    return { allowed: true, mode, kind: 'write' };
+  }
+  if (mode === 'live_drafts' && isProviderDraftAction(actionSlug)) {
+    return { allowed: true, mode, kind: 'provider_draft' };
+  }
+  return {
+    allowed: false,
+    mode,
+    kind: 'write',
+    error: mode === 'live_drafts'
+      ? `Connector action ${actionSlug} is not a provider-draft action. Switch to Live publish or use a draft-specific tool.`
+      : `Connector write ${actionSlug} blocked by Draft-safe mode. Switch to Live drafts or Live publish in Orchestration.`,
+  };
 }
 
 function readGenericApiKey(detail) {
@@ -134,6 +176,10 @@ export async function getConnectedAccountApiKey(connectorId, userId) {
 }
 
 export async function executeComposioAction(actionSlug, args, userId, toolkitHint = null) {
+  const permission = composioActionPermission(actionSlug, userId);
+  if (!permission.allowed) {
+    return { error: permission.error, code: 'action_mode_blocked', actionMode: permission.mode, action: actionSlug };
+  }
   const key = apiKey();
   if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
   const toolkit =
@@ -158,21 +204,39 @@ export async function executeComposioAction(actionSlug, args, userId, toolkitHin
                       ? 'twitter'
                       : actionSlug.startsWith('YOUTUBE_')
                         ? 'youtube'
-                        : actionSlug.startsWith('GITHUB_')
-                          ? 'github'
-                          : actionSlug.startsWith('RAILWAY_')
-                            ? 'railway'
-                            : null);
+                      : actionSlug.startsWith('GITHUB_')
+                            ? 'github'
+                            : actionSlug.startsWith('METAADS_')
+                              ? 'metaads'
+                              : actionSlug.startsWith('GOOGLE_ANALYTICS_')
+                                ? 'google_analytics'
+                                : actionSlug.startsWith('GOOGLEADS_')
+                                  ? 'googleads'
+                                  : actionSlug.startsWith('GOOGLE_SEARCH_CONSOLE_')
+                                    ? 'google_search_console'
+                                    : actionSlug.startsWith('GOOGLESHEETS_')
+                                      ? 'googlesheets'
+                                      : actionSlug.startsWith('GOOGLEDOCS_')
+                                        ? 'googledocs'
+                                        : actionSlug.startsWith('GOOGLEDRIVE_')
+                                          ? 'googledrive'
+                            : actionSlug.startsWith('RAILWAY_')
+                              ? 'railway'
+                              : null);
   try {
     const connectedAccountId = await resolveConnectedAccountId(toolkit || 'gmail', userId);
+    const payload = {
+      connected_account_id: connectedAccountId,
+      user_id: userId,
+      arguments: args || {},
+    };
+    if (['google_analytics', 'metaads', 'googleads', 'google_search_console', 'googlesheets', 'googledocs', 'googledrive'].includes(toolkit)) {
+      payload.version = process.env.COMPOSIO_TOOLKIT_VERSION || 'latest';
+    }
     const res = await fetch(`${COMPOSIO_V3}/tools/execute/${actionSlug}`, {
       method: 'POST',
       headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        connected_account_id: connectedAccountId,
-        user_id: userId,
-        arguments: args || {},
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.successful === false) {
@@ -189,6 +253,16 @@ export async function executeComposioAction(actionSlug, args, userId, toolkitHin
 }
 
 export async function executeComposioProxy({ toolkit, userId, method = 'POST', endpoint, body = null }) {
+  const proxyAction = `${String(method || 'POST').toUpperCase()}_${String(endpoint || '').split('?')[0]}`;
+  const mode = actionModeFromAgentOs(loadAgentOsProfile(userId));
+  const isRead = String(method || 'POST').toUpperCase() === 'GET';
+  const isDraftEndpoint = /draft/i.test(String(endpoint || ''));
+  if (!isRead && mode === 'draft_safe') {
+    return { error: `Connector proxy blocked by Draft-safe mode: ${proxyAction}`, code: 'action_mode_blocked', actionMode: mode };
+  }
+  if (!isRead && mode === 'live_drafts' && !isDraftEndpoint) {
+    return { error: `Connector proxy is not a draft endpoint: ${proxyAction}`, code: 'action_mode_blocked', actionMode: mode };
+  }
   const key = apiKey();
   if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
   try {

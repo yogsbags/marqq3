@@ -467,7 +467,10 @@ export function OnboardingView({ setActiveScreen }) {
     { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
-    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' }
+    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
+    { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
+    { id: 'google_docs', name: 'Google Docs', connected: false, status: 'not_connected' },
+    { id: 'github', name: 'GitHub', connected: false, status: 'not_connected' },
   ]);
   const [connectingConnectorId, setConnectingConnectorId] = useState(null);
   const [connectError, setConnectError] = useState('');

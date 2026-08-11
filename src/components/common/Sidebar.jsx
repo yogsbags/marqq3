@@ -2,13 +2,12 @@ import React from 'react';
 import { getCompanyName } from '../../lib/liveWorkspace';
 
 const navConfig = [
-  { name: 'Operate', items: [{ id: 'command', label: 'Command Center' }, { id: 'chat', label: 'Ask Marqq' }, { id: 'orchestration', label: 'Orchestration' }, { id: 'approvals', label: 'Approvals' }] },
-  { name: 'Plan & Create', items: [{ id: 'gtmwizard', label: 'GTM Wizard' }, { id: 'strategy', label: 'Strategy' }, { id: 'ideas', label: 'Marketing Ideas' }, { id: 'pricing', label: 'Pricing' }, { id: 'campaigns', label: 'Campaigns' }, { id: 'content', label: 'Content' }, { id: 'calendar', label: 'Calendar' }, { id: 'landingpages', label: 'Landing Pages' }, { id: 'leadmagnets', label: 'Lead Magnets' }] },
-  { name: 'Intelligence', items: [{ id: 'agents', label: 'Agents' }, { id: 'market', label: 'Market Intelligence' }, { id: 'audiences', label: 'Audiences' }, { id: 'brand', label: 'Brand Center' }, { id: 'seo', label: 'SEO' }, { id: 'analytics', label: 'Performance Scorecard' }] },
-  { name: 'Execution', items: [{ id: 'crm', label: 'CRM Sync' }, { id: 'customer360', label: 'Customer 360' }, { id: 'outreach', label: 'Outreach Studio' }, { id: 'paid', label: 'Paid Media' }, { id: 'social', label: 'Social Media' }, { id: 'creative', label: 'Creative Studio' }, { id: 'voicebot', label: 'Voice & Video Bot' }] },
-  { name: 'Grow', items: [{ id: 'experiments', label: 'Experiments' }, { id: 'reporting', label: 'Reporting' }, { id: 'referrals', label: 'Referral Programs' }] },
-  { name: 'System', items: [{ id: 'workflows', label: 'Workflows' }, { id: 'tasks', label: 'Tasks' }, { id: 'evaluations', label: 'Evaluations' }, { id: 'knowledge', label: 'Knowledge Base' }, { id: 'files', label: 'Workspace Files' }, { id: 'integrations', label: 'Integrations' }, { id: 'billing', label: 'Billing' }, { id: 'admin', label: 'Administration' }, { id: 'help', label: 'Help & Support' }] },
-  { name: 'Setup', items: [{ id: 'onboarding', label: 'Onboarding Wizard' }] }
+  { name: 'Home', items: [{ id: 'command', label: 'Overview' }, { id: 'chat', label: 'Ask Marqq' }] },
+  { name: 'Plan', items: [{ id: 'gtmwizard', label: 'GTM Strategy' }, { id: 'strategy', label: 'Strategy' }, { id: 'ideas', label: 'Marketing Ideas' }, { id: 'campaigns', label: 'Campaign Planning' }, { id: 'content', label: 'Content' }, { id: 'calendar', label: 'Calendar' }, { id: 'landingpages', label: 'Landing Pages' }, { id: 'leadmagnets', label: 'Lead Magnets' }, { id: 'pricing', label: 'Pricing & Offers' }] },
+  { name: 'Execute', items: [{ id: 'paid', label: 'Paid Media' }, { id: 'social', label: 'Social Media' }, { id: 'outreach', label: 'Outreach' }, { id: 'crm', label: 'CRM Sync' }, { id: 'creative', label: 'Creative Studio' }, { id: 'voicebot', label: 'Voice & Video Bot' }, { id: 'workflows', label: 'Workflows' }] },
+  { name: 'AI Team', items: [{ id: 'agents', label: 'Agents' }, { id: 'orchestration', label: 'Execution & Orchestration' }, { id: 'approvals', label: 'Approvals' }, { id: 'tasks', label: 'Tasks' }, { id: 'evaluations', label: 'Evaluations' }] },
+  { name: 'Analyze', items: [{ id: 'market', label: 'Market Intelligence' }, { id: 'audiences', label: 'Audiences' }, { id: 'brand', label: 'Brand Center' }, { id: 'seo', label: 'SEO' }, { id: 'analytics', label: 'Performance' }, { id: 'customer360', label: 'Customer 360' }, { id: 'experiments', label: 'Experiments' }, { id: 'reporting', label: 'Reporting' }, { id: 'referrals', label: 'Referral Programs' }] },
+  { name: 'Workspace', items: [{ id: 'knowledge', label: 'Knowledge Base' }, { id: 'files', label: 'Workspace Files' }, { id: 'integrations', label: 'Integrations' }, { id: 'help', label: 'Help & Support' }] },
 ];
 
 export default function Sidebar({ activeScreen, setActiveScreen, onOpenModal }) {
