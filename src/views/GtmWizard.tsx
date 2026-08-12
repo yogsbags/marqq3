@@ -33,6 +33,7 @@ import {
   sectionTargetsFromDrafts,
   type GtmGoalSystemNorm,
 } from "../lib/gtmNorthStar";
+import { isConsumerHealthNiche, withConsumerHealthWorkstreams } from "../lib/consumerHealthWorkstreams";
 import {
   loadGtmAutoSections,
   saveGtmAutoSections,
@@ -53,14 +54,19 @@ const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 /** Bump: LLM options fix + full strategy section headers. */
-const GTM_WIZARD_SESSION_VERSION = "wizard-llm-options-headers-v1";
+const GTM_WIZARD_SESSION_VERSION = "wizard-explicit-module-selection-v2";
 const GTM_WIZARD_SESSION_KEY = "marqq_gtm_wizard";
 const GTM_WIZARD_VERSION_KEY = "marqq_gtm_wizard_version";
+
+function getWizardLocalKey(): string {
+  return `marqq_gtm_wizard_${getActiveWorkspaceId()}`;
+}
 
 function clearStaleWizardSession(): void {
   try {
     if (sessionStorage.getItem(GTM_WIZARD_VERSION_KEY) === GTM_WIZARD_SESSION_VERSION) return;
-    sessionStorage.removeItem(GTM_WIZARD_SESSION_KEY);
+    // Preserve the in-progress interview when the schema/version changes.
+    // Deleting this cache made a refresh appear to lose locked answers.
     sessionStorage.removeItem("marqq_gtm_strategy");
     sessionStorage.removeItem("marqq_agent_os");
     sessionStorage.setItem(GTM_WIZARD_VERSION_KEY, GTM_WIZARD_SESSION_VERSION);
@@ -103,12 +109,30 @@ interface StrategySection {
   subsections?: Array<{ title: string; body: string; bullets?: string[] }>;
 }
 
+interface StrategyWorkstream {
+  id: string;
+  name: string;
+  phase: string;
+  primaryAgent: string;
+  supportingAgents?: string[];
+  dependsOn?: string[];
+  tools: string[];
+  inputs: string[];
+  outputs: string[];
+  approval: string;
+  metric: string;
+  deadline: string;
+  stopRule: string;
+  mode: string;
+}
+
 interface StrategyDoc {
   title: string;
   executiveSummary: string;
   nextSteps: string[];
   generatedAt?: string;
   goalAlignment: GtmGoalSystemNorm;
+  workstreams?: StrategyWorkstream[];
   sections: StrategySection[];
 }
 
@@ -134,6 +158,8 @@ interface WizardState {
 
 interface GtmWizardProps {
   setActiveScreen: (screen: string) => void;
+  campaigns?: Array<{ id: string; name?: string }>;
+  activeCampaignId?: string;
 }
 
 /** Minimal shape of a gtm_modules row as returned by GtmModuleSwitcher.jsx's
@@ -389,6 +415,12 @@ function loadWizardState(ctx: OnboardingCtx): WizardState {
     /* ignore */
   }
   try {
+    const raw = localStorage.getItem(getWizardLocalKey());
+    if (raw) return normalizeWizardState(JSON.parse(raw) as Partial<WizardState>, ctx);
+  } catch {
+    /* ignore */
+  }
+  try {
     const s = sessionStorage.getItem("marqq_gtm_strategy");
     if (s) {
       const strategy = JSON.parse(s) as StrategyDoc;
@@ -431,6 +463,70 @@ function answersPromptBlock(answers: GtmAnswers): string {
   return Object.entries(answers)
     .map(([id, a]) => `- ${id}: ${answerLabel(a)}`)
     .join("\n");
+}
+
+function isConsumerHealthContext(ctx: OnboardingCtx): boolean {
+  return isConsumerHealthNiche(ctx.niche, ctx.icp, ctx.businessSummary || "");
+}
+
+function finalizeStrategyDoc(ctx: OnboardingCtx, answers: GtmAnswers, doc: StrategyDoc): StrategyDoc {
+  return withConsumerHealthWorkstreams(ctx, answers, doc);
+}
+
+function sanitizeConsumerHealthGoal(ctx: OnboardingCtx, goal: GtmGoalSystemNorm): GtmGoalSystemNorm {
+  if (!isConsumerHealthContext(ctx)) return goal;
+  const safeMetrics: Record<string, string> = {
+    executive_summary: "Paid conversions from qualified trials",
+    market_analysis: "Qualified trial starts from the locked audience",
+    target_customer: "Validated audience-fit signals",
+    product_strategy: "First-value completion rate",
+    positioning_messaging: "Qualified trial starts from approved messaging",
+    pricing_monetization: "Trial-to-paid conversion and early retention",
+    distribution_channels: "Qualified trial starts from the selected channel",
+    marketing_strategy: "Trial-to-first-value completion rate",
+    sales_strategy: "Self-serve upgrade conversion",
+    customer_success: "Day-7 and day-30 paid retention",
+    launch_plan: "Launch milestones completed on time",
+    operations_execution: "Experiment decision cadence adherence",
+    financial_plan: "Observed revenue, refunds, and retention baseline",
+    measurement_optimization: "Event completeness and attribution quality",
+    risks_contingencies: "Claims, consent, and data-quality incidents",
+    timeline_roadmap: "Progress toward paid conversions within the 90-day window",
+  };
+  const unsafe = /health outcome|blood sugar|HbA1c|diagnos|treat|cure|symptom control|organ impact|clinical efficacy/i;
+  const contributions: Record<string, string> = {
+    executive_summary: "Keep the 90-day target and primary motion visible",
+    market_analysis: "Validate qualified demand from the locked audience",
+    target_customer: "Improve audience-fit confidence from first-party evidence",
+    product_strategy: "Increase completion of the first-value path",
+    positioning_messaging: "Increase qualified trial starts from approved claims",
+    pricing_monetization: "Improve paid conversion without harming early retention",
+    distribution_channels: "Increase qualified trial starts from the selected channel",
+    marketing_strategy: "Improve trial-to-first-value progression",
+    sales_strategy: "Improve permission-based self-serve upgrade conversion",
+    customer_success: "Improve paid day-7 and day-30 retention",
+    launch_plan: "Complete launch gates on schedule",
+    operations_execution: "Maintain the weekly experiment decision cadence",
+    financial_plan: "Establish observed revenue, refund, and retention baselines",
+    measurement_optimization: "Maintain complete, attributable event data",
+    risks_contingencies: "Reduce claims, consent, and data-quality incidents",
+    timeline_roadmap: "Advance toward the paid-conversion target within 90 days",
+  };
+  return {
+    ...goal,
+    business_archetype: "consumer_product",
+    ultimate_outcome_metric: "Sustained user retention and continued use of nutrition guidance",
+    metric_tree: [
+      goal.north_star_metric || "Paid conversions",
+      "Trial-to-first-value completion",
+      "Selected-channel qualified trial starts",
+    ],
+    sectionTargets: (goal.sectionTargets || []).map((target) => ({
+      ...target,
+      metric: safeMetrics[target.sectionId] || (unsafe.test(String(target.metric || "")) ? "Verified first-value completion and paid conversion" : target.metric),
+      contribution: contributions[target.sectionId] || target.contribution,
+    })),
+  };
 }
 
 function toStrategySection(
@@ -554,7 +650,12 @@ async function enrichGoalAlignment(
   answers: GtmAnswers,
   doc: StrategyDoc
 ): Promise<StrategyDoc> {
-  if (!GROQ_KEY) return doc;
+  if (!GROQ_KEY) {
+    return finalizeStrategyDoc(ctx, answers, {
+      ...doc,
+      goalAlignment: sanitizeConsumerHealthGoal(ctx, doc.goalAlignment),
+    });
+  }
   const placeholders = countPlaceholderSectionTargets(doc.goalAlignment.sectionTargets || []);
   const weakCore =
     isWeakGoalSystem(doc.goalAlignment) ||
@@ -562,7 +663,7 @@ async function enrichGoalAlignment(
     !(doc.goalAlignment.metric_tree || []).length ||
     !(doc.goalAlignment.guardrails || []).length ||
     placeholders >= 8;
-  if (!weakCore && placeholders === 0) return doc;
+  if (!weakCore && placeholders === 0) return finalizeStrategyDoc(ctx, answers, doc);
 
   try {
     const sectionCatalog = GTM_FULL_STRATEGY_SECTION_ORDER.map((s) => {
@@ -653,14 +754,18 @@ Require exactly ${GTM_FULL_STRATEGY_SECTION_ORDER.length} sectionTargets coverin
       enriched.quantified_target = lockedQuant;
     }
 
-    return {
+    const safeGoal = sanitizeConsumerHealthGoal(ctx, enriched);
+    return finalizeStrategyDoc(ctx, answers, {
       ...doc,
-      goalAlignment: enriched,
-      sections: alignSectionsToLeadingMetrics(doc.sections, enriched.sectionTargets),
-    };
+      goalAlignment: safeGoal,
+      sections: alignSectionsToLeadingMetrics(doc.sections, safeGoal.sectionTargets),
+    });
   } catch (err) {
     console.warn("[gtm] goalAlignment enrich failed:", err);
-    return doc;
+    return finalizeStrategyDoc(ctx, answers, {
+      ...doc,
+      goalAlignment: sanitizeConsumerHealthGoal(ctx, doc.goalAlignment),
+    });
   }
 }
 
@@ -763,6 +868,9 @@ async function generateGtmStrategy(
       if (data.strategy.executiveSummary) {
         assembled.executiveSummary = String(data.strategy.executiveSummary);
       }
+      if (Array.isArray(data.strategy.workstreams) && data.strategy.workstreams.length) {
+        assembled.workstreams = data.strategy.workstreams as StrategyWorkstream[];
+      }
       if (data.strategy.title) assembled.title = String(data.strategy.title);
       return enrichGoalAlignment(ctx, answers, assembled);
     }
@@ -852,11 +960,10 @@ function fallbackStrategy(
   answers: GtmAnswers,
   approvedDrafts: GtmStrategySectionDraft[] = []
 ): StrategyDoc {
-  return assembleStrategyFromBriefs(
+  return finalizeStrategyDoc(
     ctx,
     answers,
-    approvedDrafts,
-    loadGtmAutoSections(getActiveWorkspaceId())
+    assembleStrategyFromBriefs(ctx, answers, approvedDrafts, loadGtmAutoSections(getActiveWorkspaceId()))
   );
 }
 
@@ -938,6 +1045,21 @@ function strategyToHtml(doc: StrategyDoc): string {
 
 function strategyToMarkdown(doc: StrategyDoc): string {
   const nsm = goalAlignmentToMarkdown(doc.goalAlignment);
+  const workstreams = (doc.workstreams || []).flatMap((w) => [
+    `### ${w.name}`,
+    `- Phase: ${w.phase}`,
+    `- Primary agent: ${w.primaryAgent}${w.supportingAgents?.length ? ` · Supporting: ${w.supportingAgents.join(", ")}` : ""}`,
+    `- Depends on: ${w.dependsOn?.length ? w.dependsOn.join(", ") : "None"}`,
+    `- Tools: ${w.tools.join(", ")}`,
+    `- Inputs: ${w.inputs.join("; ")}`,
+    `- Outputs: ${w.outputs.join("; ")}`,
+    `- Approval: ${w.approval}`,
+    `- Metric: ${w.metric}`,
+    `- Deadline: ${w.deadline}`,
+    `- Stop rule: ${w.stopRule}`,
+    `- Mode: ${w.mode}`,
+    "",
+  ]);
   const sections = (doc.sections || [])
     .map((s) => {
       const bits = [
@@ -964,6 +1086,7 @@ function strategyToMarkdown(doc: StrategyDoc): string {
     doc.generatedAt ? `_Generated ${doc.generatedAt}_` : "",
     "",
     nsm,
+    doc.workstreams?.length ? ["## Agent execution workstreams", "", ...workstreams].join("\n") : "",
     "## Executive summary",
     "",
     doc.executiveSummary || "",
@@ -1008,6 +1131,22 @@ function LockedAnswersCard({ answers }: { answers: GtmAnswers }) {
     if (map[id]) return map[id];
     return question.replace(/\?$/, "").slice(0, 42);
   };
+
+  // Foundational answers are owned by onboarding and no longer have duplicate
+  // questions in the GTM interview. Keep them visible here so users can see
+  // what the wizard is carrying forward.
+  const onboardingLabels: Array<[string, string]> = [
+    ["priority_90d", "Outcome"],
+    ["timeline_target", "Timeline"],
+    ["quantified_target", "Target"],
+    ["success_baseline", "Baseline"],
+    ["icp", "Audience"],
+  ];
+  for (const [id, label] of onboardingLabels) {
+    const value = answerLabel(answers[id]);
+    if (!value) continue;
+    rows.push({ id, section: "Onboarding brief", label, value, fromOnboarding: true });
+  }
 
   for (const section of GTM_INTERVIEW_SECTIONS) {
     for (const q of section.questions) {
@@ -1582,6 +1721,7 @@ function QuestionPanel({
           <button
             type="button"
             className="btn btn-primary"
+            aria-label="Submit custom answer"
             disabled={!customText.trim()}
             onClick={onSubmitCustom}
           >
@@ -1647,6 +1787,7 @@ function GtmDocumentView({
     (t) => t.metric && !isPlaceholderSectionTarget(t)
   ).length;
   const placeholderCount = countPlaceholderSectionTargets(ga.sectionTargets || []);
+  const workstreams = doc.workstreams || [];
 
   const exportPdf = () => {
     const html = strategyToHtml(doc);
@@ -2027,6 +2168,36 @@ function GtmDocumentView({
       ) : (
         <div>
           <h4 style={{ marginBottom: 12 }}>Activation plan</h4>
+          {workstreams.length > 0 ? (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div className="card-kicker">Agent execution plan</div>
+              <div className="card-title" style={{ fontSize: 15 }}>Workstreams ready for orchestration</div>
+              <p className="card-body" style={{ marginTop: 6 }}>
+                Each workstream has an owner, dependencies, tools, deliverables, approval gate, metric, deadline, and stop rule.
+              </p>
+              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                {workstreams.map((w) => (
+                  <div key={w.id} className="card" style={{ background: "var(--color-surface-muted, rgba(0,0,0,.02))" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                      <strong>{w.name}</strong>
+                      <span className="tag tag-outline">{w.phase}</span>
+                    </div>
+                    <div className="text-muted" style={{ fontSize: 12, marginTop: 6 }}>
+                      Primary: {w.primaryAgent}{w.supportingAgents?.length ? ` · Supporting: ${w.supportingAgents.join(", ")}` : ""} · Due: {w.deadline}
+                    </div>
+                    <div style={{ display: "grid", gap: 4, marginTop: 8, fontSize: 12 }}>
+                      <div><b>Tools:</b> {w.tools.join(", ")}</div>
+                      <div><b>Outputs:</b> {w.outputs.join("; ")}</div>
+                      <div><b>Metric:</b> {w.metric}</div>
+                      <div><b>Approval:</b> {w.approval}</div>
+                      <div><b>Stop rule:</b> {w.stopRule}</div>
+                      <div><b>Mode:</b> {w.mode}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
             <div className="card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2091,7 +2262,7 @@ function GtmDocumentView({
   );
 }
 
-export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
+export default function GtmWizard({ setActiveScreen, campaigns = [], activeCampaignId }: GtmWizardProps) {
   const ctx = useMemo(() => getCtx(), []);
   const [state, setState] = useState<WizardState>(() => loadWizardState(ctx));
   const [regenerating, setRegenerating] = useState(false);
@@ -2104,6 +2275,7 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
   const optionsReqId = useRef(0);
   const autoAdvancedStage = useRef<string | null>(null);
   const activatedStrategyKey = useRef<string | null>(null);
+  const moduleSyncInFlight = useRef(false);
 
   // Dual-read: hydrate from gtm_modules when session cache is empty
   useEffect(() => {
@@ -2209,6 +2381,11 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
   useEffect(() => {
     const normalized = normalizeWizardState(state, ctx);
     sessionStorage.setItem(GTM_WIZARD_SESSION_KEY, JSON.stringify(normalized));
+    try {
+      localStorage.setItem(getWizardLocalKey(), JSON.stringify(normalized));
+    } catch {
+      /* ignore */
+    }
     if (normalized.strategy) {
       sessionStorage.setItem("marqq_gtm_strategy", JSON.stringify(normalized.strategy));
       try {
@@ -2232,6 +2409,8 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
               workspaceId,
               strategy: normalized.strategy,
               agentOs: os,
+              campaignId: activeCampaignId || null,
+              campaignName: campaigns.find((campaign) => String(campaign.id) === String(activeCampaignId))?.name || null,
             }),
           }).catch((err) => console.warn("[gtm] strategy activate failed:", err));
           void apiFetch("/api/gtm/modules/lock", {
@@ -2260,6 +2439,8 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
         console.warn("[gtm] agent OS build failed:", err);
       }
     } else {
+      if (moduleSyncInFlight.current) return;
+      moduleSyncInFlight.current = true;
       // Optimistic draft sync to gtm_modules (sessionStorage remains primary cache)
       const workspaceId = getActiveWorkspaceId();
       if (workspaceId) {
@@ -2291,8 +2472,12 @@ export default function GtmWizard({ setActiveScreen }: GtmWizardProps) {
               setStoredActiveModuleId("");
             }
           })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            moduleSyncInFlight.current = false;
+          });
       }
+      else moduleSyncInFlight.current = false;
     }
   }, [state, ctx]);
 
