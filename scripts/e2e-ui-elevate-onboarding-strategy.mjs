@@ -345,7 +345,7 @@ async function main() {
     await shot("04-wizard");
 
     let locks = 0;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 180; i++) {
       await dismissOverlays(page);
       if (await isStrategyDocumentVisible(page)) {
         ok("strategy:document");
@@ -355,16 +355,7 @@ async function main() {
         await page.waitForTimeout(3000);
         continue;
       }
-      // Prefer full document depth when that question appears
-      const fullPlan = page.locator("button").filter({ hasText: /Full strategic plan \(all sections\)/i }).first();
-      if (await fullPlan.isVisible().catch(() => false)) {
-        await safeClick(fullPlan);
-        await page.waitForTimeout(400);
-        const cont = page.getByRole("button", { name: /^Continue$/i }).first();
-        if (await cont.isVisible().catch(() => false)) await safeClick(cont);
-        continue;
-      }
-      const lockCta = page.getByRole("button", { name: /Lock (Goals|Module|Offer|Audience)/i }).first();
+      const lockCta = page.getByRole("button", { name: /Lock (execution choices|Module|Offer|audience refinement|Goals)/i }).first();
       if (await lockCta.isVisible().catch(() => false)) {
         await safeClick(lockCta);
         locks += 1;
@@ -372,30 +363,86 @@ async function main() {
         await page.waitForTimeout(900);
         continue;
       }
-      // Prefer recommended option cards
-      const recommended = page.locator("button").filter({ hasText: /RECOMMENDED/i });
-      if ((await recommended.count()) > 0) {
-        await safeClick(recommended.first());
-        await page.waitForTimeout(500);
-        const cont = page.getByRole("button", { name: /^Continue$/i }).first();
-        if (await cont.isVisible().catch(() => false)) await safeClick(cont);
+
+      if (await page.getByText(/Generating options for your company/i).first().isVisible().catch(() => false)) {
+        if (i % 4 === 0) console.log("  … waiting for AI options");
+        await page.waitForTimeout(2000);
         continue;
       }
-      const candidates = page.locator("button.btn");
-      const n = await candidates.count();
-      let clicked = false;
-      for (let j = 0; j < Math.min(n, 24); j++) {
-        const t = ((await candidates.nth(j).textContent()) || "").trim();
-        if (!t || t.length > 140) continue;
-        if (/Back|Export|Regenerate|Start over|Ask|Open|Skip|Sign|Google|SSO|Logout|Goals|Module|Offer|Audience|^Strategy$|Market analysis|Positioning|Distribution|Marketing strategy|Sales strategy|Launch plan|Measurement|Risks|Timeline/i.test(t))
-          continue;
-        if (/Lock |Continue/i.test(t)) continue;
-        await safeClick(candidates.nth(j));
-        clicked = true;
-        await page.waitForTimeout(450);
-        break;
+      const retryOpts = page.getByRole("button", { name: /Retry AI options/i }).first();
+      if (await retryOpts.isVisible().catch(() => false)) {
+        console.log("  … retry AI options");
+        await safeClick(retryOpts);
+        await page.waitForTimeout(2500);
+        continue;
       }
-      if (!clicked) await page.waitForTimeout(2000);
+
+      const questionHeading = page
+        .locator("h4")
+        .filter({ hasText: /\?/ })
+        .filter({ hasNotText: /^GTM Strategy Document$/i })
+        .first();
+      if (!(await questionHeading.isVisible().catch(() => false))) {
+        if (i % 5 === 0) {
+          const headings = await page.locator("h4").allTextContents().catch(() => []);
+          console.log(`  … no active question heading [${headings.join(" | ")}]`);
+        }
+        await page.waitForTimeout(1200);
+        continue;
+      }
+      const questionPanel = questionHeading.locator("xpath=..");
+      const question = (await questionHeading.textContent().catch(() => "")).trim();
+      console.log(`  … answering: ${question}`);
+      const customAnswers = [
+        [/What are you building|go-to-market plan for/i, "Management strategy and AI transformation consulting"],
+        [/What should we call this offer/i, "Elevate strategy-to-execution"],
+        [/What does this specific offer do/i, "Helps growth-stage companies turn strategy into measurable digital transformation outcomes"],
+        [/Where would a buyer put you/i, "Strategy and AI transformation partner"],
+        [/Who uses, chooses, or influences/i, "CEOs, COOs, and transformation leaders at mid-market companies"],
+        [/What are they trying to accomplish/i, "Execute a credible AI and digital transformation roadmap with measurable business impact"],
+        [/What usually causes them/i, "Strategy decks that never ship, failed pilots, or pressure to show AI ROI"],
+        [/Who is not a good fit/i, "Early-stage startups or companies seeking only staff augmentation"],
+      ];
+      const custom = customAnswers.find(([re]) => re.test(question));
+      const serviceOpt = questionPanel
+        .getByRole("button", { name: /^(Service|Consulting|B2B services|Advisory|Professional services)\b/i })
+        .first();
+      const fullPlan = questionPanel.getByRole("button", { name: /Full strategic plan/i }).first();
+      const customInput = page.getByPlaceholder(/type your own/i).first();
+      const submitCustom = page.getByRole("button", { name: /Submit custom answer/i }).first();
+
+      if (/How detailed should/i.test(question) && (await fullPlan.isVisible().catch(() => false))) {
+        await safeClick(fullPlan);
+      } else if (/What are you building|go-to-market plan for/i.test(question) && (await serviceOpt.isVisible().catch(() => false))) {
+        await safeClick(serviceOpt);
+      } else if (custom && (await customInput.isVisible().catch(() => false))) {
+        await customInput.fill("");
+        await customInput.fill(custom[1]);
+        await customInput.press("Enter").catch(() => {});
+        if (await submitCustom.isEnabled().catch(() => false)) {
+          await safeClick(submitCustom);
+        } else {
+          const fallback = questionPanel.locator("button.btn-secondary").first();
+          if (await fallback.isVisible().catch(() => false)) await safeClick(fallback);
+        }
+      } else {
+        const optionButtons = questionPanel.locator("button.btn-secondary, button").filter({
+          hasNotText: /Continue with|Submit custom|Lock|Generate strategy|Retry AI|Add module/i,
+        });
+        if (!(await optionButtons.count())) {
+          if (i % 5 === 0) console.log(`  … active question has no options: ${question}`);
+          await page.waitForTimeout(1200);
+          continue;
+        }
+        await safeClick(optionButtons.first());
+      }
+      await page.waitForTimeout(900);
+
+      const multiContinue = questionPanel.getByRole("button", { name: /^Continue with \d+ selected$/i }).first();
+      if (await multiContinue.isVisible().catch(() => false)) {
+        await safeClick(multiContinue);
+        await page.waitForTimeout(900);
+      }
     }
 
     const docOk = await page
