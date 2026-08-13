@@ -17,6 +17,34 @@ function readClient() {
 
 const OS_ARTIFACT_TYPE = 'agent_os';
 
+export async function loadWorkspacePreferencesFromSupabase(workspaceId) {
+  const db = getSupabaseReadClient();
+  if (!db || !isUuidWorkspace(workspaceId)) return null;
+  try {
+    const { data, error } = await db.from('agent_artifacts').select('payload, data').eq('id', `workspace_prefs_${workspaceId}`).maybeSingle();
+    if (error || !data) return null;
+    return data.payload || data.data || null;
+  } catch { return null; }
+}
+
+export async function persistWorkspacePreferencesToSupabase(workspaceId, preferences) {
+  const db = writeClient();
+  if (!db || !isUuidWorkspace(workspaceId)) return false;
+  try {
+    const { error } = await db.from('agent_artifacts').upsert({
+      id: `workspace_prefs_${workspaceId}`,
+      company_id: workspaceId,
+      agent: 'workspace',
+      type: 'workspace_prefs',
+      data: preferences || {},
+      payload: preferences || {},
+      tags: ['workspace_preferences'],
+      saved_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+    return !error;
+  } catch { return false; }
+}
+
 export async function persistAgentOsToSupabase(profile, workspaceId) {
   const db = writeClient();
   if (!db || !isUuidWorkspace(workspaceId)) return false;
@@ -376,6 +404,69 @@ export async function updateAgentActionReceipt({
   } catch (err) {
     console.warn('[agent_action_receipts update]', err?.message || err);
     return false;
+  }
+}
+
+export async function listAgentActivity(workspaceId, { limit = 80 } = {}) {
+  const db = readClient();
+  if (!db || !isUuidWorkspace(workspaceId)) return null;
+  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 80));
+  try {
+    const [eventsRes, runsRes, receiptsRes, approvalsRes] = await Promise.all([
+      db.from('agent_events').select('id, run_id, deployment_id, event_type, step_key, payload, created_at').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(safeLimit),
+      db.from('agent_runs').select('id, deployment_id, agent_name, status, current_step, output, error, started_at, completed_at, updated_at').eq('workspace_id', workspaceId).order('updated_at', { ascending: false }).limit(safeLimit),
+      db.from('agent_action_receipts').select('id, run_id, step_key, action_key, action_type, status, request, response, created_at, updated_at').eq('workspace_id', workspaceId).order('updated_at', { ascending: false }).limit(safeLimit),
+      db.from('draft_approvals').select('id, status, payload, created_at, updated_at').eq('workspace_id', workspaceId).order('updated_at', { ascending: false }).limit(safeLimit),
+    ]);
+    const firstError = [eventsRes, runsRes, receiptsRes, approvalsRes].find((result) => result.error && !/relation .* does not exist|schema cache/i.test(result.error.message || ''));
+    if (firstError) throw firstError.error;
+    const events = (eventsRes.data || []).map((row) => ({ id: `event:${row.id}`, kind: 'event', timestamp: row.created_at, title: row.event_type, detail: row.payload?.summary || row.payload?.next_step || row.step_key || 'Agent event', status: row.payload?.status || 'info', runId: row.run_id, deploymentId: row.deployment_id, payload: row.payload || {} }));
+    const runs = (runsRes.data || []).map((row) => ({ id: `run:${row.id}`, kind: 'run', timestamp: row.updated_at || row.completed_at || row.started_at, title: `${row.agent_name || 'Agent'} run`, detail: row.output?.summary || row.error || row.current_step || 'Agent run', status: row.status, runId: row.id, deploymentId: row.deployment_id, payload: row.output || {} }));
+    const receipts = (receiptsRes.data || []).map((row) => ({ id: `action:${row.id}`, kind: 'action', timestamp: row.updated_at || row.created_at, title: row.action_type || 'Agent action', detail: row.response?.summary || row.response?.error || row.action_key, status: row.status, runId: row.run_id, payload: row.response || row.request || {} }));
+    const approvals = (approvalsRes.data || []).map((row) => { const payload = row.payload || {}; return { id: `approval:${row.id}`, kind: 'approval', timestamp: row.updated_at || row.created_at, title: payload.title || 'Approval', detail: payload.preview || payload.owner || 'Approval decision', status: row.status, runId: payload.runId || null, payload }; });
+    return [...events, ...runs, ...receipts, ...approvals].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).slice(0, safeLimit);
+  } catch (err) {
+    console.warn('[agent activity]', err?.message || err);
+    return null;
+  }
+}
+
+export async function listWorkspaceWorkQueue(workspaceId, userId, { limit = 80 } = {}) {
+  const activity = await listAgentActivity(workspaceId, { limit });
+  const db = readClient();
+  if (!db || !userId || !isUuidWorkspace(workspaceId)) return activity || [];
+  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 80));
+  try {
+    const { data, error } = await db
+      .from('agent_notifications')
+      .select('id, agent_name, agent_role, task_type, title, summary, action_items, full_output, read, created_at, workspace_id')
+      .eq('user_id', userId)
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(safeLimit);
+    if (error) throw error;
+    const notifications = (data || []).map((row) => ({
+      id: `notification:${row.id}`,
+      kind: 'notification',
+      timestamp: row.created_at,
+      title: row.title || `${row.agent_name || 'Agent'} update`,
+      detail: row.summary || row.task_type || 'Agent update',
+      status: row.read ? 'read' : 'unread',
+      agentName: row.agent_name,
+      agentRole: row.agent_role,
+      actionItems: row.action_items || [],
+      campaignId: row.full_output?.campaignId || null,
+      campaignName: row.full_output?.campaignName || null,
+      fullOutput: row.full_output || {},
+    }));
+    return [...(activity || []), ...notifications]
+      .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+      .slice(0, safeLimit);
+  } catch (err) {
+    if (!/relation .* does not exist|schema cache|workspace_id/i.test(err?.message || '')) {
+      console.warn('[work queue notifications]', err?.message || err);
+    }
+    return activity || [];
   }
 }
 
