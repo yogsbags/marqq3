@@ -29,11 +29,11 @@ export function sanitizeKnowledgeBaseFilename(name) {
 export function isAllowedBrandDnaUpload(name, mime) {
   const n = String(name || "").toLowerCase();
   const m = String(mime || "").toLowerCase();
-  if (m.startsWith("image/") || m.startsWith("audio/") || m.startsWith("text/")) return true;
+  if (m.startsWith("image/") || m.startsWith("audio/") || m.startsWith("text/") || m.includes("svg")) return true;
   if (m.includes("pdf") || m.includes("presentation") || m.includes("msword") || m.includes("officedocument")) {
     return true;
   }
-  return /\.(pdf|pptx?|docx?|txt|md|png|jpe?g|webp|gif|webm|wav|mp3|m4a|ogg)$/i.test(n);
+  return /\.(pdf|pptx?|docx?|txt|md|png|jpe?g|webp|gif|svg|webm|wav|mp3|m4a|ogg)$/i.test(n);
 }
 
 export async function readBrandDnaManifest(workspaceId) {
@@ -159,6 +159,55 @@ export async function deleteBrandDnaAsset(workspaceId, fileId) {
   await writeBrandContext(workspaceId, patch);
 
   return { deleted: Boolean(target), file: target ? { id: target.id, name: target.name } : null };
+}
+
+export async function ingestRemoteBrandLogo({ workspaceId, sourceUrl, referer } = {}) {
+  const url = String(sourceUrl || '').trim();
+  const ws = String(workspaceId || '').trim();
+  if (!url || !ws || !/^https?:\/\//i.test(url)) return '';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        Referer: referer || url,
+      },
+    });
+    if (!resp?.ok) return '';
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length < 32 || buf.length > 8 * 1024 * 1024) return '';
+    const mime = String(resp.headers.get('content-type') || '').split(';')[0].trim() || 'image/png';
+    if (!mime.startsWith('image/') && mime !== 'application/octet-stream') return '';
+    const ext = mime.includes('svg')
+      ? 'svg'
+      : mime.includes('webp')
+        ? 'webp'
+        : mime.includes('jpeg')
+          ? 'jpg'
+          : mime.includes('gif')
+            ? 'gif'
+            : 'png';
+    const file = await saveBrandDnaBinary({
+      workspaceId: ws,
+      name: `scraped-logo.${ext}`,
+      mime: mime.startsWith('image/') ? mime : 'image/png',
+      size: buf.length,
+      base64: buf.toString('base64'),
+      category: 'logo',
+    });
+    await writeBrandContext(ws, { logoUrl: file.url, logoSourceUrl: url });
+    return file.url;
+  } catch (err) {
+    console.warn('[brand-dna] logo ingest skipped:', err.message);
+    return '';
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export { MAX_BYTES as BRAND_DNA_MAX_BYTES };

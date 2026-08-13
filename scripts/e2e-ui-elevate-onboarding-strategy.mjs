@@ -122,9 +122,15 @@ async function waitForBrandDnaComplete(page, { timeoutMs = 180_000, shotFn = nul
     const tagline = page.getByPlaceholder(/One-line brand promise/i).first();
     const taglineVal = (await tagline.inputValue().catch(() => "")) || "";
     if (!rerunDisabled && summaryVal.length >= 80 && !placeholder) {
+      const logo = page.locator('img[alt="Logo"]').first();
+      await logo.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      const logoBox = await logo.boundingBox().catch(() => null);
+      const logoOk = Boolean(logoBox && logoBox.height >= 16 && logoBox.width >= 16);
       if (shotFn) await shotFn("02b-brand-dna-ready");
-      console.log(`  ✓ Brand DNA ready (${summaryVal.length} summary chars${taglineVal ? `, tagline="${taglineVal.slice(0, 40)}"` : ""})`);
-      return { ok: true, sawFetch, summaryChars: summaryVal.length, tagline: taglineVal };
+      console.log(
+        `  ✓ Brand DNA ready (${summaryVal.length} summary chars${taglineVal ? `, tagline="${taglineVal.slice(0, 40)}"` : ""}${logoOk ? ", logo=visible" : ", logo=missing"})`
+      );
+      return { ok: true, sawFetch, summaryChars: summaryVal.length, tagline: taglineVal, logoOk };
     }
     if (!rerunDisabled && (placeholder || summaryVal.length < 40)) {
       // Thin stub — click Re-run / Fetch and keep waiting
@@ -314,6 +320,8 @@ async function main() {
         if (dna.ok) {
           brandDnaOk = true;
           ok("onboarding:brand-dna", `${dna.summaryChars} chars · fetch=${dna.sawFetch}`);
+          if (dna.logoOk) ok("onboarding:brand-dna-logo", "scraped logo visible");
+          else fail("onboarding:brand-dna-logo", "logo tile empty or broken");
         } else if (step === 6) {
           fail("onboarding:brand-dna", "review screen incomplete");
         }

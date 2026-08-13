@@ -4,6 +4,7 @@ import { getDb, updateDb } from '../db.js';
 import { scrapeBrandSignals, synthesizeBrandDnaWithAi } from '../services/brandDna.js';
 import {
   saveBrandDnaBinary,
+  ingestRemoteBrandLogo,
   readBrandDnaManifest,
   findBrandDnaAsset,
   deleteBrandDnaAsset,
@@ -2972,6 +2973,16 @@ router.post('/brand-dna', requireWorkspaceMember, async (req, res) => {
 
   try {
     const signals = await scrapeBrandSignals(websiteUrl);
+    const remoteLogo = String(signals?.logoUrl || signals?.ogImage || '').trim();
+    const ingestedLogo = await ingestRemoteBrandLogo({
+      workspaceId,
+      sourceUrl: remoteLogo,
+      referer: signals?.websiteUrl || websiteUrl,
+    });
+    // Keep the public CDN URL for <img> tags (they cannot send Bearer auth).
+    // Persist a copy on disk for later authenticated agent use.
+    if (remoteLogo) signals.logoUrl = remoteLogo;
+    if (ingestedLogo) signals.persistedLogoUrl = ingestedLogo;
     const brandDna = await synthesizeBrandDnaWithAi({
       companyName,
       websiteUrl,
@@ -2993,7 +3004,7 @@ router.post('/brand-dna', requireWorkspaceMember, async (req, res) => {
           fonts: brandDna?.fonts || signals?.fonts || '',
           brandTagline: brandDna?.brandTagline || '',
           toneOfVoice: brandDna?.toneOfVoice || '',
-          logoUrl: signals?.logoUrl || signals?.faviconUrl || '',
+          logoUrl: remoteLogo || ingestedLogo || '',
         },
       });
     } catch (persistErr) {

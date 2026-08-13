@@ -11,8 +11,8 @@ const OG_IMAGE_RE_ALT = /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:
 const H1_RE = /<h1[^>]*>([^<]+)<\/h1>/i;
 const THEME_COLOR_RE = /<meta[^>]*name=["']theme-color["'][^>]*content=["']([^"']+)["']/i;
 const HEX_RE = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g;
-const ICON_RE = /<link[^>]*rel=["'](?:shortcut )?icon["'][^>]*href=["']([^"']+)["']/i;
-const APPLE_ICON_RE = /<link[^>]*rel=["']apple-touch-icon["'][^>]*href=["']([^"']+)["']/i;
+const LINK_TAG_RE = /<link\b[^>]*>/gi;
+const IMG_SRC_RE = /<img\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
 
 function stripHtml(text) {
   return String(text || '')
@@ -83,6 +83,65 @@ function pickBrandColors(hexes, themeColor) {
     result.push(defaults[result.length]);
   }
   return result;
+}
+
+function stripCdnResize(url) {
+  return String(url || '').replace(/\/:\/rs=[^/?#]*/gi, '');
+}
+
+function attr(tag, name) {
+  const m = String(tag || '').match(new RegExp(`${name}=["']([^"']+)["']`, 'i'));
+  return m ? m[1] : '';
+}
+
+function scoreLogoCandidate(href, rel = '', sizes = '') {
+  const u = decodeURIComponent(String(href || '')).toLowerCase();
+  let score = 0;
+  if (/logo/i.test(u)) score += 140;
+  if (/\.svg(\b|$)/i.test(u)) score += 90;
+  if (/apple-touch/i.test(rel)) score += 35;
+  if (/shortcut icon|^icon$/i.test(rel)) score += 10;
+  const size = parseInt(String(sizes).split(/[x×]/i)[0], 10);
+  if (Number.isFinite(size)) score += Math.min(size, 256);
+  if (/favicon/i.test(u)) score -= 25;
+  if (/blob-|og-image|opengraph|social/i.test(u) && !/logo/i.test(u)) score -= 80;
+  return score;
+}
+
+function pickBestLogoUrl(html, baseUrl, ogImage) {
+  const candidates = [];
+  const tags = String(html || '').match(LINK_TAG_RE) || [];
+  for (const tag of tags) {
+    const rel = attr(tag, 'rel');
+    if (!/icon/i.test(rel)) continue;
+    const href = attr(tag, 'href');
+    if (!href) continue;
+    candidates.push({ href, rel, sizes: attr(tag, 'sizes') });
+  }
+  let imgMatch;
+  const imgRe = new RegExp(IMG_SRC_RE.source, 'gi');
+  while ((imgMatch = imgRe.exec(html || ''))) {
+    const href = imgMatch[1];
+    if (/logo/i.test(decodeURIComponent(href))) {
+      candidates.push({ href, rel: 'img-logo', sizes: '256x256' });
+    }
+  }
+  const resolved = candidates
+    .map((c) => {
+      const raw = stripCdnResize(c.href);
+      let href = raw;
+      try {
+        href = new URL(raw, baseUrl).href;
+      } catch {
+        href = raw.startsWith('http') ? raw : '';
+      }
+      return href ? { ...c, href, score: scoreLogoCandidate(href, c.rel, c.sizes) } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+  if (resolved[0]?.score >= 40) return resolved[0].href;
+  if (ogImage) return stripCdnResize(ogImage);
+  return resolved[0]?.href || '';
 }
 
 function extractFonts(html) {
@@ -184,16 +243,6 @@ export async function scrapeBrandSignals(websiteUrl) {
     const colors = pickBrandColors(hexes, themeColor);
     const fonts = extractFonts(html);
 
-    // Extract logo/favicon URL and resolve to absolute
-    const rawIconHref = (html.match(APPLE_ICON_RE) || html.match(ICON_RE) || [])[1] || '';
-    let logoUrl = '';
-    if (rawIconHref) {
-      try {
-        logoUrl = new URL(rawIconHref, normalized).href;
-      } catch {
-        logoUrl = rawIconHref.startsWith('http') ? rawIconHref : `${normalized.replace(/\/$/, '')}/${rawIconHref.replace(/^\//, '')}`;
-      }
-    }
     let ogImage = '';
     if (ogImageRaw) {
       try {
@@ -202,9 +251,8 @@ export async function scrapeBrandSignals(websiteUrl) {
         ogImage = ogImageRaw.startsWith('http') ? ogImageRaw : '';
       }
     }
-    // Prefer a real brand image (og:image) over tiny/odd CDN favicons when available
-    if (ogImage) logoUrl = ogImage;
-    else if (!logoUrl) {
+    let logoUrl = pickBestLogoUrl(html, normalized, ogImage);
+    if (!logoUrl) {
       try { logoUrl = new URL('/favicon.ico', normalized).href; } catch { logoUrl = ''; }
     }
 

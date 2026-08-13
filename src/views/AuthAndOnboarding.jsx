@@ -668,13 +668,17 @@ export function OnboardingView({ setActiveScreen }) {
       });
       if (nextTagline) setBrandTagline(nextTagline);
       if (nextTone) setToneOfVoice(nextTone);
-      // Auto-fill logo from scraped favicon / og:image if not already set
-      const scraped = signals.logoUrl || signals.ogImage || signals.faviconUrl || '';
-      const resolvedLogo = logoUrl || scraped || '';
-      if (scraped && !logoUrl) { setLogoUrl(scraped); setLogoBroken(false); }
+      // Always apply the freshly scraped logo — previous empty/broken URLs must not stick.
+      const scraped = [signals.logoUrl, signals.logoSourceUrl, signals.ogImage, signals.faviconUrl]
+        .map((u) => String(u || '').trim())
+        .find((u) => /^https?:\/\//i.test(u) || u.startsWith('data:image/')) || '';
+      if (scraped) {
+        setLogoUrl(scraped);
+        setLogoBroken(false);
+      }
       setBrandDnaFetchedFor(siteKey);
       await saveBrandContextNow({
-        logoUrl: resolvedLogo,
+        logoUrl: scraped || logoUrl || '',
         icp: audienceSummary,
         niche: niche || audienceIndustry,
         brandTagline: nextTagline || brandTagline,
@@ -1024,8 +1028,10 @@ export function OnboardingView({ setActiveScreen }) {
                   {/* Logo */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '110px', padding: '14px' }}>
                     {logoUrl && !logoBroken ? (
-                      <button type="button" aria-label="Replace logo" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => logoInputRef.current?.click()} title="Replace logo">
-                        <img src={logoUrl} alt="Logo" style={{ maxHeight: '52px', maxWidth: '100%', objectFit: 'contain' }} onError={() => setLogoBroken(true)} />
+                      <button type="button" aria-label="Replace logo" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, width: '100%' }} onClick={() => logoInputRef.current?.click()} title="Replace logo">
+                        <div style={{ background: '#111', borderRadius: '8px', padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '64px' }}>
+                          <img src={logoUrl} alt="Logo" referrerPolicy="no-referrer" style={{ maxHeight: '56px', maxWidth: '100%', objectFit: 'contain' }} onError={() => setLogoBroken(true)} />
+                        </div>
                         <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)', marginTop: '4px', textAlign: 'center' }}>Replace</div>
                       </button>
                     ) : (
