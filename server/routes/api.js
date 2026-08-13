@@ -8,6 +8,7 @@ import {
   readBrandDnaManifest,
   findBrandDnaAsset,
   deleteBrandDnaAsset,
+  clearBrandLogo,
   readBrandContext,
   writeBrandContext,
 } from '../services/brandStore.js';
@@ -3123,6 +3124,18 @@ router.post('/brand-dna/logo', requireWorkspaceMember, async (req, res) => {
   } catch (err) {
     console.error('[brand-dna/logo]', err);
     res.status(400).json({ ok: false, error: err.message || 'Logo upload failed' });
+  }
+});
+
+// DELETE /api/brand-dna/logo
+router.delete('/brand-dna/logo', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.query?.workspaceId || req.body?.workspaceId || DEFAULT_WS).trim() || DEFAULT_WS;
+    await clearBrandLogo(workspaceId);
+    res.json({ ok: true, logoUrl: '' });
+  } catch (err) {
+    console.error('[brand-dna/logo delete]', err);
+    res.status(400).json({ ok: false, error: err.message || 'Could not remove logo' });
   }
 });
 

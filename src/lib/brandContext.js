@@ -52,6 +52,13 @@ export function buildBrandContextFromOnboarding({
   website,
   niche,
   icp,
+  customerType,
+  audienceIndustry,
+  buyerRole,
+  companySize,
+  audienceLocation,
+  audienceProblem,
+  audienceNotes,
   outcome,
   timeWindow,
   target,
@@ -69,6 +76,13 @@ export function buildBrandContextFromOnboarding({
     website,
     niche,
     icp,
+    customerType: customerType || '',
+    audienceIndustry: audienceIndustry || '',
+    buyerRole: buyerRole || '',
+    companySize: companySize || '',
+    audienceLocation: audienceLocation || '',
+    audienceProblem: audienceProblem || '',
+    audienceNotes: audienceNotes || '',
     outcome,
     timeWindow,
     target,
@@ -132,4 +146,34 @@ export async function fetchKnowledgeFiles() {
   }
   const ctx = loadLocalBrandContext();
   return Array.isArray(ctx?.knowledgeFiles) ? ctx.knowledgeFiles : [];
+}
+
+const logoBlobCache = new Map();
+
+/** Turn a stored logo URL into something an <img> can render (auth assets → blob:). */
+export async function resolveLogoImgSrc(logoUrl) {
+  const u = String(logoUrl || '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u) || u.startsWith('data:') || u.startsWith('blob:')) return u;
+  if (!u.startsWith('/api/brand-dna/assets/')) return u;
+  if (logoBlobCache.has(u)) return logoBlobCache.get(u);
+  const res = await apiFetch(u);
+  if (!res.ok) return '';
+  const blob = await res.blob();
+  if (!blob || blob.size < 8) return '';
+  const obj = URL.createObjectURL(blob);
+  logoBlobCache.set(u, obj);
+  return obj;
+}
+
+export async function deleteBrandLogo() {
+  const workspaceId = getActiveWorkspaceId();
+  const res = await apiFetch(
+    `/api/brand-dna/logo?workspaceId=${encodeURIComponent(workspaceId)}`,
+    { method: 'DELETE' }
+  );
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || 'Could not remove logo');
+  saveLocalBrandContext({ logoUrl: '', logoSourceUrl: '' });
+  return json;
 }

@@ -161,6 +161,20 @@ export async function deleteBrandDnaAsset(workspaceId, fileId) {
   return { deleted: Boolean(target), file: target ? { id: target.id, name: target.name } : null };
 }
 
+/** Drop every stored logo file and clear logoUrl on brand context. */
+export async function clearBrandLogo(workspaceId) {
+  const files = await readBrandDnaManifest(workspaceId);
+  for (const file of files.filter((f) => f?.category === "logo")) {
+    try {
+      await deleteBrandDnaAsset(workspaceId, file.id);
+    } catch {
+      /* continue clearing the rest */
+    }
+  }
+  await writeBrandContext(workspaceId, { logoUrl: "", logoSourceUrl: "" });
+  return { ok: true };
+}
+
 export async function ingestRemoteBrandLogo({ workspaceId, sourceUrl, referer } = {}) {
   const url = String(sourceUrl || '').trim();
   const ws = String(workspaceId || '').trim();

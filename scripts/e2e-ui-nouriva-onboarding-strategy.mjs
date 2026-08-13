@@ -327,6 +327,34 @@ async function main() {
           ok("onboarding:brand-dna", `${dna.summaryChars} chars · fetch=${dna.sawFetch}`);
           if (dna.logoOk) ok("onboarding:brand-dna-logo", dna.logoSrc || "scraped logo visible");
           else fail("onboarding:brand-dna-logo", "logo tile empty, broken, or social cover");
+
+          const svg = Buffer.from(
+            `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#d4ff00"/><text x="10" y="40" font-size="18" font-family="sans-serif" fill="#111">UP</text></svg>`
+          );
+          const logoInput = page.locator('input[type="file"][accept="image/*"]').first();
+          await logoInput.setInputFiles({ name: "custom-logo.svg", mimeType: "image/svg+xml", buffer: svg });
+          await page.waitForTimeout(2000);
+          const uploaded = page.locator('img[alt="Logo"]').first();
+          const uploadedSrc = (await uploaded.getAttribute("src").catch(() => "")) || "";
+          const uploadedBox = await uploaded.boundingBox().catch(() => null);
+          if (uploadedBox && uploadedBox.height >= 16 && uploadedSrc && uploadedSrc !== dna.logoSrc) {
+            ok("onboarding:logo-upload-visible", uploadedSrc.slice(0, 80));
+            await shot("02c-logo-uploaded");
+          } else {
+            fail("onboarding:logo-upload-visible", `src=${uploadedSrc.slice(0, 80) || "(empty)"}`);
+          }
+          const removeBtn = page.getByRole("button", { name: /Remove logo/i }).first();
+          if (await removeBtn.isVisible().catch(() => false)) {
+            await removeBtn.click({ force: true });
+            await page.waitForTimeout(1200);
+            const uploadCta = page.getByText(/^Upload logo$/i).first();
+            const gone = await uploadCta.isVisible().catch(() => false);
+            if (gone) ok("onboarding:logo-deleted", "tile back to Upload logo");
+            else fail("onboarding:logo-deleted", "Remove did not restore upload tile");
+            await shot("02d-logo-removed");
+          } else {
+            fail("onboarding:logo-deleted", "Remove control missing");
+          }
         } else if (step === 6) {
           fail("onboarding:brand-dna", "review screen incomplete");
         }

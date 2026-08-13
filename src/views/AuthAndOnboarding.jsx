@@ -6,7 +6,8 @@ import {  connectComposioConnector, formatConnectorError  } from '../lib/composi
 import {  CONNECTOR_DISPLAY, isConnectorActive  } from '../lib/connectormeta';
 import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal';
 import {  BrandStyleLoader  } from '../components/BrandStyleLoader';
-import {  buildBrandContextFromOnboarding, persistBrandContext, fetchBrandContext, fetchKnowledgeFiles, getActiveWorkspaceId  } from '../lib/brandContext';
+import {  buildBrandContextFromOnboarding, persistBrandContext, fetchBrandContext, fetchKnowledgeFiles, getActiveWorkspaceId, resolveLogoImgSrc, deleteBrandLogo  } from '../lib/brandContext';
+import { apiFetch } from '../lib/apiFetch';
 import {  isOnboardingComplete, resetOnboardingDraft  } from '../lib/workspaceBootstrap';
 import { ensureUserWorkspace } from '../lib/workspace.js';
 
@@ -294,6 +295,7 @@ export function OnboardingView({ setActiveScreen }) {
   const [logoBroken, setLogoBroken] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoUrl, setLogoUrl] = useState('');
+  const [logoDisplaySrc, setLogoDisplaySrc] = useState('');
   const [kbFiles, setKbFiles] = useState([]);
   const [kbUploading, setKbUploading] = useState(false);
   const [kbError, setKbError] = useState('');
@@ -369,6 +371,26 @@ export function OnboardingView({ setActiveScreen }) {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!logoUrl) {
+        if (alive) setLogoDisplaySrc('');
+        return;
+      }
+      const src = await resolveLogoImgSrc(logoUrl);
+      if (!alive) return;
+      if (!src) {
+        setLogoBroken(true);
+        setLogoDisplaySrc('');
+        return;
+      }
+      setLogoDisplaySrc(src);
+      setLogoBroken(false);
+    })();
+    return () => { alive = false; };
+  }, [logoUrl]);
+
   async function saveBrandContextNow(extra = {}) {
     const context = buildBrandContextFromOnboarding({
       companyName,
@@ -423,9 +445,8 @@ export function OnboardingView({ setActiveScreen }) {
     setLogoUploading(true);
     try {
       const base64 = await fileToBase64(file);
-      const res = await fetch('/api/brand-dna/logo', {
+      const res = await apiFetch('/api/brand-dna/logo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId: getActiveWorkspaceId(), name: file.name, mime: file.type || 'image/png', size: file.size, base64 }),
       });
       const json = await res.json().catch(() => ({}));
@@ -435,9 +456,28 @@ export function OnboardingView({ setActiveScreen }) {
       await saveBrandContextNow({ logoUrl: json.logoUrl });
     } catch (err) {
       console.warn('[logo]', err.message);
-      setLogoUrl(URL.createObjectURL(file));
+      const localUrl = URL.createObjectURL(file);
+      setLogoUrl(localUrl);
+      setLogoDisplaySrc(localUrl);
       setLogoBroken(false);
-    } finally { setLogoUploading(false); }
+    } finally {
+      setLogoUploading(false);
+      if (logoInputRef.current) logoInputRef.current.value = '';
+    }
+  }
+
+  async function handleLogoDelete() {
+    const prev = logoUrl;
+    setLogoUrl('');
+    setLogoDisplaySrc('');
+    setLogoBroken(false);
+    try {
+      await deleteBrandLogo();
+      await saveBrandContextNow({ logoUrl: '' });
+    } catch (err) {
+      console.warn('[logo delete]', err.message);
+      setLogoUrl(prev);
+    }
   }
 
   async function handleKbDelete(fileId) {
@@ -1030,13 +1070,22 @@ export function OnboardingView({ setActiveScreen }) {
 
                   {/* Logo */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '110px', padding: '14px' }}>
-                    {logoUrl && !logoBroken ? (
-                      <button type="button" aria-label="Replace logo" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, width: '100%' }} onClick={() => logoInputRef.current?.click()} title="Replace logo">
+                    {logoUrl && !logoBroken && logoDisplaySrc ? (
+                      <div style={{ width: '100%' }}>
                         <div style={{ background: '#111', borderRadius: '8px', padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '64px' }}>
-                          <img src={logoUrl} alt="Logo" referrerPolicy="no-referrer" style={{ maxHeight: '56px', maxWidth: '100%', objectFit: 'contain' }} onError={() => setLogoBroken(true)} />
+                          <img src={logoDisplaySrc} alt="Logo" referrerPolicy="no-referrer" style={{ maxHeight: '56px', maxWidth: '100%', objectFit: 'contain' }} onError={() => setLogoBroken(true)} />
                         </div>
-                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)', marginTop: '4px', textAlign: 'center' }}>Replace</div>
-                      </button>
+                        <div style={{ display: 'flex', justifyContent: 'center', gap: '14px', marginTop: '6px' }}>
+                          <button type="button" aria-label="Replace logo" onClick={() => logoInputRef.current?.click()} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontWeight: 600 }}>
+                            Replace
+                          </button>
+                          <button type="button" aria-label="Remove logo" onClick={handleLogoDelete} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '10px', color: 'rgba(255,255,255,0.45)', fontWeight: 600 }}>
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ) : logoUrl && !logoBroken ? (
+                      <Loader2 size={18} style={{ color: 'rgba(255,255,255,0.4)', animation: 'spin 1s linear infinite' }} />
                     ) : (
                       <button type="button" disabled={logoUploading} onClick={() => logoInputRef.current?.click()}
                         style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.18)', borderRadius: '8px', padding: '14px 20px', cursor: 'pointer', width: '100%' }}>
