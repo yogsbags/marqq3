@@ -669,9 +669,12 @@ export function OnboardingView({ setActiveScreen }) {
       if (nextTagline) setBrandTagline(nextTagline);
       if (nextTone) setToneOfVoice(nextTone);
       // Always apply the freshly scraped logo — previous empty/broken URLs must not stick.
-      const scraped = [signals.logoUrl, signals.logoSourceUrl, signals.ogImage, signals.faviconUrl]
+      const scraped = [signals.logoUrl, signals.logoSourceUrl, signals.faviconUrl]
         .map((u) => String(u || '').trim())
-        .find((u) => /^https?:\/\//i.test(u) || u.startsWith('data:image/')) || '';
+        .find((u) =>
+          (/^https?:\/\//i.test(u) || u.startsWith('data:image/')) &&
+          !/og-cover|og-image|opengraph|twitter.?image|social.?share|imgs\/og/i.test(u)
+        ) || '';
       if (scraped) {
         setLogoUrl(scraped);
         setLogoBroken(false);

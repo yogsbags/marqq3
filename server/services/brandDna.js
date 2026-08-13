@@ -12,7 +12,6 @@ const H1_RE = /<h1[^>]*>([^<]+)<\/h1>/i;
 const THEME_COLOR_RE = /<meta[^>]*name=["']theme-color["'][^>]*content=["']([^"']+)["']/i;
 const HEX_RE = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g;
 const LINK_TAG_RE = /<link\b[^>]*>/gi;
-const IMG_SRC_RE = /<img\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
 
 function stripHtml(text) {
   return String(text || '')
@@ -97,18 +96,49 @@ function attr(tag, name) {
 function scoreLogoCandidate(href, rel = '', sizes = '') {
   const u = decodeURIComponent(String(href || '')).toLowerCase();
   let score = 0;
-  if (/logo/i.test(u)) score += 140;
+  if (/logo/i.test(u)) score += 80;
   if (/\.svg(\b|$)/i.test(u)) score += 90;
-  if (/apple-touch/i.test(rel)) score += 35;
+  if (/apple-touch/i.test(rel)) score += 45;
   if (/shortcut icon|^icon$/i.test(rel)) score += 10;
+  if (rel === 'img-alt') score += 70;
+  if (rel === 'jsonld') score += 20;
   const size = parseInt(String(sizes).split(/[x×]/i)[0], 10);
   if (Number.isFinite(size)) score += Math.min(size, 256);
-  if (/favicon/i.test(u)) score -= 25;
-  if (/blob-|og-image|opengraph|social/i.test(u) && !/logo/i.test(u)) score -= 80;
+  // Raster favicon.png is often the brand mark; .ico is a tiny tab icon.
+  if (/\.ico(\b|$)/i.test(u)) score -= 40;
+  else if (/favicon\.(png|svg|webp)/i.test(u)) score += 55;
+  if (/og-cover|og-image|opengraph|twitter.?image|social.?share|imgs\/og/i.test(u) && !/logo/i.test(u)) {
+    score -= 220;
+  }
+  if (/blob-/i.test(u) && !/logo/i.test(u)) score -= 80;
   return score;
 }
 
-function pickBestLogoUrl(html, baseUrl, ogImage) {
+function jsonLdLogoUrls(html) {
+  const urls = [];
+  const blocks = String(html || '').match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+  for (const block of blocks) {
+    const raw = block.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '');
+    try {
+      const parsed = JSON.parse(raw);
+      const nodes = Array.isArray(parsed) ? parsed : [parsed];
+      for (const node of nodes) {
+        const logo = node?.logo;
+        if (typeof logo === 'string') urls.push(logo);
+        else if (logo?.url) urls.push(logo.url);
+      }
+    } catch {
+      /* ignore malformed JSON-LD */
+    }
+  }
+  return urls;
+}
+
+function isSocialCoverUrl(url) {
+  return /og-cover|og-image|opengraph|twitter.?image|social.?share|imgs\/og/i.test(String(url || ''));
+}
+
+function rankLogoCandidates(html, baseUrl, ogImage) {
   const candidates = [];
   const tags = String(html || '').match(LINK_TAG_RE) || [];
   for (const tag of tags) {
@@ -118,13 +148,24 @@ function pickBestLogoUrl(html, baseUrl, ogImage) {
     if (!href) continue;
     candidates.push({ href, rel, sizes: attr(tag, 'sizes') });
   }
-  let imgMatch;
-  const imgRe = new RegExp(IMG_SRC_RE.source, 'gi');
-  while ((imgMatch = imgRe.exec(html || ''))) {
-    const href = imgMatch[1];
-    if (/logo/i.test(decodeURIComponent(href))) {
-      candidates.push({ href, rel: 'img-logo', sizes: '256x256' });
+  const imgTags = String(html || '').match(/<img\b[^>]*>/gi) || [];
+  for (const tag of imgTags) {
+    const href = attr(tag, 'src');
+    const alt = attr(tag, 'alt');
+    if (!href) continue;
+    if (/logo/i.test(alt) || /logo|favicon\.(png|svg|webp)/i.test(href)) {
+      candidates.push({
+        href,
+        rel: /logo/i.test(alt) ? 'img-alt' : 'img-favicon',
+        sizes: attr(tag, 'width') ? `${attr(tag, 'width')}x${attr(tag, 'width')}` : '128x128',
+      });
     }
+  }
+  for (const href of jsonLdLogoUrls(html)) {
+    candidates.push({ href, rel: 'jsonld', sizes: '256x256' });
+  }
+  for (const href of ['/favicon.png', '/apple-touch-icon.png']) {
+    candidates.push({ href, rel: 'well-known', sizes: '128x128' });
   }
   const resolved = candidates
     .map((c) => {
@@ -139,9 +180,51 @@ function pickBestLogoUrl(html, baseUrl, ogImage) {
     })
     .filter(Boolean)
     .sort((a, b) => b.score - a.score);
-  if (resolved[0]?.score >= 40) return resolved[0].href;
-  if (ogImage) return stripCdnResize(ogImage);
-  return resolved[0]?.href || '';
+  const seen = new Set();
+  const ranked = [];
+  for (const c of resolved) {
+    if (!c.href || seen.has(c.href) || isSocialCoverUrl(c.href)) continue;
+    seen.add(c.href);
+    ranked.push(c);
+  }
+  if (ogImage && !isSocialCoverUrl(ogImage) && !seen.has(ogImage)) {
+    ranked.push({ href: stripCdnResize(ogImage), score: 0 });
+  }
+  return ranked;
+}
+
+async function firstReachableImageUrl(urls, timeoutMs = 4000) {
+  for (const url of urls) {
+    if (!url || !/^https?:\/\//i.test(url)) continue;
+    try {
+      const probe = async (method) => {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; MarqqBrandDNA/1.0)' };
+        if (method === 'GET') headers.Range = 'bytes=0-16';
+        const res = await fetch(url, {
+          method,
+          signal: ctrl.signal,
+          redirect: 'follow',
+          headers,
+        }).catch(() => null);
+        clearTimeout(timer);
+        if (!res?.ok) return false;
+        const type = String(res.headers.get('content-type') || '');
+        return !type || /^image\//i.test(type) || /octet-stream|svg/i.test(type);
+      };
+      if (await probe('HEAD')) return url;
+      if (await probe('GET')) return url;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return '';
+}
+
+function pickBestLogoUrl(html, baseUrl, ogImage) {
+  const ranked = rankLogoCandidates(html, baseUrl, ogImage);
+  return ranked[0]?.href || '';
 }
 
 function extractFonts(html) {
@@ -251,7 +334,9 @@ export async function scrapeBrandSignals(websiteUrl) {
         ogImage = ogImageRaw.startsWith('http') ? ogImageRaw : '';
       }
     }
-    let logoUrl = pickBestLogoUrl(html, normalized, ogImage);
+    const rankedLogos = rankLogoCandidates(html, normalized, ogImage).map((c) => c.href);
+    let logoUrl = await firstReachableImageUrl(rankedLogos);
+    if (!logoUrl) logoUrl = pickBestLogoUrl(html, normalized, ogImage);
     if (!logoUrl) {
       try { logoUrl = new URL('/favicon.ico', normalized).href; } catch { logoUrl = ''; }
     }

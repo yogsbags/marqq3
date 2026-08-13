@@ -2973,7 +2973,7 @@ router.post('/brand-dna', requireWorkspaceMember, async (req, res) => {
 
   try {
     const signals = await scrapeBrandSignals(websiteUrl);
-    const remoteLogo = String(signals?.logoUrl || signals?.ogImage || '').trim();
+    const remoteLogo = String(signals?.logoUrl || '').trim();
     const ingestedLogo = await ingestRemoteBrandLogo({
       workspaceId,
       sourceUrl: remoteLogo,

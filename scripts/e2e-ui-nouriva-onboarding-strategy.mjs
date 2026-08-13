@@ -120,9 +120,23 @@ async function waitForBrandDnaComplete(page, { timeoutMs = 180_000, shotFn = nul
     const summaryVal = (await summary.inputValue().catch(() => "")) || "";
     const placeholder = /empowers mid-tier leaders|accelerate growth through innovative solutions/i.test(summaryVal);
     if (!rerunDisabled && summaryVal.length >= 80 && !placeholder) {
+      const tagline = page.getByPlaceholder(/One-line brand promise/i).first();
+      const taglineVal = (await tagline.inputValue().catch(() => "")) || "";
+      const logo = page.locator('img[alt="Logo"]').first();
+      await logo.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+      const logoBox = await logo.boundingBox().catch(() => null);
+      const logoSrc = (await logo.getAttribute("src").catch(() => "")) || "";
+      const logoOk = Boolean(
+        logoBox &&
+          logoBox.height >= 16 &&
+          logoBox.width >= 16 &&
+          !/og-cover|og-image|opengraph/i.test(logoSrc)
+      );
       if (shotFn) await shotFn("02b-brand-dna-ready");
-      console.log(`  ✓ Brand DNA ready (${summaryVal.length} summary chars)`);
-      return { ok: true, sawFetch, summaryChars: summaryVal.length };
+      console.log(
+        `  ✓ Brand DNA ready (${summaryVal.length} summary chars${taglineVal ? `, tagline="${taglineVal.slice(0, 40)}"` : ""}${logoOk ? ", logo=visible" : ", logo=missing"})`
+      );
+      return { ok: true, sawFetch, summaryChars: summaryVal.length, tagline: taglineVal, logoOk, logoSrc };
     }
     if (!rerunDisabled && (placeholder || summaryVal.length < 40)) {
       if (await rerun.isVisible().catch(() => false)) {
@@ -311,6 +325,8 @@ async function main() {
         if (dna.ok) {
           brandDnaOk = true;
           ok("onboarding:brand-dna", `${dna.summaryChars} chars · fetch=${dna.sawFetch}`);
+          if (dna.logoOk) ok("onboarding:brand-dna-logo", dna.logoSrc || "scraped logo visible");
+          else fail("onboarding:brand-dna-logo", "logo tile empty, broken, or social cover");
         } else if (step === 6) {
           fail("onboarding:brand-dna", "review screen incomplete");
         }
