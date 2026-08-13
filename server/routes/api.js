@@ -118,6 +118,7 @@ import {
 import { normalizeExecutionMode, normalizeActionMode } from '../services/executionMode.js';
 import { resolveComposioEntityIds } from '../lib/composioEntities.js';
 import { listIntegrationResources } from '../services/integrationResources.js';
+import { resolveConnectorReadiness } from '../services/connectorPlanner.js';
 import {
   getControlLoop,
   measureControlLoop,
@@ -194,6 +195,10 @@ import {
   persistAgentRunStep,
   persistApprovalToSupabase,
   persistDeploymentToSupabase,
+  listAgentActivity,
+  listWorkspaceWorkQueue,
+  loadWorkspacePreferencesFromSupabase,
+  persistWorkspacePreferencesToSupabase,
 } from '../services/agentSupabase.js';
 import { generateFullStrategyDocument } from '../services/gtmFullStrategy.js';
 import {
@@ -232,6 +237,17 @@ function handleStudioError(res, err, label, fallback) {
   if (isInsufficientCredits(err)) return sendCreditsError(res, err);
   console.error(label, err);
   return res.status(500).json({ ok: false, error: err?.message || fallback });
+}
+
+async function assertLivePublishAllowed(workspaceId, requested) {
+  if (!requested) return;
+  const agentOs = await loadAgentOsProfileAsync(String(workspaceId || DEFAULT_WS));
+  const mode = normalizeActionMode(agentOs?.action_mode ?? agentOs?.actionMode);
+  if (mode !== 'live_publish') {
+    const error = new Error('Live publish is disabled by the workspace action policy. Switch External action mode to Live publish in Orchestration first.');
+    error.statusCode = 403;
+    throw error;
+  }
 }
 
 
@@ -604,10 +620,14 @@ router.post('/agents/self-review', requireWorkspaceMember, async (req, res) => {
 
 /** POST /api/gtm/strategy/generate — full 16-section doc with Marqq2 skill playbooks */
 router.post('/gtm/strategy/generate', requireAuth, async (req, res) => {
+  const startedAt = Date.now();
   try {
+    console.log(`[gtm/strategy/generate] start ${req.body?.companyName || 'Company'}`);
     const result = await generateFullStrategyDocument(req.body || {});
+    console.log(`[gtm/strategy/generate] complete in ${Date.now() - startedAt}ms`);
     res.json(result);
   } catch (err) {
+    console.error(`[gtm/strategy/generate] failed in ${Date.now() - startedAt}ms`, err?.message);
     if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[gtm/strategy/generate]', err);
     res.status(500).json({ ok: false, error: err.message || 'Strategy generation failed' });
@@ -804,8 +824,12 @@ router.get('/agents', (req, res) => {
 router.get('/agents/deployments', requireWorkspaceMember, async (req, res) => {
   const workspaceId = String(req.query?.workspaceId || DEFAULT_WS).trim();
   const status = req.query?.status ? String(req.query.status) : null;
-  const deployments = await listDeploymentsAsync({ workspaceId, status });
-  res.json({ ok: true, deployments });
+  const campaignId = String(req.query?.campaignId || '').trim() || null;
+  const allDeployments = await listDeploymentsAsync({ workspaceId, status });
+  const deployments = campaignId
+    ? allDeployments.filter((deployment) => String(deployment.campaignId || deployment.payload?.campaignId || '') === campaignId)
+    : allDeployments;
+  res.json({ ok: true, deployments, campaignId });
 });
 
 router.get('/agents/execution-summaries', requireWorkspaceMember, async (req, res) => {
@@ -892,7 +916,8 @@ router.get('/content-studio/scheduled', requireWorkspaceMember, async (req, res)
   try {
     const companyId = String(req.query.companyId || req.query.workspaceId || '').trim();
     if (!companyId) return res.status(400).json({ error: 'companyId is required' });
-    const result = await listScheduledContent(companyId);
+    const campaignId = String(req.query.campaignId || '').trim() || null;
+    const result = await listScheduledContent(companyId, campaignId);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to list scheduled content' });
@@ -901,6 +926,11 @@ router.get('/content-studio/scheduled', requireWorkspaceMember, async (req, res)
 
 router.post('/content-studio/distribute', requireWorkspaceMember, async (req, res) => {
   try {
+    const requestedAction = String(req.body?.action || req.body?.mode || '').toLowerCase();
+    await assertLivePublishAllowed(
+      req.workspaceId || req.body?.companyId || req.body?.workspaceId,
+      requestedAction === 'publish' && req.body?.live === true
+    );
     const result = await distributeContent({
       companyId: req.body?.companyId || req.body?.workspaceId,
       action: req.body?.action || req.body?.mode,
@@ -912,7 +942,7 @@ router.post('/content-studio/distribute', requireWorkspaceMember, async (req, re
     });
     res.json(result);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || 'Distribute failed' });
+    res.status(err.statusCode || err.status || 500).json({ error: err.message || 'Distribute failed' });
   }
 });
 
@@ -998,9 +1028,26 @@ router.get('/agents/:id', requireAuth, (req, res) => {
 
 // POST plan agent task (no LLM run — architecture contract)
 router.post('/agents/plan', (req, res) => {
-  const { target, sectionId, screenId, goalSystem, roster } = req.body || {};
-  const plan = planAgentTask({ target, sectionId, screenId, goalSystem, roster });
+  const { target, sectionId, screenId, goalSystem, roster, task, actionMode, connectedConnectors, preferences } = req.body || {};
+  const plan = planAgentTask({ target, sectionId, screenId, goalSystem, roster, task, actionMode, connectedConnectors, preferences });
   res.json({ plan });
+});
+
+/** POST /api/agents/connector-readiness — verify a planned connector set. */
+router.post('/agents/connector-readiness', requireWorkspaceMember, async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || req.body?.companyId || 'marqq-ws-1').trim();
+    const connectorPlan = Array.isArray(req.body?.connectorPlan) ? req.body.connectorPlan : [];
+    const plan = await resolveConnectorReadiness({
+      workspaceId,
+      connectorPlan,
+      discoverResources: Boolean(req.body?.discoverResources),
+    });
+    const blocking = plan.filter((item) => item.required && !['ready', 'connected'].includes(item.status));
+    res.json({ ok: blocking.length === 0, workspaceId, plan, blocking });
+  } catch (error) {
+    res.status(502).json({ ok: false, error: error.message || 'Connector readiness failed', plan: [], blocking: [] });
+  }
 });
 
 /** POST /api/strategy/activate — persist Agent OS + seed scheduled deployments from locked GTM */
@@ -1014,6 +1061,8 @@ router.post('/strategy/activate', requireWorkspaceMember, (req, res) => {
       workspaceId,
       companyId: workspaceId,
       revisedSectionId,
+      campaignId: String(req.body?.campaignId || req.body?.campaign_id || '').trim() || null,
+      campaignName: String(req.body?.campaignName || req.body?.campaign_name || '').trim() || null,
     });
     // Kick an immediate tick so drafts appear without waiting a full minute
     processDeploymentQueueTick({ force: true, workspaceId }).catch(() => {});
@@ -1415,6 +1464,18 @@ router.get('/approvals', requireAuth, async (req, res) => {
   });
 });
 
+router.get('/activity', requireWorkspaceMember, async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
+  const activity = await listAgentActivity(workspaceId, { limit: req.query.limit });
+  res.json({ ok: true, activity: activity || [] });
+});
+
+router.get('/work-queue', requireWorkspaceMember, async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
+  const items = await listWorkspaceWorkQueue(workspaceId, req.authUserId, { limit: req.query.limit });
+  res.json({ ok: true, items: items || [] });
+});
+
 // GET prospects & outreach (legacy mock list)
 router.get('/outreach/prospects', requireWorkspaceMember, (req, res) => {
   const workspaceId = String(req.query.workspaceId || req.query.companyId || '').trim();
@@ -1434,6 +1495,8 @@ router.post('/outreach/runs', requireWorkspaceMember, async (req, res) => {
         companyName: run.companyName,
         source: run.source,
         contactChannels: run.contactChannels,
+        campaignId: run.campaignId || null,
+        campaignName: run.campaignName || null,
         titles: run.titles,
         crm_sync: run.crm_sync || null,
       },
@@ -1509,6 +1572,7 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/gmail-draft', requireRe
 
 router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, true);
     const result = await sendProspectEmail(req.params.runId, req.params.prospectId, {
       subject: req.body?.subject,
       body: req.body?.body,
@@ -1518,18 +1582,19 @@ router.post('/outreach/runs/:runId/prospects/:prospectId/send-now', requireResou
   } catch (err) {
     if (isInsufficientCredits(err)) return sendCreditsError(res, err);
     console.error('[outreach/send-now]', err);
-    res.status(500).json({ ok: false, error: err.message || 'Send failed' });
+    res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Send failed' });
   }
 });
 
 /** Instantly / HeyReach / WhatsApp go-live (delivery: draft|live) */
 router.post('/outreach/runs/:runId/prospects/:prospectId/go-live', requireResourceMember((req) => getOutreachRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, true);
     const result = await goLiveProspect(req.params.runId, req.params.prospectId, req.body || {});
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[outreach/go-live]', err);
-    res.status(400).json({ ok: false, error: err.message || 'Go-live failed' });
+    res.status(err.statusCode || 400).json({ ok: false, error: err.message || 'Go-live failed' });
   }
 });
 
@@ -1733,6 +1798,8 @@ router.get('/content/runs/:runId', requireResourceMember((req) => getContentRun(
       workspaceId: run.workspaceId,
       companyId: run.companyId,
       companyName: run.companyName,
+      campaignId: run.campaignId || null,
+      campaignName: run.campaignName || null,
       domain: run.domain,
       marketType: run.marketType,
       brandContext: run.brandContext,
@@ -1801,6 +1868,7 @@ router.post('/content/runs/:runId/approve', requireResourceMember((req) => getCo
 
 router.post('/content/runs/:runId/publish', requireResourceMember((req) => getContentRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, req.body?.publish_live === true);
     const result = await publishContentArticle(req.params.runId, {
       publish_live: req.body?.publish_live === true,
       repo_owner: req.body?.repo_owner,
@@ -1813,7 +1881,7 @@ router.post('/content/runs/:runId/publish', requireResourceMember((req) => getCo
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[content/publish]', err);
-    res.status(err.publish ? 400 : 500).json({
+    res.status(err.statusCode || (err.publish ? 400 : 500)).json({
       ok: false,
       error: err.message || 'Publish failed',
       publish: err.publish || null,
@@ -1868,6 +1936,7 @@ router.post('/landing/runs/:runId/approve', requireResourceMember((req) => getLa
 
 router.post('/landing/runs/:runId/publish', requireResourceMember((req) => getLandingRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, req.body?.publish_live === true);
     const result = await publishLandingPage(req.params.runId, {
       publish_live: req.body?.publish_live === true,
       ...req.body,
@@ -1875,7 +1944,7 @@ router.post('/landing/runs/:runId/publish', requireResourceMember((req) => getLa
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[landing/publish]', err);
-    res.status(400).json({ ok: false, error: err.message, publish: err.publish || null });
+    res.status(err.statusCode || 400).json({ ok: false, error: err.message, publish: err.publish || null });
   }
 });
 
@@ -1936,6 +2005,7 @@ router.post('/lead-magnets/runs/:runId/approve', requireResourceMember((req) => 
 
 router.post('/lead-magnets/runs/:runId/publish', requireResourceMember((req) => getLeadMagnetRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, req.body?.publish_live === true);
     const result = await publishLeadMagnet(req.params.runId, {
       publish_live: req.body?.publish_live === true,
       ...req.body,
@@ -1943,7 +2013,7 @@ router.post('/lead-magnets/runs/:runId/publish', requireResourceMember((req) => 
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[lead-magnets/publish]', err);
-    res.status(400).json({ ok: false, error: err.message, publish: err.publish || null });
+    res.status(err.statusCode || 400).json({ ok: false, error: err.message, publish: err.publish || null });
   }
 });
 
@@ -2021,11 +2091,12 @@ router.post('/social/runs/:runId/approve', requireResourceMember((req) => getSoc
 /** Per-post Composio publish (LinkedIn / IG / FB / X / YouTube) */
 router.post('/social/runs/:runId/posts/:postId/go-live', requireResourceMember((req) => getSocialRun(req.params.runId)), async (req, res) => {
   try {
+    await assertLivePublishAllowed(req.workspaceId, String(req.body?.delivery || 'live').toLowerCase() !== 'draft');
     const result = await goLiveSocialPost(req.params.runId, req.params.postId, req.body || {});
     res.json({ ok: Boolean(result.result?.ok), ...result });
   } catch (err) {
     console.error('[social/go-live]', err);
-    res.status(400).json({ ok: false, error: err.message || 'Social go-live failed' });
+    res.status(err.statusCode || 400).json({ ok: false, error: err.message || 'Social go-live failed' });
   }
 });
 
@@ -2051,10 +2122,12 @@ router.post('/outcomes/go-live', requireWorkspaceMember, async (req, res) => {
         error: `This endpoint publishes organic social only (${[...socialKinds].join(', ')}). Got: ${kind || '(empty)'}`,
       });
     }
+    const workspaceId = body.workspaceId || body.companyId || DEFAULT_WS;
+    await assertLivePublishAllowed(workspaceId, String(body.delivery || 'live').toLowerCase() !== 'draft');
     const result = await executeSocialGoLive({
       kind,
-      workspaceId: body.workspaceId || body.companyId || 'marqq-ws-1',
-      companyId: body.companyId || body.workspaceId || 'marqq-ws-1',
+      workspaceId,
+      companyId: body.companyId || body.workspaceId || DEFAULT_WS,
       preferredConnector: body.preferredConnector,
       delivery: body.delivery || 'live',
       payload: body.payload || body,
@@ -2062,7 +2135,7 @@ router.post('/outcomes/go-live', requireWorkspaceMember, async (req, res) => {
     res.json({ ok: Boolean(result.ok), ...result });
   } catch (err) {
     console.error('[outcomes/go-live]', err);
-    res.status(500).json({ ok: false, error: err.message || 'Go-live failed' });
+    res.status(err.statusCode || 500).json({ ok: false, error: err.message || 'Go-live failed' });
   }
 });
 
@@ -2287,6 +2360,18 @@ const CONNECTOR_APP_MAP = {
   heyreach: 'heyreach',
   whatsapp: 'whatsapp',
   apollo: 'apollo',
+  hunter: 'hunter',
+  klaviyo: 'klaviyo',
+  wordpress: 'wordpress',
+  webflow: 'webflow',
+  shopify: 'shopify',
+  wix: 'wix',
+  mailchimp: 'mailchimp',
+  sendgrid: 'sendgrid',
+  mixpanel: 'mixpanel',
+  amplitude: 'amplitude',
+  semrush: 'semrush',
+  ahrefs: 'ahrefs',
   gmail: 'gmail',
   slack: 'slack',
   github: 'github'
@@ -2312,6 +2397,18 @@ const AUTH_CONFIG_ENV_KEYS = {
   heyreach: 'COMPOSIO_HEYREACH_AUTH_CONFIG_ID',
   whatsapp: 'COMPOSIO_WHATSAPP_AUTH_CONFIG_ID',
   apollo: 'COMPOSIO_APOLLO_AUTH_CONFIG_ID',
+  hunter: 'COMPOSIO_HUNTER_AUTH_CONFIG_ID',
+  klaviyo: 'COMPOSIO_KLAVIYO_AUTH_CONFIG_ID',
+  wordpress: 'COMPOSIO_WORDPRESS_AUTH_CONFIG_ID',
+  webflow: 'COMPOSIO_WEBFLOW_AUTH_CONFIG_ID',
+  shopify: 'COMPOSIO_SHOPIFY_AUTH_CONFIG_ID',
+  wix: 'COMPOSIO_WIX_AUTH_CONFIG_ID',
+  mailchimp: 'COMPOSIO_MAILCHIMP_AUTH_CONFIG_ID',
+  sendgrid: 'COMPOSIO_SENDGRID_AUTH_CONFIG_ID',
+  mixpanel: 'COMPOSIO_MIXPANEL_AUTH_CONFIG_ID',
+  amplitude: 'COMPOSIO_AMPLITUDE_AUTH_CONFIG_ID',
+  semrush: 'COMPOSIO_SEMRUSH_AUTH_CONFIG_ID',
+  ahrefs: 'COMPOSIO_AHREFS_AUTH_CONFIG_ID',
   gmail: 'COMPOSIO_GMAIL_AUTH_CONFIG_ID',
   slack: 'COMPOSIO_SLACK_AUTH_CONFIG_ID',
   github: 'COMPOSIO_GITHUB_AUTH_CONFIG_ID'
@@ -2703,8 +2800,10 @@ router.get('/command-center', requireWorkspaceMember, handleCommandCenter);
 router.post('/command-center', requireWorkspaceMember, handleCommandCenter);
 
 // GET /api/integrations/preferences?companyId=X
-router.get('/integrations/preferences', requireWorkspaceMember, (req, res) => {
+router.get('/integrations/preferences', requireWorkspaceMember, async (req, res) => {
   const companyId = req.query.companyId || req.query.userId || 'default';
+  const persisted = await loadWorkspacePreferencesFromSupabase(String(companyId));
+  if (persisted) patchWorkspacePreferences(companyId, persisted);
   res.json({ preferences: getWorkspacePreferences(companyId) });
 });
 
@@ -2722,11 +2821,12 @@ router.get('/integrations/resources', requireWorkspaceMember, async (req, res) =
 });
 
 // POST /api/integrations/preferences  { companyId, ...prefs }
-router.post('/integrations/preferences', requireWorkspaceMember, (req, res) => {
+router.post('/integrations/preferences', requireWorkspaceMember, async (req, res) => {
   const companyId = req.body.companyId || 'default';
   const patch = { ...(req.body || {}) };
   delete patch.companyId;
   const updated = patchWorkspacePreferences(companyId, patch);
+  void persistWorkspacePreferencesToSupabase(String(companyId), updated);
   res.json({ ok: true, preferences: updated });
 });
 
@@ -2902,11 +3002,15 @@ router.post('/brand-dna', requireWorkspaceMember, async (req, res) => {
     res.json({ ok: true, brandDna, signals });
   } catch (err) {
     console.error('[brand-dna] route exception:', err);
-    res.json({
+    res.status(500).json({
       ok: false,
+      error: err.message || 'Brand DNA failed',
       brandDna: {
         companyName: companyName || 'Your company',
         brandSummary: `${companyName || 'Company'} — ${industry || 'B2B'} for ${icp || 'target buyers'}.`,
+        businessSummary: `${companyName || 'Company'} — ${industry || 'B2B'} for ${icp || 'target buyers'}.`,
+        brandTagline: '',
+        toneOfVoice: '',
         positioningTags: ['Clear', 'Credible', 'Execution-focused'],
         colors: ['#ff6a00', '#f2790a', '#191613'],
         fonts: 'Archivo · headings & body'

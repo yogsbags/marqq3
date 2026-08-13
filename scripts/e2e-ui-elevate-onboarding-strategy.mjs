@@ -113,15 +113,26 @@ async function waitForBrandDnaComplete(page, { timeoutMs = 180_000, shotFn = nul
       continue;
     }
 
-    // On review with loader gone
-    const rerun = page.getByRole("button", { name: /Re-run/i }).first();
+    // On review with loader gone — require a real scrape, not the placeholder stub
+    const rerun = page.getByRole("button", { name: /Re-run|Fetch Brand DNA/i }).first();
     const rerunDisabled = await rerun.isDisabled().catch(() => false);
     const summary = page.locator("textarea").first();
     const summaryVal = (await summary.inputValue().catch(() => "")) || "";
-    if (!rerunDisabled) {
+    const placeholder = /empowers mid-tier leaders|accelerate growth through innovative solutions/i.test(summaryVal);
+    const tagline = page.getByPlaceholder(/One-line brand promise/i).first();
+    const taglineVal = (await tagline.inputValue().catch(() => "")) || "";
+    if (!rerunDisabled && summaryVal.length >= 80 && !placeholder) {
       if (shotFn) await shotFn("02b-brand-dna-ready");
-      console.log(`  ✓ Brand DNA ready (${summaryVal.length} summary chars)`);
-      return { ok: true, sawFetch, summaryChars: summaryVal.length };
+      console.log(`  ✓ Brand DNA ready (${summaryVal.length} summary chars${taglineVal ? `, tagline="${taglineVal.slice(0, 40)}"` : ""})`);
+      return { ok: true, sawFetch, summaryChars: summaryVal.length, tagline: taglineVal };
+    }
+    if (!rerunDisabled && (placeholder || summaryVal.length < 40)) {
+      // Thin stub — click Re-run / Fetch and keep waiting
+      if (await rerun.isVisible().catch(() => false)) {
+        console.log("  … Brand DNA looks like a stub — re-running fetch");
+        await rerun.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(2000);
+      }
     }
     await page.waitForTimeout(1500);
   }

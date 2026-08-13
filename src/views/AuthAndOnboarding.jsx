@@ -11,6 +11,9 @@ import {  isOnboardingComplete, resetOnboardingDraft  } from '../lib/workspaceBo
 import { ensureUserWorkspace } from '../lib/workspace.js';
 
 const ONBOARDING_TOTAL_STEPS = 8;
+const ONBOARDING_STEP_LABELS = ['Your AI team', 'Company', 'Audience', 'Growth goal', 'Data sources', 'Brand DNA', 'Agents activated', 'Ready'];
+const ONBOARDING_FLOW_VERSION = 'first-value-v4';
+const ONBOARDING_FLOW_VERSION_KEY = 'marqq_onboarding_flow_version';
 
 export function SignInView({ setActiveScreen }) {
   const [email, setEmail] = useState('');
@@ -63,11 +66,11 @@ export function SignInView({ setActiveScreen }) {
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '14px', marginBottom: '16px' }}>
           <div className="field">
             <label htmlFor="li-email">Email</label>
-            <input className="input" id="li-email" value={email} onChange={e => setEmail(e.target.value)} required />
+            <input className="input" id="li-email" type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="li-pass">Password</label>
-            <input className="input" id="li-pass" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+            <input className="input" id="li-pass" type="password" autoComplete="current-password" placeholder="Enter your password" value={password} onChange={e => setPassword(e.target.value)} required />
           </div>
           <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
             {loading ? 'Authenticating...' : 'Sign in'} <ArrowRight size={14} />
@@ -176,19 +179,19 @@ export function SignUpView({ setActiveScreen }) {
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '14px', marginBottom: '16px' }}>
           <div className="field">
             <label htmlFor="su-name">Full name</label>
-            <input className="input" id="su-name" placeholder="Arjun Mehta" value={name} onChange={e => setName(e.target.value)} required />
+            <input className="input" id="su-name" autoComplete="name" placeholder="Arjun Mehta" value={name} onChange={e => setName(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="su-email">Work email</label>
-            <input className="input" id="su-email" type="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} required />
+            <input className="input" id="su-email" type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="su-pass">Password</label>
-            <input className="input" id="su-pass" type="password" placeholder="Create a password" value={password} onChange={e => setPassword(e.target.value)} required />
+            <input className="input" id="su-pass" type="password" autoComplete="new-password" placeholder="Create a password" value={password} onChange={e => setPassword(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="su-confirm-pass">Confirm password</label>
-            <input className="input" id="su-confirm-pass" type="password" placeholder="Re-enter your password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required />
+            <input className="input" id="su-confirm-pass" type="password" autoComplete="new-password" placeholder="Re-enter your password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required />
           </div>
           <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
             {loading ? 'Creating account...' : 'Create account'} <ArrowRight size={14} />
@@ -215,13 +218,40 @@ export function OnboardingView({ setActiveScreen }) {
     const savedStep = localStorage.getItem('marqq_onboarding_step');
     if (!savedStep) return 1;
     const n = parseInt(savedStep, 10);
-    return Number.isFinite(n) ? Math.min(Math.max(n, 1), ONBOARDING_TOTAL_STEPS) : 1;
+    if (!Number.isFinite(n)) return 1;
+    if (localStorage.getItem(ONBOARDING_FLOW_VERSION_KEY) === ONBOARDING_FLOW_VERSION) {
+      return Math.min(Math.max(n, 1), ONBOARDING_TOTAL_STEPS);
+    }
+    // Preserve progress from the current five-step first-value flow while
+    // restoring the original welcome and activation screens.
+    const previousVersion = localStorage.getItem(ONBOARDING_FLOW_VERSION_KEY);
+    if (previousVersion === 'first-value-v3') {
+      localStorage.setItem(ONBOARDING_FLOW_VERSION_KEY, ONBOARDING_FLOW_VERSION);
+      return Math.min(Math.max(n + 1, 2), ONBOARDING_TOTAL_STEPS);
+    }
+    if (previousVersion === 'first-value-v2') {
+      localStorage.setItem(ONBOARDING_FLOW_VERSION_KEY, ONBOARDING_FLOW_VERSION);
+      return Math.min(Math.max(n + 1, 2), ONBOARDING_TOTAL_STEPS);
+    }
+    // Migrate the former eight-step flow once: the welcome and activation/
+    // ready screens were orientation-only, so resume at the equivalent step.
+    const migrated = n >= 8 ? 8 : n === 7 ? 7 : n === 6 ? 6 : Math.min(Math.max(n, 1), 6);
+    localStorage.setItem(ONBOARDING_FLOW_VERSION_KEY, ONBOARDING_FLOW_VERSION);
+    return migrated;
   });
+  const [onboardingError, setOnboardingError] = useState('');
 
   const [companyName, setCompanyName] = useState(() => localStorage.getItem('marqq_ob_companyName') || '');
   const [website, setWebsite] = useState(() => localStorage.getItem('marqq_ob_website') || '');
   const [niche, setNiche] = useState(() => localStorage.getItem('marqq_ob_niche') || '');
   const [icp, setIcp] = useState(() => localStorage.getItem('marqq_ob_icp') || '');
+  const [customerType, setCustomerType] = useState(() => localStorage.getItem('marqq_ob_customerType') || '');
+  const [audienceIndustry, setAudienceIndustry] = useState(() => localStorage.getItem('marqq_ob_audienceIndustry') || localStorage.getItem('marqq_ob_niche') || '');
+  const [buyerRole, setBuyerRole] = useState(() => localStorage.getItem('marqq_ob_buyerRole') || '');
+  const [companySize, setCompanySize] = useState(() => localStorage.getItem('marqq_ob_companySize') || '');
+  const [audienceLocation, setAudienceLocation] = useState(() => localStorage.getItem('marqq_ob_audienceLocation') || '');
+  const [audienceProblem, setAudienceProblem] = useState(() => localStorage.getItem('marqq_ob_audienceProblem') || '');
+  const [audienceNotes, setAudienceNotes] = useState(() => localStorage.getItem('marqq_ob_audienceNotes') || localStorage.getItem('marqq_ob_icp') || '');
   const [outcome, setOutcome] = useState(() => localStorage.getItem('marqq_ob_outcome') || '');
   const [timeWindow, setTimeWindow] = useState(() => localStorage.getItem('marqq_ob_timeWindow') || '');
   const [target, setTarget] = useState(() => localStorage.getItem('marqq_ob_target') || '');
@@ -236,15 +266,26 @@ export function OnboardingView({ setActiveScreen }) {
     localStorage.setItem('marqq_ob_website', website);
     localStorage.setItem('marqq_ob_niche', niche);
     localStorage.setItem('marqq_ob_icp', icp);
+    localStorage.setItem('marqq_ob_customerType', customerType);
+    localStorage.setItem('marqq_ob_audienceIndustry', audienceIndustry);
+    localStorage.setItem('marqq_ob_buyerRole', buyerRole);
+    localStorage.setItem('marqq_ob_companySize', companySize);
+    localStorage.setItem('marqq_ob_audienceLocation', audienceLocation);
+    localStorage.setItem('marqq_ob_audienceProblem', audienceProblem);
+    localStorage.setItem('marqq_ob_audienceNotes', audienceNotes);
     localStorage.setItem('marqq_ob_outcome', outcome);
     localStorage.setItem('marqq_ob_timeWindow', timeWindow);
     localStorage.setItem('marqq_ob_target', target);
     localStorage.setItem('marqq_ob_baseline', baseline);
-  }, [companyName, website, niche, icp, outcome, timeWindow, target, baseline]);
+  }, [companyName, website, niche, icp, customerType, audienceIndustry, buyerRole, companySize, audienceLocation, audienceProblem, audienceNotes, outcome, timeWindow, target, baseline]);
 
   // AI Synthesis State
   const [groqLoading, setGroqLoading] = useState(false);
   const [groqData, setGroqData] = useState(null);
+  /** Website URL that the current Brand DNA fields were successfully fetched for. */
+  const [brandDnaFetchedFor, setBrandDnaFetchedFor] = useState('');
+  const brandDnaInFlightRef = useRef('');
+  const brandDnaAutoAttemptRef = useRef('');
 
   // Brand DNA extra fields
   const [brandTagline, setBrandTagline] = useState(() => localStorage.getItem('marqq_ob_tagline') || '');
@@ -265,13 +306,43 @@ export function OnboardingView({ setActiveScreen }) {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
+  const normalizeWebsiteKey = (url) =>
+    String(url || '')
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
+
+  const isPlaceholderBrandSummary = (summary, name = companyName) => {
+    const text = String(summary || '').trim();
+    if (!text) return true;
+    return /empowers mid-tier leaders in .+ to accelerate growth through innovative solutions/i.test(text)
+      || (/^The\s+/i.test(text) && /innovative solutions/i.test(text) && text.length < 180);
+  };
+
+  const brandDnaReadyForSite =
+    Boolean(brandDnaFetchedFor) &&
+    brandDnaFetchedFor === normalizeWebsiteKey(website) &&
+    Boolean(groqData?.brandSummary) &&
+    !isPlaceholderBrandSummary(groqData.brandSummary);
+
   useEffect(() => { localStorage.setItem('marqq_ob_tagline', brandTagline); }, [brandTagline]);
   useEffect(() => { localStorage.setItem('marqq_ob_tone', toneOfVoice); }, [toneOfVoice]);
 
+  // If Brand DNA step is restored without a successful scrape for this website, fetch once.
   useEffect(() => {
-    // Fresh / incomplete onboarding: do not hydrate shared workspace Brand DNA
-    // (that was pre-filling Elevate/Nouriva into every new signup).
-    if (!isOnboardingComplete() && !localStorage.getItem('marqq_ob_companyName') && !localStorage.getItem('marqq_ob_website')) {
+    if (step !== 6 || groqLoading || brandDnaReadyForSite || !normalizeWebsiteKey(website)) return;
+    const siteKey = normalizeWebsiteKey(website);
+    if (brandDnaAutoAttemptRef.current === siteKey) return;
+    brandDnaAutoAttemptRef.current = siteKey;
+    void handleRunGroqSynthesis({ force: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional gate on step/website readiness
+  }, [step, website, brandDnaReadyForSite, groqLoading]);
+
+  useEffect(() => {
+    // During incomplete onboarding, never hydrate shared workspace Brand DNA into the
+    // review form. That race skipped the live website scrape (thin placeholder DNA).
+    if (!isOnboardingComplete()) {
       return undefined;
     }
     let cancelled = false;
@@ -290,6 +361,9 @@ export function OnboardingView({ setActiveScreen }) {
       }
       if (ctx?.brandTagline) setBrandTagline(ctx.brandTagline);
       if (ctx?.toneOfVoice) setToneOfVoice(ctx.toneOfVoice);
+      if (ctx?.website || ctx?.websiteUrl) {
+        setBrandDnaFetchedFor(normalizeWebsiteKey(ctx.website || ctx.websiteUrl));
+      }
       if (files?.length) setKbFiles(files);
     })();
     return () => { cancelled = true; };
@@ -301,6 +375,13 @@ export function OnboardingView({ setActiveScreen }) {
       website,
       niche,
       icp,
+      customerType,
+      audienceIndustry,
+      buyerRole,
+      companySize,
+      audienceLocation,
+      audienceProblem,
+      audienceNotes,
       outcome,
       timeWindow,
       target,
@@ -314,6 +395,20 @@ export function OnboardingView({ setActiveScreen }) {
       ...extra,
     });
     return persistBrandContext(context);
+  }
+
+  function buildAudienceSummary() {
+    const typeLabel = customerType === 'organizations' ? 'Organizations or businesses' : customerType === 'people' ? 'People or households' : customerType === 'both' ? 'People and organizations' : '';
+    const sizeLabel = companySize ? `${companySize}${customerType === 'people' ? ' people' : ' organizations'}` : '';
+    return [
+      buyerRole,
+      sizeLabel,
+      audienceIndustry,
+      audienceLocation,
+      typeLabel,
+      audienceProblem ? `who need help with ${audienceProblem}` : '',
+      audienceNotes,
+    ].filter(Boolean).join('; ');
   }
 
   async function fileToBase64(file) {
@@ -531,41 +626,74 @@ export function OnboardingView({ setActiveScreen }) {
     }
   };
 
-  const handleRunGroqSynthesis = async () => {
+  const handleRunGroqSynthesis = async ({ force = false } = {}) => {
+    const siteKey = normalizeWebsiteKey(website);
+    if (!siteKey) {
+      setOnboardingError('Add a website first so Marqq can scrape Brand DNA.');
+      return false;
+    }
+    if (!force && brandDnaReadyForSite) return true;
+    if (brandDnaInFlightRef.current === siteKey) return false;
+
+    brandDnaInFlightRef.current = siteKey;
     setGroqLoading(true);
+    setOnboardingError('');
     try {
+      const audienceSummary = buildAudienceSummary() || icp;
       const res = await fetch('/api/brand-dna', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ companyName, websiteUrl: website, industry: niche, icp }),
+        body: JSON.stringify({ companyName, websiteUrl: website, industry: niche || audienceIndustry, icp: audienceSummary, workspaceId: getActiveWorkspaceId() }),
       });
       const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.ok === false || !json?.brandDna) {
+        throw new Error(json?.error || `Brand DNA request failed (${res.status})`);
+      }
       const dna = json.brandDna || {};
       const signals = json.signals || {};
+      const fallbackSummary = signals.description || signals.h1 || signals.ogDescription || `${companyName || 'Your company'} serves ${audienceSummary || 'your target audience'}.`;
+      const nextSummary = dna.businessSummary || dna.brandSummary || fallbackSummary;
+      if (isPlaceholderBrandSummary(nextSummary, companyName) && !signals.description && !signals.h1) {
+        throw new Error('Website scrape returned no usable brand signals. Check the URL and re-run.');
+      }
+      const nextColors = dna.colors || signals.colors || ['#ff6a00', '#f2790a', '#191613'];
+      const nextFonts = dna.fonts || signals.fonts || 'Archivo, Inter';
+      const nextTagline = String(dna.brandTagline || signals.pageTagline || signals.ogDescription || '').trim();
+      const nextTone = String(dna.toneOfVoice || '').trim();
       setGroqData({
-        brandSummary: dna.businessSummary || dna.brandSummary || '',
+        brandSummary: nextSummary,
         positioningTags: dna.positioningTags || [],
-        colors: dna.colors || signals.colors || ['#ff6a00', '#f2790a', '#191613'],
-        fonts: dna.fonts || signals.fonts || 'Archivo, Inter',
+        colors: nextColors,
+        fonts: nextFonts,
       });
-      // Populate standalone fields from AI output
-      if (dna.brandTagline) setBrandTagline(dna.brandTagline);
-      if (dna.toneOfVoice) setToneOfVoice(dna.toneOfVoice);
-      // Auto-fill logo from scraped favicon if not already set
-      const scraped = signals.logoUrl || signals.faviconUrl || '';
+      if (nextTagline) setBrandTagline(nextTagline);
+      if (nextTone) setToneOfVoice(nextTone);
+      // Auto-fill logo from scraped favicon / og:image if not already set
+      const scraped = signals.logoUrl || signals.ogImage || signals.faviconUrl || '';
+      const resolvedLogo = logoUrl || scraped || '';
       if (scraped && !logoUrl) { setLogoUrl(scraped); setLogoBroken(false); }
+      setBrandDnaFetchedFor(siteKey);
       await saveBrandContextNow({
-        logoUrl: logoUrl || scraped || '',
+        logoUrl: resolvedLogo,
+        icp: audienceSummary,
+        niche: niche || audienceIndustry,
+        brandTagline: nextTagline || brandTagline,
+        toneOfVoice: nextTone || toneOfVoice,
         groqData: {
-          brandSummary: dna.businessSummary || dna.brandSummary || '',
+          brandSummary: nextSummary,
           positioningTags: dna.positioningTags || [],
-          colors: dna.colors || signals.colors || ['#ff6a00', '#f2790a', '#191613'],
-          fonts: dna.fonts || signals.fonts || 'Archivo, Inter',
+          colors: nextColors,
+          fonts: nextFonts,
         },
       });
+      return true;
     } catch (err) {
       console.warn('[brand-dna] synthesis error:', err.message);
+      setBrandDnaFetchedFor('');
+      setOnboardingError(`Brand DNA could not be fetched. ${err.message || 'Check the website and try again.'}`);
+      return false;
     } finally {
+      if (brandDnaInFlightRef.current === siteKey) brandDnaInFlightRef.current = '';
       setGroqLoading(false);
     }
   };
@@ -574,14 +702,38 @@ export function OnboardingView({ setActiveScreen }) {
   const nextStep = async () => {
     // Don't leave Brand DNA while scrape/synthesis is still running
     if (groqLoading) return;
-    if (step === 5 && !groqData) {
-      // Advance to step 6 so the BrandStyleLoader shows, then await fetch
-      setStep(6);
-      await handleRunGroqSynthesis();
+    setOnboardingError('');
+    if (step === 2 && (!companyName.trim() || !website.trim())) {
+      setOnboardingError('Add your company name and website so Marqq can ground its research.');
       return;
     }
-    if (step >= 6) {
+    if (step === 3) {
+      const audienceSummary = buildAudienceSummary();
+      if (audienceSummary) setIcp(audienceSummary);
+      if (!audienceSummary.trim() && !icp.trim()) {
+        setOnboardingError('Add the customer type, market, and problem you solve so Marqq can target the right audience.');
+        return;
+      }
+    }
+    if (step === 4 && (!outcome.trim() || !timeWindow)) {
+      setOnboardingError('Add a primary outcome and target window so Marqq can measure progress.');
+      return;
+    }
+    if (step === 5) {
+      // Always enter Brand DNA with a live scrape for the current website.
+      // Do not skip when stale groqData exists from another workspace/session.
+      setStep(6);
+      await handleRunGroqSynthesis({ force: !brandDnaReadyForSite });
+      return;
+    }
+    if (step === 6) {
+      if (!brandDnaReadyForSite) {
+        const ok = await handleRunGroqSynthesis({ force: true });
+        if (!ok) return;
+      }
       await saveBrandContextNow();
+      setStep(7);
+      return;
     }
     if (step < ONBOARDING_TOTAL_STEPS) {
       setStep(step + 1);
@@ -625,7 +777,7 @@ export function OnboardingView({ setActiveScreen }) {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <p className="text-muted" style={{ fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', margin: 0, fontWeight: 800 }}>
-              Step {step} of {ONBOARDING_TOTAL_STEPS}
+              Step {step} of {ONBOARDING_TOTAL_STEPS} · {ONBOARDING_STEP_LABELS[step - 1]}
             </p>
             <span className="tag tag-accent" style={{ fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }}>
               <Sparkles size={12} /> AI Strategy Engine
@@ -694,22 +846,31 @@ export function OnboardingView({ setActiveScreen }) {
           {/* Step 3: Audience & ICP */}
           {step === 3 && (
             <div>
-              <h1 style={{ marginBottom: '6px' }}>Who are you selling to?</h1>
-              <p className="text-muted" style={{ marginBottom: '28px' }}>This shapes research, positioning, channels, and which agents light up.</p>
-              <h1 style={{ marginBottom: '6px' }}>Who is your Ideal Customer Profile (ICP)?</h1>
-              <p className="text-muted" style={{ marginBottom: '24px' }}>Define target titles, company size, and geographic scope.</p>
-              <div className="field" style={{ marginBottom: '24px' }}>
-                <label htmlFor="ob-icp">Ideal Customer Profile</label>
-                <textarea
-                  className="input"
-                  id="ob-icp"
-                  style={{ minHeight: '90px' }}
-                  placeholder="e.g. Clinic owners and medical directors at mid-size hospitals in India"
-                  value={icp}
-                  onChange={e => setIcp(e.target.value)}
-                  required
-                />
+              <h1 style={{ marginBottom: '6px' }}>Who is this for?</h1>
+              <p className="text-muted" style={{ marginBottom: '24px' }}>Describe the people, organizations, or communities you want to reach.</p>
+              <div style={{ display: 'grid', gap: '14px', marginBottom: '18px' }}>
+                <div className="field">
+                  <label htmlFor="ob-customer-type">Audience type</label>
+                  <select className="input" id="ob-customer-type" value={customerType} onChange={e => setCustomerType(e.target.value)}>
+                    <option value="">Choose one</option>
+                    <option value="organizations">Organizations or businesses</option>
+                    <option value="people">People or households</option>
+                    <option value="both">Both people and organizations</option>
+                    <option value="unsure">Not sure yet</option>
+                  </select>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div className="field"><label htmlFor="ob-audience-industry">Industry or category</label><input className="input" id="ob-audience-industry" placeholder="e.g. Hospitals, fintech, fitness" value={audienceIndustry} onChange={e => { setAudienceIndustry(e.target.value); setNiche(e.target.value); }} /></div>
+                  <div className="field"><label htmlFor="ob-buyer-role">Buyer role or persona</label><input className="input" id="ob-buyer-role" placeholder="e.g. Founder, CMO, clinic owner" value={buyerRole} onChange={e => setBuyerRole(e.target.value)} /></div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div className="field"><label htmlFor="ob-company-size">Company size or life stage</label><select className="input" id="ob-company-size" value={companySize} onChange={e => setCompanySize(e.target.value)}><option value="">Choose if relevant</option><option>Solo / early stage</option><option>Small business</option><option>Mid-market</option><option>Enterprise</option><option>Any size</option></select></div>
+                  <div className="field"><label htmlFor="ob-audience-location">Location or market</label><input className="input" id="ob-audience-location" placeholder="e.g. India, US, Southeast Asia" value={audienceLocation} onChange={e => setAudienceLocation(e.target.value)} /></div>
+                </div>
+                <div className="field"><label htmlFor="ob-audience-problem">Main problem they want solved</label><input className="input" id="ob-audience-problem" placeholder="e.g. Generate more qualified pipeline" value={audienceProblem} onChange={e => setAudienceProblem(e.target.value)} /></div>
+                <div className="field"><label htmlFor="ob-audience-notes">Anything else Marqq should know? <span className="text-muted">(optional)</span></label><textarea className="input" id="ob-audience-notes" style={{ minHeight: '58px' }} placeholder="Add buying context, exclusions, or a more specific description" value={audienceNotes} onChange={e => setAudienceNotes(e.target.value)} /></div>
               </div>
+              <p className="text-muted" style={{ fontSize: '11px', margin: 0 }}>Marqq can use your website to suggest audience details, but you stay in control of what gets used.</p>
             </div>
           )}
 
@@ -721,7 +882,7 @@ export function OnboardingView({ setActiveScreen }) {
               <div style={{ display: 'grid', gap: '16px', marginBottom: '24px' }}>
                 <div className="field">
                   <label htmlFor="ob-outcome">Business outcome</label>
-                  <textarea className="input" id="ob-outcome" style={{ minHeight: '70px' }} value={outcome} onChange={e => setOutcome(e.target.value)} />
+                  <textarea className="input" id="ob-outcome" style={{ minHeight: '70px' }} placeholder="e.g. Generate more qualified leads, increase bookings, or launch in a new market" value={outcome} onChange={e => setOutcome(e.target.value)} />
                 </div>
                 <div className="field">
                   <label>Target window</label>
@@ -758,7 +919,7 @@ export function OnboardingView({ setActiveScreen }) {
               <h1 style={{ marginBottom: '6px' }}>Connect the data Marqq should use</h1>
               <p className="text-muted" style={{ marginBottom: '28px' }}>Optional — skip and Marqq will flag missing data as it works.</p>
               {connectError ? (
-                <p className="text-muted" role="alert" style={{ marginBottom: '16px', color: '#c45c26', fontSize: 13 }}>
+                <p className="text-muted" role="alert" style={{ marginBottom: '16px', color: 'var(--color-danger)', fontSize: 13 }}>
                   {connectError}
                 </p>
               ) : null}
@@ -799,10 +960,16 @@ export function OnboardingView({ setActiveScreen }) {
 
           {/* Step 6: Brand DNA Review */}
           {step === 6 && (
-            <div>
+            <div className="onboarding-brand-review">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                 <h1 style={{ margin: 0 }}>Review your Brand DNA</h1>
-                <button type="button" className="btn btn-ghost" onClick={handleRunGroqSynthesis} disabled={groqLoading} style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => handleRunGroqSynthesis({ force: true })}
+                  disabled={groqLoading}
+                  style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                >
                   <RefreshCw size={12} className={groqLoading ? 'spin' : ''} /> Re-run
                 </button>
               </div>
@@ -823,6 +990,17 @@ export function OnboardingView({ setActiveScreen }) {
 
               {groqLoading ? (
                 <BrandStyleLoader title="Fetching your Brand DNA" website={website} />
+              ) : !brandDnaReadyForSite ? (
+                <div className="card" style={{ padding: '28px 20px', textAlign: 'center' }}>
+                  <AlertCircle size={22} style={{ color: 'var(--color-accent)', marginBottom: 10 }} />
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Brand DNA not ready yet</div>
+                  <p className="text-muted" style={{ fontSize: 13, marginBottom: 16 }}>
+                    Marqq needs a live scrape of {displayHost(website) || 'your website'} before you continue. Re-run to fetch tagline, tone, colors, and summary.
+                  </p>
+                  <button type="button" className="btn btn-primary" onClick={() => handleRunGroqSynthesis({ force: true })}>
+                    Fetch Brand DNA
+                  </button>
+                </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
 
@@ -846,7 +1024,7 @@ export function OnboardingView({ setActiveScreen }) {
                   {/* Logo */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '110px', padding: '14px' }}>
                     {logoUrl && !logoBroken ? (
-                      <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => logoInputRef.current?.click()} title="Replace logo">
+                      <button type="button" aria-label="Replace logo" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => logoInputRef.current?.click()} title="Replace logo">
                         <img src={logoUrl} alt="Logo" style={{ maxHeight: '52px', maxWidth: '100%', objectFit: 'contain' }} onError={() => setLogoBroken(true)} />
                         <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)', marginTop: '4px', textAlign: 'center' }}>Replace</div>
                       </button>
@@ -865,7 +1043,7 @@ export function OnboardingView({ setActiveScreen }) {
                   <div className="card" style={{ padding: '14px 16px' }}>
                     <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' }}>Business summary</div>
                     <textarea
-                      value={groqData?.brandSummary || `${companyName || 'The company'} empowers mid-tier leaders in ${niche || 'their sector'} to accelerate growth through innovative solutions.`}
+                      value={groqData?.brandSummary || ''}
                       onChange={e => setGroqData(prev => ({ ...prev, brandSummary: e.target.value }))}
                       rows={4}
                       style={{ width: '100%', background: 'transparent', border: 'none', resize: 'none', fontSize: '12px', lineHeight: '1.6', color: 'rgba(255,255,255,0.7)', outline: 'none' }}
@@ -877,7 +1055,7 @@ export function OnboardingView({ setActiveScreen }) {
                   <div className="card" style={{ padding: '14px 16px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                       <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'rgba(255,255,255,0.35)' }}>Colors</div>
-                      <button type="button" onClick={() => setEditingColors(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'rgba(255,255,255,0.4)' }}>
+                      <button type="button" aria-label={editingColors ? 'Finish editing brand colors' : 'Edit brand colors'} onClick={() => setEditingColors(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'rgba(255,255,255,0.4)' }}>
                         <Pencil size={12} />
                       </button>
                     </div>
@@ -971,12 +1149,12 @@ export function OnboardingView({ setActiveScreen }) {
                       )}
                     </div>
                     {recording && <p style={{ fontSize: '11px', color: 'rgba(254,202,202,0.85)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px' }}><span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#f87171', animation: 'pulse 1s infinite' }} />Listening… speak freely, then tap Stop.</p>}
-                    {voiceError && <p style={{ fontSize: '11px', color: '#fcd34d', marginTop: '6px' }}>{voiceError}</p>}
+                    {voiceError && <p style={{ fontSize: '11px', color: 'var(--color-warning)', marginTop: '6px' }}>{voiceError}</p>}
                     {voiceTranscript && (
                       <div style={{ marginTop: '10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)', padding: '10px 12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                           <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', gap: '4px' }}><Pencil size={11} style={{ color: 'rgba(255,255,255,0.35)' }} /> Transcript</span>
-                          <button type="button" onClick={() => setVoiceTranscript('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.35)', padding: '2px' }} title="Clear"><Eraser size={12} /></button>
+                          <button type="button" aria-label="Clear voice transcript" onClick={() => setVoiceTranscript('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.35)', padding: '2px' }} title="Clear"><Eraser size={12} /></button>
                         </div>
                         <textarea value={voiceTranscript} onChange={e => setVoiceTranscript(e.target.value)} rows={4}
                           style={{ width: '100%', background: 'transparent', border: 'none', resize: 'vertical', fontSize: '12px', lineHeight: '1.6', color: 'rgba(255,255,255,0.7)', outline: 'none' }}
@@ -999,7 +1177,7 @@ export function OnboardingView({ setActiveScreen }) {
                       </button>
                       <input ref={kbInputRef} type="file" multiple accept=".pdf,.pptx,.ppt,.png,.jpg,.jpeg,.webp,.txt,.md" style={{ display: 'none' }} onChange={e => handleKbUpload(e.target.files)} />
                     </div>
-                    {kbError && <p style={{ fontSize: '11px', color: '#fcd34d', marginTop: '6px' }}>{kbError}</p>}
+                    {kbError && <p style={{ fontSize: '11px', color: 'var(--color-warning)', marginTop: '6px' }}>{kbError}</p>}
                     {kbFiles.filter(f => f.category !== 'voice_note' && f.category !== 'voice_transcript').length > 0 ? (
                       <ul style={{ marginTop: '10px', listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         {kbFiles.filter(f => f.category !== 'voice_note' && f.category !== 'voice_transcript').map(file => (
@@ -1007,7 +1185,7 @@ export function OnboardingView({ setActiveScreen }) {
                             <FileText size={13} style={{ color: 'rgba(255,255,255,0.35)', flexShrink: 0 }} />
                             <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                             <span style={{ color: 'rgba(255,255,255,0.3)', flexShrink: 0 }}>{formatBytes(file.size)}</span>
-                            <button type="button" onClick={() => handleKbDelete(file.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><Trash2 size={12} /></button>
+                            <button type="button" aria-label={`Delete ${file.name}`} onClick={() => handleKbDelete(file.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: '2px' }}><Trash2 size={12} /></button>
                           </li>
                         ))}
                       </ul>
@@ -1021,11 +1199,11 @@ export function OnboardingView({ setActiveScreen }) {
             </div>
           )}
 
-          {/* Step 7: Assembling AI Team */}
+          {/* Step 7: Activated AI Team */}
           {step === 7 && (
             <div>
-              <h1 style={{ marginBottom: '6px' }}>Assembling your team</h1>
-              <p className="text-muted" style={{ marginBottom: '24px' }}>Activating all 12 specialist agents matched to your industry, ICP and goal.</p>
+              <h1 style={{ marginBottom: '6px' }}>Your AI team is activated</h1>
+              <p className="text-muted" style={{ marginBottom: '24px' }}>All 12 specialist agents are ready to research, plan and execute against your industry, ICP and goal.</p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '24px' }}>
                 {welcomeAgents.map((a, i) => (
                   <div
@@ -1081,6 +1259,7 @@ export function OnboardingView({ setActiveScreen }) {
           )}
 
           {/* Navigation Controls */}
+          {onboardingError ? <div className="card" role="alert" style={{ marginTop: 20, color: 'var(--color-accent-2)' }}>{onboardingError}</div> : null}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '24px' }}>
             {step > 1 ? (
               <button type="button" className="btn btn-secondary" onClick={prevStep}>

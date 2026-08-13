@@ -113,15 +113,23 @@ async function waitForBrandDnaComplete(page, { timeoutMs = 180_000, shotFn = nul
       continue;
     }
 
-    // On review with loader gone
-    const rerun = page.getByRole("button", { name: /Re-run/i }).first();
+    // On review with loader gone — require a real scrape, not the placeholder stub
+    const rerun = page.getByRole("button", { name: /Re-run|Fetch Brand DNA/i }).first();
     const rerunDisabled = await rerun.isDisabled().catch(() => false);
     const summary = page.locator("textarea").first();
     const summaryVal = (await summary.inputValue().catch(() => "")) || "";
-    if (!rerunDisabled) {
+    const placeholder = /empowers mid-tier leaders|accelerate growth through innovative solutions/i.test(summaryVal);
+    if (!rerunDisabled && summaryVal.length >= 80 && !placeholder) {
       if (shotFn) await shotFn("02b-brand-dna-ready");
       console.log(`  ✓ Brand DNA ready (${summaryVal.length} summary chars)`);
       return { ok: true, sawFetch, summaryChars: summaryVal.length };
+    }
+    if (!rerunDisabled && (placeholder || summaryVal.length < 40)) {
+      if (await rerun.isVisible().catch(() => false)) {
+        console.log("  … Brand DNA looks like a stub — re-running fetch");
+        await rerun.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(2000);
+      }
     }
     await page.waitForTimeout(1500);
   }
@@ -345,7 +353,7 @@ async function main() {
     await shot("04-wizard");
 
     let locks = 0;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 180; i++) {
       await dismissOverlays(page);
       if (await isStrategyDocumentVisible(page)) {
         ok("strategy:document");
@@ -355,16 +363,7 @@ async function main() {
         await page.waitForTimeout(3000);
         continue;
       }
-      // Prefer full document depth when that question appears
-      const fullPlan = page.locator("button").filter({ hasText: /Full strategic plan \(all sections\)/i }).first();
-      if (await fullPlan.isVisible().catch(() => false)) {
-        await safeClick(fullPlan);
-        await page.waitForTimeout(400);
-        const cont = page.getByRole("button", { name: /^Continue$/i }).first();
-        if (await cont.isVisible().catch(() => false)) await safeClick(cont);
-        continue;
-      }
-      const lockCta = page.getByRole("button", { name: /Lock (Goals|Module|Offer|Audience)/i }).first();
+      const lockCta = page.getByRole("button", { name: /Lock (execution choices|Module|Offer|audience refinement)/i }).first();
       if (await lockCta.isVisible().catch(() => false)) {
         await safeClick(lockCta);
         locks += 1;
@@ -372,43 +371,90 @@ async function main() {
         await page.waitForTimeout(900);
         continue;
       }
-      // Prefer recommended option cards
-      const recommended = page.locator("button").filter({ hasText: /RECOMMENDED/i });
-      if ((await recommended.count()) > 0) {
-        await safeClick(recommended.first());
-        await page.waitForTimeout(500);
-        const cont = page.getByRole("button", { name: /^Continue$/i }).first();
-        if (await cont.isVisible().catch(() => false)) await safeClick(cont);
+
+      // Follow the actual question panel, not arbitrary buttons elsewhere on
+      // the page. The current question is the h4 containing a question mark;
+      // its parent owns the option buttons and custom-answer controls.
+      if (await page.getByText(/Generating options for your company/i).first().isVisible().catch(() => false)) {
+        if (i % 4 === 0) console.log("  … waiting for AI options");
+        await page.waitForTimeout(2000);
         continue;
       }
-      const candidates = page.locator("button.btn");
-      const n = await candidates.count();
-      let clicked = false;
-      let fallbackIdx = -1;
-      for (let j = 0; j < Math.min(n, 24); j++) {
-        const t = ((await candidates.nth(j).textContent()) || "").trim();
-        if (!t || t.length > 140) continue;
-        if (/Back|Export|Regenerate|Start over|Ask|Open|Skip|Sign|Google|SSO|Logout|Goals|Module|Offer|Audience|^Strategy$|Market analysis|Positioning|Distribution|Marketing strategy|Sales strategy|Launch plan|Measurement|Risks|Timeline/i.test(t))
-          continue;
-        if (/Lock |Continue/i.test(t)) continue;
-        if (fallbackIdx < 0) fallbackIdx = j;
-        if (
-          /lab|nutrition|health|biomarker|diabetes|PCOS|consumer|activation|paid users|subscription|freemium|app store|Instagram|ASO|Nouriva|meal|Indian|trial/i.test(
-            t
-          )
-        ) {
-          await safeClick(candidates.nth(j));
-          clicked = true;
-          await page.waitForTimeout(450);
-          break;
+      const retryOpts = page.getByRole("button", { name: /Retry AI options/i }).first();
+      if (await retryOpts.isVisible().catch(() => false)) {
+        console.log("  … retry AI options");
+        await safeClick(retryOpts);
+        await page.waitForTimeout(2500);
+        continue;
+      }
+
+      // Any interview question is an h4 containing "?". Section titles like "Module" do not.
+      const questionHeading = page
+        .locator("h4")
+        .filter({ hasText: /\?/ })
+        .filter({ hasNotText: /^GTM Strategy Document$/i })
+        .first();
+      if (!(await questionHeading.isVisible().catch(() => false))) {
+        if (i % 5 === 0) {
+          const headings = await page.locator("h4").allTextContents().catch(() => []);
+          console.log(`  … no active question heading [${headings.join(" | ")}]`);
         }
+        await page.waitForTimeout(1200);
+        continue;
       }
-      if (!clicked && fallbackIdx >= 0) {
-        await safeClick(candidates.nth(fallbackIdx));
-        clicked = true;
-        await page.waitForTimeout(450);
+      const questionPanel = questionHeading.locator("xpath=..");
+      const question = (await questionHeading.textContent().catch(() => "")).trim();
+      console.log(`  … answering: ${question}`);
+      const customAnswers = [
+        [/What are you building|go-to-market plan for/i, "Nouriva AI consumer nutrition app"],
+        [/What should we call this offer/i, "Nouriva AI meal intelligence"],
+        [/What does this specific offer do/i, "Turns lab results and health conditions into practical meal guidance for Indian kitchens"],
+        [/Where would a buyer put you/i, "Lab-personalized nutrition guidance app"],
+        [/Who uses, chooses, or influences/i, "Indian adults managing diabetes, PCOS, thyroid, hypertension, or vitamin deficiencies"],
+        [/What are they trying to accomplish/i, "Choose everyday meals with more confidence while managing their health condition"],
+        [/What usually causes them/i, "A new lab result, diagnosis, or difficulty turning health advice into meals"],
+        [/Who is not a good fit/i, "People seeking diagnosis, treatment, or generic calorie counting only"],
+      ];
+      const custom = customAnswers.find(([re]) => re.test(question));
+      const productOpt = questionPanel.getByRole("button", { name: /^(Product|App|Consumer app|Mobile app)\b/i }).first();
+      const fullPlan = questionPanel.getByRole("button", { name: /Full strategic plan/i }).first();
+      const customInput = page.getByPlaceholder(/type your own/i).first();
+      const submitCustom = page.getByRole("button", { name: /Submit custom answer/i }).first();
+
+      if (/How detailed should/i.test(question) && (await fullPlan.isVisible().catch(() => false))) {
+        await safeClick(fullPlan);
+      } else if (/What are you building|go-to-market plan for/i.test(question) && (await productOpt.isVisible().catch(() => false))) {
+        await safeClick(productOpt);
+      } else if (custom && (await customInput.isVisible().catch(() => false))) {
+        await customInput.fill("");
+        await customInput.fill(custom[1]);
+        await customInput.press("Enter").catch(() => {});
+        if (await submitCustom.isEnabled().catch(() => false)) {
+          await safeClick(submitCustom);
+        } else {
+          // Controlled input sometimes ignores fill — click first option instead
+          const fallback = questionPanel.locator("button.btn-secondary").first();
+          if (await fallback.isVisible().catch(() => false)) await safeClick(fallback);
+        }
+      } else {
+        const optionButtons = questionPanel.locator("button.btn-secondary, button").filter({
+          hasNotText: /Continue with|Submit custom|Lock|Generate strategy|Retry AI|Add module/i,
+        });
+        if (!(await optionButtons.count())) {
+          if (i % 5 === 0) console.log(`  … active question has no options: ${question}`);
+          await page.waitForTimeout(1200);
+          continue;
+        }
+        await safeClick(optionButtons.first());
       }
-      if (!clicked) await page.waitForTimeout(2000);
+      await page.waitForTimeout(900);
+
+      // Multi-select questions stay on the same question until confirmed.
+      const multiContinue = questionPanel.getByRole("button", { name: /^Continue with \d+ selected$/i }).first();
+      if (await multiContinue.isVisible().catch(() => false)) {
+        await safeClick(multiContinue);
+        await page.waitForTimeout(900);
+      }
     }
 
     const docOk = await page
@@ -435,6 +481,15 @@ async function main() {
     const sections = Array.isArray(strategy?.sections) ? strategy.sections : [];
     if (sections.length) ok("strategy:sections", `${sections.length} sections`);
     else fail("strategy:sections", "no sections in sessionStorage");
+
+    const workstreams = Array.isArray(strategy?.workstreams) ? strategy.workstreams : [];
+    const workstreamFields = ["primaryAgent", "tools", "inputs", "outputs", "approval", "metric", "deadline", "stopRule", "mode"];
+    const completeWorkstreams = workstreams.length > 0 && workstreams.every((w) => workstreamFields.every((key) => {
+      const value = w?.[key];
+      return Array.isArray(value) ? value.length > 0 : Boolean(String(value || "").trim());
+    }));
+    if (completeWorkstreams) ok("strategy:agent-workstreams", `${workstreams.length} executable workstreams`);
+    else fail("strategy:agent-workstreams", "missing workstreams or execution fields");
 
     const sectionReport = sections.map((s, idx) => {
       const body = String(s.body || s.summary || "").trim();
@@ -469,6 +524,7 @@ async function main() {
       `- Generated: ${new Date().toISOString()}`,
       `- Title: ${strategy?.title || "(none)"}`,
       `- Sections: ${sections.length}`,
+      `- Agent workstreams: ${workstreams.length}`,
       ``,
       `## Results`,
       ...results.map((r) => `- ${r.status === "pass" ? "PASS" : "FAIL"} ${r.name}${r.detail ? ` — ${r.detail}` : ""}`),
@@ -480,6 +536,22 @@ async function main() {
         s.bodyPreview || "_empty_",
         ``,
         ...(s.bullets.length ? s.bullets.map((b) => `- ${b}`) : []),
+        ``,
+      ]),
+      `## Agent execution workstreams`,
+      ...workstreams.flatMap((w) => [
+        `### ${w.name}`,
+        `- Phase: ${w.phase}`,
+        `- Primary agent: ${w.primaryAgent}${w.supportingAgents?.length ? ` · Supporting: ${w.supportingAgents.join(", ")}` : ""}`,
+        `- Depends on: ${w.dependsOn?.length ? w.dependsOn.join(", ") : "None"}`,
+        `- Tools: ${w.tools.join(", ")}`,
+        `- Inputs: ${w.inputs.join("; ")}`,
+        `- Outputs: ${w.outputs.join("; ")}`,
+        `- Approval: ${w.approval}`,
+        `- Metric: ${w.metric}`,
+        `- Deadline: ${w.deadline}`,
+        `- Stop rule: ${w.stopRule}`,
+        `- Mode: ${w.mode}`,
         ``,
       ]),
     ].join("\n");

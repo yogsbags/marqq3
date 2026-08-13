@@ -4,6 +4,10 @@ const TITLE_RE = /<title[^>]*>([^<]+)<\/title>/i;
 const META_DESC_RE = /<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i;
 const META_DESC_RE_ALT = /<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["']/i;
 const OG_SITE_RE = /<meta[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i;
+const OG_DESC_RE = /<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i;
+const OG_DESC_RE_ALT = /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:description["']/i;
+const OG_IMAGE_RE = /<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i;
+const OG_IMAGE_RE_ALT = /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i;
 const H1_RE = /<h1[^>]*>([^<]+)<\/h1>/i;
 const THEME_COLOR_RE = /<meta[^>]*name=["']theme-color["'][^>]*content=["']([^"']+)["']/i;
 const HEX_RE = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g;
@@ -85,13 +89,32 @@ function extractFonts(html) {
   const fontMatches = html.match(/font-family:[^;}"']+/gi) || [];
   const fonts = new Set();
   fontMatches.forEach(m => {
-    const name = m.replace(/font-family:/i, '').split(',')[0].replace(/["']/g, '').trim();
-    if (name && !['inherit', 'initial', 'unset', 'sans-serif', 'serif', 'monospace'].includes(name.toLowerCase())) {
+    const name = m
+      .replace(/font-family:/i, '')
+      .split(',')[0]
+      .replace(/["']/g, '')
+      .replace(/!important/gi, '')
+      .trim();
+    if (
+      name &&
+      !['inherit', 'initial', 'unset', 'sans-serif', 'serif', 'monospace', 'system-ui'].includes(name.toLowerCase()) &&
+      !/important|var\(/i.test(name)
+    ) {
       fonts.add(name);
     }
   });
+  // Google Fonts stylesheet hints
+  const gf = html.match(/fonts\.googleapis\.com\/css2?\?family=([^"'&]+)/i);
+  if (gf?.[1]) {
+    decodeURIComponent(gf[1])
+      .split('|')
+      .forEach((part) => {
+        const family = part.split(':')[0].replace(/\+/g, ' ').trim();
+        if (family) fonts.add(family);
+      });
+  }
   const list = Array.from(fonts).slice(0, 2);
-  return list.length > 0 ? `${list.join(' & ')} · headings & body` : 'Archivo · headings & body';
+  return list.length > 0 ? `${list.join(', ')}` : 'Archivo, Inter';
 }
 
 export async function scrapeBrandSignals(websiteUrl) {
@@ -101,8 +124,11 @@ export async function scrapeBrandSignals(websiteUrl) {
       websiteUrl: '',
       title: '',
       description: '',
+      ogDescription: '',
+      ogImage: '',
       siteName: '',
       h1: '',
+      pageTagline: '',
       colors: ['#ff6a00', '#f2790a', '#191613'],
       fonts: 'Archivo · headings & body',
       logoUrl: '',
@@ -111,26 +137,37 @@ export async function scrapeBrandSignals(websiteUrl) {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    // GoDaddy / Wix-style sites can exceed 6s; keep head parseable within 20s.
+    const timeout = setTimeout(() => controller.abort(), 20000);
     const resp = await fetch(normalized, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MarqqBot/1.0)' },
-      redirect: 'follow'
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      redirect: 'follow',
     }).catch(() => null);
     clearTimeout(timeout);
 
     if (!resp || !resp.ok) throw new Error('Fetch failed');
 
-    const html = await resp.text();
+    // Only need the document head + early body for brand signals.
+    const html = (await resp.text()).slice(0, 350_000);
     const title = stripHtml((html.match(TITLE_RE) || [])[1] || '');
     const description = stripHtml((html.match(META_DESC_RE) || html.match(META_DESC_RE_ALT) || [])[1] || '');
+    const ogDescription = stripHtml((html.match(OG_DESC_RE) || html.match(OG_DESC_RE_ALT) || [])[1] || '');
+    const ogImageRaw = (html.match(OG_IMAGE_RE) || html.match(OG_IMAGE_RE_ALT) || [])[1] || '';
     const siteName = stripHtml((html.match(OG_SITE_RE) || [])[1] || '');
     const h1 = stripHtml((html.match(H1_RE) || [])[1] || '');
     const themeColor = (html.match(THEME_COLOR_RE) || [])[1] || null;
     const hexes = html.match(HEX_RE) || [];
 
-    // Prefer short on-page taglines (Elevate: "Strategy Meets Execution")
+    // Prefer short on-page / OG taglines (Elevate: "Strategy Meets Execution")
     let pageTagline = '';
+    if (ogDescription && ogDescription.split(/\s+/).length <= 10) {
+      pageTagline = ogDescription;
+    }
     const taglineMatch = html.match(/Strategy\s+Meets\s+Execution/i);
     if (taglineMatch) pageTagline = 'Strategy Meets Execution';
     if (!pageTagline) {
@@ -157,8 +194,17 @@ export async function scrapeBrandSignals(websiteUrl) {
         logoUrl = rawIconHref.startsWith('http') ? rawIconHref : `${normalized.replace(/\/$/, '')}/${rawIconHref.replace(/^\//, '')}`;
       }
     }
-    // Fallback: try /favicon.ico
-    if (!logoUrl) {
+    let ogImage = '';
+    if (ogImageRaw) {
+      try {
+        ogImage = new URL(ogImageRaw, normalized).href;
+      } catch {
+        ogImage = ogImageRaw.startsWith('http') ? ogImageRaw : '';
+      }
+    }
+    // Prefer a real brand image (og:image) over tiny/odd CDN favicons when available
+    if (ogImage) logoUrl = ogImage;
+    else if (!logoUrl) {
       try { logoUrl = new URL('/favicon.ico', normalized).href; } catch { logoUrl = ''; }
     }
 
@@ -166,6 +212,8 @@ export async function scrapeBrandSignals(websiteUrl) {
       websiteUrl: normalized,
       title,
       description,
+      ogDescription,
+      ogImage,
       siteName,
       h1,
       pageTagline,
@@ -178,6 +226,8 @@ export async function scrapeBrandSignals(websiteUrl) {
       websiteUrl: normalized,
       title: '',
       description: '',
+      ogDescription: '',
+      ogImage: '',
       siteName: '',
       h1: '',
       pageTagline: '',
@@ -191,12 +241,12 @@ export async function scrapeBrandSignals(websiteUrl) {
 export async function synthesizeBrandDnaWithAi({ companyName, websiteUrl, industry, icp, signals, workspaceId = 'marqq-ws-1' }) {
   const apiKey = process.env.VITE_GROQ_API_KEY || process.env.GROQ_API_KEY;
   const compName = companyName || signals?.siteName || signals?.title || 'Your Company';
-  const descriptionSignal = signals?.description || '';
+  const descriptionSignal = signals?.description || signals?.ogDescription || '';
   const summaryFallback = descriptionSignal || `${compName} empowers target accounts in ${industry || 'their industry'} with innovative solutions.`;
   const defaultPillars = ['GROWTH ENABLEMENT', 'DIGITAL TRANSFORMATION', 'INDUSTRY EXPERTISE'];
   const defaultColors = signals?.colors || ['#ff6a00', '#f2790a', '#191613'];
   const defaultFonts = signals?.fonts || 'Archivo, Inter';
-  const defaultTagline = `Grow faster. Operate smarter.`;
+  const defaultTagline = signals?.pageTagline || signals?.ogDescription || `Grow faster. Operate smarter.`;
   const defaultTone = `Professional yet conversational. Data-driven and direct — no fluff. Uses active voice and outcome-first language targeted at ${icp || 'decision-makers'}.`;
   const defaultBusinessSummary = summaryFallback;
 
@@ -224,6 +274,7 @@ Industry: ${industry || 'B2B Software & Services'}
 ICP (who BUYS from them): ${icp || 'Mid-market businesses'}
 Page Title: ${signals?.title || ''}
 Meta Description: ${descriptionSignal}
+OG Description / tagline hint: ${signals?.ogDescription || signals?.pageTagline || ''}
 H1 Headline: ${signals?.h1 || ''}
 Scraped brand colors: ${scrapedColors || 'none found'}
 Scraped fonts: ${scrapedFonts}
@@ -231,7 +282,7 @@ Scraped fonts: ${scrapedFonts}
 Rules:
 - brandSummary: 1 crisp sentence — what THEY SELL and who BUYS. Never "The ${compName}". Grammar: use "${compName}" not "The ${compName}".
 - businessSummary: 2-3 sentences on value, buyer, differentiator. Meta description + H1 are primary sources. Do not invent funding or market surges.
-- brandTagline: Prefer an exact short phrase from H1/title/page if it looks like a tagline (e.g. "Strategy Meets Execution"). Otherwise invent a 4-8 word promise consistent with scraped copy.
+- brandTagline: Prefer an exact short phrase from H1/title/og:description/page if it looks like a tagline (e.g. "Strategy Meets Execution"). Otherwise invent a 4-8 word promise consistent with scraped copy.
 - toneOfVoice: 2-3 sentences — formality, style, vocabulary — tailored to the ICP buyers.
 - positioningTags: 3 SHORT CAPITALIZED pillars (2-4 words each).
 - colors: Use scraped brand colors. Exactly 3 valid hex strings.
@@ -270,7 +321,7 @@ Return JSON matching this EXACT structure (no extra keys):
     const parsed = result.json;
 
     // Prefer a short on-page tagline if AI drifted
-    const pageHint = `${signals?.pageTagline || ''} ${signals?.h1 || ''} ${signals?.title || ''} ${descriptionSignal}`;
+    const pageHint = `${signals?.pageTagline || ''} ${signals?.ogDescription || ''} ${signals?.h1 || ''} ${signals?.title || ''} ${descriptionSignal}`;
     let tagline = String(signals?.pageTagline || parsed.brandTagline || defaultTagline).trim();
     if (/strategy meets execution/i.test(pageHint)) {
       tagline = 'Strategy Meets Execution';
