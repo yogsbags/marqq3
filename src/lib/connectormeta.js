@@ -57,11 +57,38 @@ export const CONNECTOR_DISPLAY = {
   snowflake: { label: 'Snowflake', bg: '#29B5E8' },
   openai: { label: 'OpenAI', bg: '#10A37F' },
   anthropic: { label: 'Anthropic', bg: '#D97757' },
-  perplexity: { label: 'Perplexity', bg: '#1A1A1A' }
+  perplexity: { label: 'Perplexity', bg: '#1A1A1A' },
+  appstore_connect: { label: 'App Store Connect', bg: '#111827' },
+  revenuecat: { label: 'RevenueCat', bg: '#F97316' },
+  firebase: { label: 'Firebase', bg: '#FFCA28' },
+  google_play_console: { label: 'Google Play Console', bg: '#34A853' },
+  supabase: { label: 'Supabase', bg: '#3ECF8E' }
 };
 
 export function connectorLabel(id) {
   return CONNECTOR_DISPLAY[id]?.label || id;
+}
+
+// Customer-uploaded Composio toolkits that use workspace-selected IDs rather
+// than OAuth-connected accounts.
+export const NO_AUTH_CONNECTORS = new Set([
+  'appstore_connect',
+  'firebase',
+  'google_play_console',
+]);
+
+// Providers that require a workspace-level destination after authentication.
+// API-key connectors such as Apollo resolve their connected account directly
+// and should not fall through to a generic manual-ID dialog.
+export const RESOURCE_PICKER_CONNECTORS = new Set([
+  'google_ads', 'meta_ads', 'ga4', 'gsc', 'linkedin_ads', 'facebook',
+  'instagram', 'google_sheets', 'google_docs', 'google_drive', 'github',
+  'supabase', 'firebase', 'appstore_connect', 'google_play_console',
+  'revenuecat', 'salesforce', 'hubspot',
+]);
+
+export function connectorNeedsResourcePicker(id) {
+  return RESOURCE_PICKER_CONNECTORS.has(String(id || '').toLowerCase());
 }
 
 /** Match Integrations menu: prefer `connected`, also accept active-ish status strings. */

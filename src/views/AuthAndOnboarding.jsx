@@ -3,18 +3,48 @@ import {  ArrowRight, CheckCircle2, Shield, Sparkles, RefreshCw, AlertCircle, Mi
 import {  supabase  } from '../lib/supabase';
 import {  completeOnboardingWithGroq  } from '../services/groqService';
 import {  connectComposioConnector, formatConnectorError  } from '../lib/composio';
-import {  CONNECTOR_DISPLAY, isConnectorActive  } from '../lib/connectormeta';
+import {  CONNECTOR_DISPLAY, isConnectorActive, NO_AUTH_CONNECTORS, connectorNeedsResourcePicker  } from '../lib/connectormeta';
 import {  ResourcePickerModal  } from '../components/common/ResourcePickerModal';
 import {  BrandStyleLoader  } from '../components/BrandStyleLoader';
 import {  buildBrandContextFromOnboarding, persistBrandContext, fetchBrandContext, fetchKnowledgeFiles, getActiveWorkspaceId, resolveLogoImgSrc, deleteBrandLogo  } from '../lib/brandContext';
 import { apiFetch } from '../lib/apiFetch';
 import {  isOnboardingComplete, resetOnboardingDraft  } from '../lib/workspaceBootstrap';
-import { ensureUserWorkspace } from '../lib/workspace.js';
+import { ensureUserWorkspace, isUuidWorkspaceId } from '../lib/workspace.js';
 
-const ONBOARDING_TOTAL_STEPS = 8;
-const ONBOARDING_STEP_LABELS = ['Your AI team', 'Company', 'Audience', 'Growth goal', 'Data sources', 'Brand DNA', 'Agents activated', 'Ready'];
-const ONBOARDING_FLOW_VERSION = 'first-value-v4';
+const ONBOARDING_TOTAL_STEPS = 9;
+const ONBOARDING_STEP_LABELS = ['Your AI team', 'Company', 'Audience', 'Growth goal', 'Data sources', 'Brand DNA', 'Agents activated', 'Market research', 'GTM ready'];
+const ONBOARDING_FLOW_VERSION = 'first-value-v5';
 const ONBOARDING_FLOW_VERSION_KEY = 'marqq_onboarding_flow_version';
+/** Skip the live pre-GTM research gate — it blocks onboarding for too long. */
+const SKIP_ONBOARDING_MARKET_RESEARCH = true;
+const MARKET_RESEARCH_STEP = 8;
+
+function last30SignalItems(report = {}) {
+  const buckets = [
+    ['reddit', 'Reddit'],
+    ['x', 'X'],
+    ['youtube', 'YouTube'],
+    ['hackernews', 'HN'],
+    ['hn', 'HN'],
+    ['web', 'Web'],
+    ['polymarket', 'Polymarket'],
+  ];
+  const items = [];
+  for (const [key, label] of buckets) {
+    const list = report[key]?.items || (Array.isArray(report[key]) ? report[key] : []);
+    for (const item of list) {
+      const title = String(item?.title || item?.text || item?.name || '').replace(/\s+/g, ' ').trim();
+      if (!title) continue;
+      items.push({
+        source: label,
+        title: title.slice(0, 180),
+        url: item?.url || item?.link || item?.permalink || '',
+        score: Number(item?.score || item?.engagement_score || item?.relevance || 0),
+      });
+    }
+  }
+  return items.sort((a, b) => b.score - a.score).slice(0, 6);
+}
 
 export function SignInView({ setActiveScreen }) {
   const [email, setEmail] = useState('');
@@ -221,7 +251,10 @@ export function OnboardingView({ setActiveScreen }) {
     const n = parseInt(savedStep, 10);
     if (!Number.isFinite(n)) return 1;
     if (localStorage.getItem(ONBOARDING_FLOW_VERSION_KEY) === ONBOARDING_FLOW_VERSION) {
-      return Math.min(Math.max(n, 1), ONBOARDING_TOTAL_STEPS);
+      const restored = Math.min(Math.max(n, 1), ONBOARDING_TOTAL_STEPS);
+      return SKIP_ONBOARDING_MARKET_RESEARCH && restored === MARKET_RESEARCH_STEP
+        ? ONBOARDING_TOTAL_STEPS
+        : restored;
     }
     // Preserve progress from the current five-step first-value flow while
     // restoring the original welcome and activation screens.
@@ -238,7 +271,9 @@ export function OnboardingView({ setActiveScreen }) {
     // ready screens were orientation-only, so resume at the equivalent step.
     const migrated = n >= 8 ? 8 : n === 7 ? 7 : n === 6 ? 6 : Math.min(Math.max(n, 1), 6);
     localStorage.setItem(ONBOARDING_FLOW_VERSION_KEY, ONBOARDING_FLOW_VERSION);
-    return migrated;
+    return SKIP_ONBOARDING_MARKET_RESEARCH && migrated === MARKET_RESEARCH_STEP
+      ? ONBOARDING_TOTAL_STEPS
+      : migrated;
   });
   const [onboardingError, setOnboardingError] = useState('');
 
@@ -283,10 +318,15 @@ export function OnboardingView({ setActiveScreen }) {
   // AI Synthesis State
   const [groqLoading, setGroqLoading] = useState(false);
   const [groqData, setGroqData] = useState(null);
+  const [appLinks, setAppLinks] = useState({ googlePlay: [], appleAppStore: [], androidPackageNames: [], appleAppIds: [] });
   /** Website URL that the current Brand DNA fields were successfully fetched for. */
   const [brandDnaFetchedFor, setBrandDnaFetchedFor] = useState('');
   const brandDnaInFlightRef = useRef('');
   const brandDnaAutoAttemptRef = useRef('');
+  const [preGtmResearch, setPreGtmResearch] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('marqq_pre_gtm_research') || 'null'); } catch { return null; }
+  });
+  const [preGtmResearchLoading, setPreGtmResearchLoading] = useState(false);
 
   // Brand DNA extra fields
   const [brandTagline, setBrandTagline] = useState(() => localStorage.getItem('marqq_ob_tagline') || '');
@@ -598,14 +638,21 @@ export function OnboardingView({ setActiveScreen }) {
 
   const [integrationsState, setIntegrationsState] = useState([
     { id: 'google_ads', name: 'Google Ads', connected: false, status: 'not_connected' },
-    { id: 'linkedin_ads', name: 'LinkedIn Ads', connected: false, status: 'not_connected' },
     { id: 'meta_ads', name: 'Meta Ads', connected: false, status: 'not_connected' },
+    { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
+    { id: 'gsc', name: 'Google Search Console', connected: false, status: 'not_connected' },
+    { id: 'linkedin_ads', name: 'LinkedIn Ads', connected: false, status: 'not_connected' },
     { id: 'salesforce', name: 'Salesforce CRM', connected: false, status: 'not_connected' },
     { id: 'hubspot', name: 'HubSpot CRM', connected: false, status: 'not_connected' },
     { id: 'ga4', name: 'Google Analytics', connected: false, status: 'not_connected' },
     { id: 'google_sheets', name: 'Google Sheets', connected: false, status: 'not_connected' },
     { id: 'google_docs', name: 'Google Docs', connected: false, status: 'not_connected' },
     { id: 'github', name: 'GitHub', connected: false, status: 'not_connected' },
+    { id: 'appstore_connect', name: 'App Store Connect', connected: false, status: 'not_connected' },
+    { id: 'revenuecat', name: 'RevenueCat', connected: false, status: 'not_connected' },
+    { id: 'firebase', name: 'Firebase', connected: false, status: 'not_connected' },
+    { id: 'google_play_console', name: 'Google Play Console', connected: false, status: 'not_connected' },
+    { id: 'supabase', name: 'Supabase', connected: false, status: 'not_connected' },
   ]);
   const [connectingConnectorId, setConnectingConnectorId] = useState(null);
   const [connectError, setConnectError] = useState('');
@@ -614,11 +661,11 @@ export function OnboardingView({ setActiveScreen }) {
     let cancelled = false;
     (async () => {
       // Bind this user's workspace before listing connectors (never inherit prior browser workspace).
-      await ensureUserWorkspace().catch(() => null);
+      await ensureUserWorkspace({ name: companyName || 'My workspace', websiteUrl: website || null }).catch(() => null);
       if (cancelled) return;
       const ws = getActiveWorkspaceId();
       try {
-        const r = await fetch(`/api/integrations?companyId=${encodeURIComponent(ws)}`);
+        const r = await apiFetch(`/api/integrations?companyId=${encodeURIComponent(ws)}`);
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
         if (data?.connectors && data.connectors.length > 0) {
@@ -636,6 +683,10 @@ export function OnboardingView({ setActiveScreen }) {
   const [onboardingPickerId, setOnboardingPickerId] = useState(null);
 
   const handleConnectConnector = async (connectorId) => {
+    if (NO_AUTH_CONNECTORS.has(connectorId)) {
+      setOnboardingPickerId(connectorId);
+      return;
+    }
     setConnectingConnectorId(connectorId);
     setConnectError('');
     try {
@@ -643,18 +694,19 @@ export function OnboardingView({ setActiveScreen }) {
         companyId: getActiveWorkspaceId(),
         connectorId,
         onConnected: (id) => {
-          // Mark the connector as connected in local state after a successful OAuth flow.
-          // Do NOT open the account picker here — the OAuth popup handles the full flow.
+          // OAuth authenticates the provider; resource selection is a separate
+          // workspace-scoped step and must happen before analytics can run.
           setIntegrationsState(prev =>
             prev.map(c => c.id === id ? { ...c, connected: true, status: 'active' } : c)
           );
+          if (connectorNeedsResourcePicker(id)) setOnboardingPickerId(id);
         }
       });
       if (res?.status === 'connected') {
-        // OAuth completed successfully — connector is already marked active via onConnected callback.
         setIntegrationsState(prev =>
           prev.map(c => c.id === connectorId ? { ...c, connected: true, status: 'active' } : c)
         );
+        if (connectorNeedsResourcePicker(connectorId)) setOnboardingPickerId(connectorId);
       }
       // 'closed' / 'redirect' → user dismissed popup or same-tab OAuth started.
     } catch (err) {
@@ -677,6 +729,7 @@ export function OnboardingView({ setActiveScreen }) {
 
     brandDnaInFlightRef.current = siteKey;
     setGroqLoading(true);
+      setAppLinks({ googlePlay: [], appleAppStore: [], androidPackageNames: [], appleAppIds: [], firebaseProjectIds: [] });
     setOnboardingError('');
     try {
       const audienceSummary = buildAudienceSummary() || icp;
@@ -691,6 +744,17 @@ export function OnboardingView({ setActiveScreen }) {
       }
       const dna = json.brandDna || {};
       const signals = json.signals || {};
+      const discoveredAppLinks = signals.appLinks || { googlePlay: [], appleAppStore: [], androidPackageNames: [], appleAppIds: [], firebaseProjectIds: [] };
+      setAppLinks(discoveredAppLinks);
+      try {
+        localStorage.setItem(`marqq_mobile_app_hints_${getActiveWorkspaceId()}`, JSON.stringify({
+          website: siteKey,
+          firebaseProjectId: discoveredAppLinks.firebaseProjectIds?.[0] || '',
+          googlePlayPackageName: discoveredAppLinks.androidPackageNames?.[0] || '',
+          appstoreConnectAppId: discoveredAppLinks.appleAppIds?.[0] || '',
+          discoveredAt: new Date().toISOString(),
+        }));
+      } catch { /* optional convenience hint */ }
       const fallbackSummary = signals.description || signals.h1 || signals.ogDescription || `${companyName || 'Your company'} serves ${audienceSummary || 'your target audience'}.`;
       const nextSummary = dna.businessSummary || dna.brandSummary || fallbackSummary;
       if (isPlaceholderBrandSummary(nextSummary, companyName) && !signals.description && !signals.h1) {
@@ -745,6 +809,65 @@ export function OnboardingView({ setActiveScreen }) {
     }
   };
 
+  const runPreGtmResearch = async ({ force = false } = {}) => {
+    const researchSite = normalizeWebsiteKey(preGtmResearch?.inputs?.website);
+    if (!force && preGtmResearch?.status === 'completed' && researchSite === normalizeWebsiteKey(website)) return preGtmResearch;
+    setPreGtmResearchLoading(true);
+    setOnboardingError('');
+    try {
+      const response = await apiFetch('/api/gtm/preflight-research', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: getActiveWorkspaceId(),
+          companyName,
+          website,
+          niche: niche || audienceIndustry,
+          icp: buildAudienceSummary() || icp,
+          audienceLocation,
+        }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || json?.ok === false) throw new Error(json?.error || `Research failed (${response.status})`);
+      let next = json;
+      if (response.status === 202 && json?.jobId) {
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          const poll = await apiFetch(`/api/gtm/preflight-research/${encodeURIComponent(json.jobId)}?workspaceId=${encodeURIComponent(getActiveWorkspaceId())}`);
+          const pollJson = await poll.json().catch(() => ({}));
+          if (!poll.ok) throw new Error(pollJson?.error || `Research status failed (${poll.status})`);
+          if (pollJson?.job?.status === 'completed') {
+            next = pollJson.job;
+            break;
+          }
+          if (pollJson?.job?.status === 'failed') throw new Error(pollJson.job.error || 'Research failed');
+          if (attempt === 119) throw new Error('Research is still running. It remains queued and can be refreshed later.');
+        }
+      }
+      next = { ...next, status: next.status || 'completed' };
+      setPreGtmResearch(next);
+      localStorage.setItem('marqq_pre_gtm_research', JSON.stringify(next));
+      return next;
+    } catch (err) {
+      setOnboardingError(`Pre-GTM research could not be completed. ${err.message || 'Retry or continue later.'}`);
+      return null;
+    } finally {
+      setPreGtmResearchLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (SKIP_ONBOARDING_MARKET_RESEARCH && step === MARKET_RESEARCH_STEP) {
+      setStep(ONBOARDING_TOTAL_STEPS);
+      return;
+    }
+    if (SKIP_ONBOARDING_MARKET_RESEARCH) return;
+    const researchSite = normalizeWebsiteKey(preGtmResearch?.inputs?.website);
+    if (step !== MARKET_RESEARCH_STEP || preGtmResearchLoading || (preGtmResearch?.status === 'completed' && researchSite === normalizeWebsiteKey(website))) return;
+    void runPreGtmResearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when research gate opens
+  }, [step, website]);
+
 
   const nextStep = async () => {
     // Don't leave Brand DNA while scrape/synthesis is still running
@@ -753,6 +876,13 @@ export function OnboardingView({ setActiveScreen }) {
     if (step === 2 && (!companyName.trim() || !website.trim())) {
       setOnboardingError('Add your company name and website so Marqq can ground its research.');
       return;
+    }
+    if (step === 2) {
+      const workspace = await ensureUserWorkspace({ name: companyName, websiteUrl: website }).catch(() => null);
+      if (!workspace || !isUuidWorkspaceId(workspace.id) || !isUuidWorkspaceId(getActiveWorkspaceId())) {
+        setOnboardingError('Marqq could not bind this onboarding flow to a workspace. Please retry once, then continue.');
+        return;
+      }
     }
     if (step === 3) {
       const audienceSummary = buildAudienceSummary();
@@ -782,6 +912,24 @@ export function OnboardingView({ setActiveScreen }) {
       setStep(7);
       return;
     }
+    if (step === 7 && SKIP_ONBOARDING_MARKET_RESEARCH) {
+      setStep(ONBOARDING_TOTAL_STEPS);
+      return;
+    }
+    if (step === MARKET_RESEARCH_STEP) {
+      if (SKIP_ONBOARDING_MARKET_RESEARCH) {
+        setStep(ONBOARDING_TOTAL_STEPS);
+        return;
+      }
+      if (preGtmResearchLoading) return;
+      const researchSite = normalizeWebsiteKey(preGtmResearch?.inputs?.website);
+      const result = preGtmResearch?.status === 'completed' && researchSite === normalizeWebsiteKey(website)
+        ? preGtmResearch
+        : await runPreGtmResearch({ force: true });
+      if (!result) return;
+      setStep(9);
+      return;
+    }
     if (step < ONBOARDING_TOTAL_STEPS) {
       setStep(step + 1);
     } else {
@@ -793,7 +941,12 @@ export function OnboardingView({ setActiveScreen }) {
   };
 
   const prevStep = () => {
-    if (step > 1) setStep(step - 1);
+    if (step <= 1) return;
+    if (SKIP_ONBOARDING_MARKET_RESEARCH && step === ONBOARDING_TOTAL_STEPS) {
+      setStep(7);
+      return;
+    }
+    setStep(step - 1);
   };
 
   return (
@@ -980,11 +1133,17 @@ export function OnboardingView({ setActiveScreen }) {
                       <button
                         type="button"
                         className={active ? 'tag tag-accent' : 'tag tag-neutral'}
-                        onClick={() => handleConnectConnector(ing.id)}
+                        onClick={() => {
+                          if (NO_AUTH_CONNECTORS.has(ing.id) || (active && connectorNeedsResourcePicker(ing.id))) {
+                            setOnboardingPickerId(ing.id);
+                          } else if (!active) {
+                            handleConnectConnector(ing.id);
+                          }
+                        }}
                         disabled={isConnecting}
                         style={{ cursor: 'pointer', border: 'none' }}
                       >
-                        {isConnecting ? 'CONNECTING...' : active ? 'CONNECTED' : 'CONNECT'}
+                        {isConnecting ? 'CONNECTING...' : active ? 'CONNECTED' : NO_AUTH_CONNECTORS.has(ing.id) ? 'CONFIGURE' : 'CONNECT'}
                       </button>
                     </div>
                   );
@@ -1050,6 +1209,22 @@ export function OnboardingView({ setActiveScreen }) {
                 </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
+
+                  {(appLinks.googlePlay.length > 0 || appLinks.appleAppStore.length > 0 || appLinks.firebaseProjectIds?.length > 0) && (
+                    <div className="card" style={{ gridColumn: 'span 2', padding: '14px 16px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' }}>Mobile app links found on website</div>
+                      <p className="text-muted" style={{ fontSize: 11, margin: '0 0 8px' }}>Review these links before selecting the matching app in Integrations.</p>
+                      <div style={{ display: 'grid', gap: 5, fontSize: 12 }}>
+                        {appLinks.googlePlay.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)', overflowWrap: 'anywhere' }}>Google Play · {url}</a>)}
+                        {appLinks.appleAppStore.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)', overflowWrap: 'anywhere' }}>Apple App Store · {url}</a>)}
+                      </div>
+                      {(appLinks.androidPackageNames.length > 0 || appLinks.appleAppIds.length > 0) && (
+                        <div className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>
+                          IDs found: {appLinks.androidPackageNames.map((id) => `Android ${id}`).concat(appLinks.appleAppIds.map((id) => `Apple ${id}`), (appLinks.firebaseProjectIds || []).map((id) => `Firebase ${id}`)).join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Identity — company name + website */}
                   <div className="card" style={{ gridColumn: 'span 2', padding: '14px 16px' }}>
@@ -1303,15 +1478,127 @@ export function OnboardingView({ setActiveScreen }) {
             </div>
           )}
 
-          {/* Step 8: Ready → GTM Wizard */}
-          {step === 8 && (
+          {/* Step 8: Pre-GTM research (hidden during onboarding — too slow) */}
+          {step === MARKET_RESEARCH_STEP && !SKIP_ONBOARDING_MARKET_RESEARCH && (
+            <div>
+              <h1 style={{ marginBottom: '6px' }}>Research before GTM strategy</h1>
+              <p className="text-muted" style={{ marginBottom: '24px' }}>
+                Your agents are activated. They are gathering live market, website, and recent-signal evidence before the GTM strategy is generated.
+              </p>
+              {preGtmResearchLoading ? (
+                <>
+                  <BrandStyleLoader
+                    title="Researching your market"
+                    website={website}
+                    steps={[
+                      { icon: '🌐', label: 'Website signals', detail: website || 'your site' },
+                      { icon: '◈', label: 'Market landscape', detail: 'category · demand · alternatives' },
+                      { icon: '📰', label: 'Recent 30-day signals', detail: 'Reddit · X · YouTube · web' },
+                      { icon: '✓', label: 'Evidence pack', detail: 'ready for GTM strategy' },
+                    ]}
+                    messages={[
+                      `Scanning ${website || 'your website'} for positioning signals…`,
+                      'Mapping the category, demand, and alternatives…',
+                      'Checking recent conversations and emerging signals…',
+                      'Combining evidence for the strategy team…',
+                    ]}
+                  />
+                  <p className="text-muted" style={{ fontSize: 12, textAlign: 'center', margin: '-4px 0 0' }}>
+                    Recent-signal research can take up to 45 seconds. GTM will continue with a clearly marked evidence gap if it times out.
+                  </p>
+                </>
+              ) : preGtmResearch ? (
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div className="card" role="status">
+                    <strong>Research pack ready</strong>
+                    <div className="text-muted" style={{ fontSize: 12, marginTop: 5 }}>
+                      Generated {preGtmResearch.generatedAt ? new Date(preGtmResearch.generatedAt).toLocaleString() : 'now'} · strategy generation will use this evidence.
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                    {Object.entries(preGtmResearch.sources || {}).map(([key, source]) => (
+                      <div key={key} className="card" style={{ padding: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'capitalize' }}>{key.replace(/([A-Z])/g, ' $1')}</div>
+                        <span className={source.status === 'completed' ? 'tag tag-accent' : 'tag tag-outline'} style={{ marginTop: 7, display: 'inline-flex' }}>{source.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {preGtmResearch.market?.source === 'groq' && preGtmResearch.market?.summary ? <div className="card"><strong>Market snapshot</strong><p className="card-body" style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{preGtmResearch.market.summary}</p></div> : null}
+                  {preGtmResearch.market?.source === 'groq' && preGtmResearch.market?.competitors?.length ? <div className="card"><strong>Competitors and alternatives</strong><ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>{preGtmResearch.market.competitors.slice(0, 5).map((item, index) => <li key={index} style={{ fontSize: 13, marginBottom: 4 }}>{item.name || item}{item.angle ? ` — ${item.angle}` : ''}</li>)}</ul></div> : null}
+                  {preGtmResearch.market?.source === 'fallback' ? <div className="card" style={{ color: 'var(--color-accent-2)' }}>Live market research was unavailable. No market snapshot or competitor claims are being shown.</div> : null}
+                  {preGtmResearch.last30days?.status === 'completed' ? (() => {
+                    const insights = preGtmResearch.last30days.insights || {};
+                    const signals = last30SignalItems(preGtmResearch.last30days);
+                    return (
+                    <div className="card">
+                      <strong>{insights.headline || 'What changed in the last 30 days'}</strong>
+                      {preGtmResearch.last30days.topic ? (
+                        <div className="text-muted" style={{ fontSize: 12, marginTop: 6 }}>
+                          Searched: {preGtmResearch.last30days.topic}
+                        </div>
+                      ) : null}
+                      <p className="card-body" style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>
+                        {insights.insight || preGtmResearch.last30days.summary || 'Live signals were collected for GTM.'}
+                      </p>
+                      {Array.isArray(insights.themes) && insights.themes.length ? (
+                        <ul style={{ margin: '10px 0 0', paddingLeft: 18 }}>
+                          {insights.themes.map((theme, index) => (
+                            <li key={index} style={{ fontSize: 13, marginBottom: 6 }}>
+                              <strong>{theme.name || theme}</strong>
+                              {theme.soWhat ? ` — ${theme.soWhat}` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {Array.isArray(insights.implications) && insights.implications.length ? (
+                        <div style={{ marginTop: 10 }}>
+                          <div className="text-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Implications for GTM</div>
+                          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                            {insights.implications.map((item, index) => (
+                              <li key={index} style={{ fontSize: 13, marginBottom: 4 }}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {signals.length ? (
+                        <div style={{ marginTop: 10 }}>
+                          <div className="text-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Evidence</div>
+                          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                            {signals.map((item, index) => (
+                              <li key={`${item.source}-${index}`} style={{ fontSize: 13, marginBottom: 6 }}>
+                                <span className="text-muted">{item.source} · </span>
+                                {item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                    );
+                  })() : (
+                    <div className="card" style={{ color: 'var(--color-accent-2)' }}>
+                      {preGtmResearch.last30days?.status === 'timed_out'
+                        ? 'Recent-signal research took too long, so GTM can continue with market and website evidence. The strategy will label this evidence gap rather than inventing recent trends.'
+                        : 'Recent-signal service unavailable: the strategy will label this evidence gap rather than inventing recent trends.'}
+                    </div>
+                  )}
+                  <button type="button" className="btn btn-secondary" onClick={() => runPreGtmResearch({ force: true })}>Refresh research</button>
+                </div>
+              ) : (
+                <div className="card" role="alert">Research has not started yet. Click Continue to retry.</div>
+              )}
+            </div>
+          )}
+
+          {/* Step 9: Ready → GTM Wizard */}
+          {step === 9 && (
             <div style={{ textAlign: 'center', padding: '20px 0' }}>
               <div style={{ width: '52px', height: '52px', margin: '0 auto 16px', borderRadius: '0px', background: 'var(--color-accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-bg)' }}>
                 <CheckCircle2 size={28} />
               </div>
               <h1 style={{ marginBottom: '6px' }}>Your GTM Strategy Workspace is ready</h1>
               <p className="text-muted" style={{ marginBottom: '28px' }}>
-                Brand DNA and agents are set. Next: GTM Wizard — draft market-to-timeline sections, lock Goals, then assemble the strategy document.
+                Brand DNA and agents are ready. Next: generate the strategy, review it, and lock the North Star.
               </p>
             </div>
           )}
@@ -1328,7 +1615,9 @@ export function OnboardingView({ setActiveScreen }) {
             <button type="button" className="btn btn-primary" onClick={nextStep} disabled={groqLoading}>
               {groqLoading
                 ? 'Fetching Brand DNA…'
-                : step === ONBOARDING_TOTAL_STEPS
+                : !SKIP_ONBOARDING_MARKET_RESEARCH && preGtmResearchLoading
+                  ? 'Researching…'
+                  : step === ONBOARDING_TOTAL_STEPS
                   ? 'Launch GTM Strategy Wizard →'
                   : 'Continue'}
             </button>
