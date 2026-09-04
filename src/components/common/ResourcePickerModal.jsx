@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, Check, Loader2, Database, Sliders, CheckCircle2 } from 'lucide-react';
-import { CONNECTOR_DISPLAY, connectorLabel } from '../../lib/connectormeta';
+import { X, Check, Database, Sliders, CheckCircle2 } from 'lucide-react';
+import { CONNECTOR_DISPLAY, connectorLabel, connectorNeedsResourcePicker } from '../../lib/connectormeta';
 import { getActiveWorkspaceId } from '../../lib/workspace.js';
+import { LoadingState } from './AsyncState.jsx';
+import { apiFetch } from '../../lib/apiFetch.js';
 
 const CONNECTOR_ACCOUNT_CONFIGS = {
   google_ads: {
@@ -74,12 +76,48 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
     description: 'Select the GitHub repository used for issues, code, and deployment workflows.',
     helpText: 'Choose a detected repository or enter it manually as owner/repository.'
   },
+  supabase: {
+    title: 'Configure Supabase Project',
+    field: 'supabase_project_ref',
+    placeholder: 'abcdefghijklmnopqrst',
+    description: 'Select the Supabase project Marqq should use for product analytics.',
+    helpText: 'Choose a detected project. Marqq reads schema and aggregate analytics only.'
+  },
+  firebase: {
+    title: 'Configure Firebase Project',
+    field: 'firebase_project_id',
+    placeholder: 'your-firebase-project-id',
+    description: 'Select the Firebase project Marqq should use for product analytics.',
+    helpText: 'Choose a detected project or enter the Firebase project ID.'
+  },
+  appstore_connect: {
+    title: 'Configure App Store App',
+    field: 'appstore_connect_app_id',
+    placeholder: '1234567890',
+    description: 'Select the App Store app Marqq should use for App Store analytics.',
+    helpText: 'Choose a detected app or enter its App Store Connect app ID.'
+  },
+  google_play_console: {
+    title: 'Configure Google Play App',
+    field: 'google_play_package_name',
+    placeholder: 'com.example.app',
+    description: 'Set the Android package name Marqq should use for Play reporting.',
+    helpText: 'Google Play enumeration is not available yet; enter the exact package name.'
+  },
+  revenuecat: {
+    title: 'Configure RevenueCat Project',
+    field: 'revenuecat_project_id',
+    placeholder: 'RevenueCat project ID',
+    description: 'Set the RevenueCat project Marqq should use for subscription analytics.',
+    helpText: 'RevenueCat project discovery is not available yet; enter the project ID.'
+  },
   google_drive: {
     title: 'Configure Google Drive Folder (optional)',
     field: 'google_drive_folder_id',
     placeholder: 'root or folder ID',
     description: 'Optional default Drive folder for asset uploads and report delivery.',
-    helpText: 'Leave blank to use Drive root; folder ID is in the Drive URL after /folders/.'
+    helpText: 'Leave blank to use Drive root; folder ID is in the Drive URL after /folders/.',
+    allowBlank: true,
   },
   salesforce: {
     title: 'Configure Salesforce CRM Instance',
@@ -98,12 +136,16 @@ const CONNECTOR_ACCOUNT_CONFIGS = {
 };
 
 export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspaceId(), onClose, onSaved }) {
-  const config = CONNECTOR_ACCOUNT_CONFIGS[connectorId] || {
-    title: `Configure ${connectorLabel(connectorId)} Account`,
+  const known = CONNECTOR_ACCOUNT_CONFIGS[connectorId];
+  // API-key connectors (Apollo, Instantly, Gmail, …) have no extra account ID.
+  // Never fall through to the generic "Configure {Name} Account" dialog.
+  const allowed = Boolean(known) || connectorNeedsResourcePicker(connectorId);
+  const config = known || {
+    title: '',
     field: `${connectorId}_account_id`,
-    placeholder: 'Enter Account ID',
-    description: `Enter the target account ID for ${connectorLabel(connectorId)}.`,
-    helpText: 'Enter the account identifier provided by your platform dashboard.'
+    placeholder: '',
+    description: '',
+    helpText: '',
   };
 
   const [accountId, setAccountId] = useState('');
@@ -114,9 +156,18 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (!allowed) onClose?.();
+  }, [allowed, onClose]);
+
+  useEffect(() => {
+    if (!allowed) return undefined;
+    let hints = {};
+    try {
+      hints = JSON.parse(localStorage.getItem(`marqq_mobile_app_hints_${companyId}`) || '{}');
+    } catch { /* ignore malformed convenience hints */ }
     setDiscovering(true);
     setResourceError('');
-    fetch(`/api/integrations/resources?companyId=${encodeURIComponent(companyId)}&connectorId=${encodeURIComponent(connectorId)}`)
+    apiFetch(`/api/integrations/resources?companyId=${encodeURIComponent(companyId)}&connectorId=${encodeURIComponent(connectorId)}`)
       .then(r => r.json().catch(() => ({})))
       .then(data => {
         const found = Array.isArray(data?.resources) ? data.resources : [];
@@ -126,25 +177,32 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
       .catch(() => setResourceError('Could not detect available accounts.'))
       .finally(() => setDiscovering(false));
 
-    fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(companyId)}`)
+    apiFetch(`/api/integrations/preferences?companyId=${encodeURIComponent(companyId)}`)
       .then(r => r.json())
       .then(data => {
         const saved = data?.preferences?.[config.field];
-        if (saved) {
-          setAccountId(saved);
-        }
+        const suggested = config.field === 'firebase_project_id'
+          ? hints.firebaseProjectId
+          : config.field === 'google_play_package_name'
+            ? hints.googlePlayPackageName
+            : config.field === 'appstore_connect_app_id'
+              ? hints.appstoreConnectAppId
+              : '';
+        setAccountId(saved || suggested || '');
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [connectorId, companyId]);
+  }, [allowed, connectorId, companyId, config.field]);
+
+  if (!allowed) return null;
 
   const handleSave = async () => {
     const valueToSave = accountId.trim();
-    if (!valueToSave) return;
+    if (!valueToSave && !config.allowBlank) return;
 
     setSaving(true);
     try {
-      await fetch('/api/integrations/preferences', {
+      const response = await apiFetch('/api/integrations/preferences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -152,10 +210,12 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
           [config.field]: valueToSave
         })
       });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok === false) throw new Error(result.error || 'Could not save account selection');
       onSaved?.(connectorId, valueToSave);
       onClose();
     } catch (err) {
-      console.warn('Preference save failed:', err);
+      setResourceError(err.message || 'Could not save account selection');
     } finally {
       setSaving(false);
     }
@@ -178,7 +238,7 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
               <div className="text-muted" style={{ fontSize: '11px', marginTop: '1px' }}>{config.description}</div>
             </div>
           </div>
-          <button type="button" className="btn btn-ghost" onClick={onClose} style={{ padding: '4px' }}>
+          <button type="button" className="btn btn-ghost" aria-label="Close account selector" onClick={onClose} style={{ padding: '4px' }}>
             <X size={16} />
           </button>
         </div>
@@ -186,25 +246,22 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
         {/* Body */}
         <div style={{ padding: '20px' }}>
           {loading ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 0', gap: '8px', color: 'var(--color-text-muted)' }}>
-              <Loader2 size={16} className="spin" />
-              <span style={{ fontSize: '12px' }}>Loading configuration...</span>
-            </div>
+            <LoadingState label="Loading connector configuration…" />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               
               {resources.length > 0 ? (
                 <div className="field">
                   <label htmlFor="detected-resource" style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px', display: 'block' }}>
-                    Select detected {config.label.toLowerCase()}
+                    Select detected {connectorLabel(connectorId).toLowerCase()} account or property
                   </label>
                   <select
                     id="detected-resource"
-                    className="input"
+                    className="input resource-picker-select"
                     value={resources.some((resource) => resource.id === accountId) ? accountId : ''}
                     onChange={(e) => setAccountId(e.target.value)}
                     disabled={discovering}
-                    style={{ width: '100%', fontSize: '13px' }}
+                    style={{ width: '100%', fontSize: '13px', colorScheme: 'dark' }}
                   >
                     <option value="">Choose an account or property…</option>
                     {resources.map((resource) => (
@@ -214,7 +271,7 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
                     ))}
                   </select>
                   <p className="text-muted" style={{ fontSize: '11px', marginTop: '6px', lineHeight: 1.4 }}>
-                    Detected from the connected {connectorLabel(connectorId)} account.
+                    Detected from the connected {connectorLabel(connectorId)} account. Marqq will use the selected destination for this workspace.
                   </p>
                 </div>
               ) : null}
@@ -250,7 +307,7 @@ export function ResourcePickerModal({ connectorId, companyId = getActiveWorkspac
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving} style={{ fontSize: '12px' }}>
             Cancel
           </button>
-          <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving || !accountId.trim()} style={{ fontSize: '12px' }}>
+          <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving || (!config.allowBlank && !accountId.trim())} style={{ fontSize: '12px' }}>
             {saving ? 'Saving...' : 'Save Account'}
           </button>
         </div>
