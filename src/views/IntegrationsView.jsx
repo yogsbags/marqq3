@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { connectComposioConnector, formatConnectorError } from '../lib/composio';
-import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel } from '../lib/connectormeta';
+import { CONNECTOR_DISPLAY, isConnectorActive, connectorLabel, NO_AUTH_CONNECTORS, connectorNeedsResourcePicker } from '../lib/connectormeta';
 import { ResourcePickerModal } from '../components/common/ResourcePickerModal';
 import { getActiveWorkspaceId } from '../lib/workspace.js';
+import { apiFetch } from '../lib/apiFetch.js';
 
 export function IntegrationsView({ setActiveScreen }) {
   const [workspaceId, setWorkspaceId] = useState(getActiveWorkspaceId());
@@ -28,6 +29,11 @@ export function IntegrationsView({ setActiveScreen }) {
     { id: 'apollo', name: 'Apollo', connected: false, status: 'not_connected' },
     { id: 'gmail', name: 'Gmail', connected: false, status: 'not_connected' },
     { id: 'github', name: 'GitHub', connected: false, status: 'not_connected' },
+    { id: 'appstore_connect', name: 'App Store Connect', connected: false, status: 'not_connected' },
+    { id: 'revenuecat', name: 'RevenueCat', connected: false, status: 'not_connected' },
+    { id: 'firebase', name: 'Firebase', connected: false, status: 'not_connected' },
+    { id: 'google_play_console', name: 'Google Play Console', connected: false, status: 'not_connected' },
+    { id: 'supabase', name: 'Supabase', connected: false, status: 'not_connected' },
   ]);
   const [preferences, setPreferences] = useState({});
   const [connectingId, setConnectingId] = useState(null);
@@ -39,7 +45,7 @@ export function IntegrationsView({ setActiveScreen }) {
   const [webhookNotice, setWebhookNotice] = useState('');
 
   const fetchPreferences = (targetWorkspaceId = workspaceId) => {
-    fetch(`/api/integrations/preferences?companyId=${encodeURIComponent(targetWorkspaceId)}`)
+    apiFetch(`/api/integrations/preferences?companyId=${encodeURIComponent(targetWorkspaceId)}`)
       .then(r => r.json())
       .then(data => {
         if (data?.preferences) {
@@ -50,17 +56,20 @@ export function IntegrationsView({ setActiveScreen }) {
   };
 
   useEffect(() => {
-    fetch(`/api/integrations?companyId=${encodeURIComponent(workspaceId)}`)
-      .then(r => r.json())
+    apiFetch(`/api/integrations?companyId=${encodeURIComponent(workspaceId)}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(r.status === 401 ? 'Your session expired. Sign in again to verify connected accounts.' : `Could not verify connectors (${r.status}).`);
+        return r.json();
+      })
       .then(data => {
         if (data?.connectors && data.connectors.length > 0) {
           setConnectors(data.connectors);
         }
       })
-      .catch(() => {});
+      .catch((err) => setConnectError(err.message || 'Could not verify connectors.'));
 
     fetchPreferences(workspaceId);
-    fetch(`/api/integrations/webhooks?workspaceId=${encodeURIComponent(workspaceId)}`)
+    apiFetch(`/api/integrations/webhooks?workspaceId=${encodeURIComponent(workspaceId)}`)
       .then(r => r.json())
       .then(data => setWebhookEndpoints(data?.endpoints || []))
       .catch(() => setWebhookEndpoints([]));
@@ -73,6 +82,10 @@ export function IntegrationsView({ setActiveScreen }) {
   }, []);
 
   const handleConnect = async (connectorId) => {
+    if (NO_AUTH_CONNECTORS.has(connectorId)) {
+      setPickerConnectorId(connectorId);
+      return;
+    }
     setConnectingId(connectorId);
     setConnectError('');
     try {
@@ -81,12 +94,12 @@ export function IntegrationsView({ setActiveScreen }) {
         connectorId,
         onConnected: (id) => {
           setConnectors(prev => prev.map(c => c.id === id ? { ...c, connected: true, status: 'active' } : c));
-          setPickerConnectorId(id);
+          if (connectorNeedsResourcePicker(id)) setPickerConnectorId(id);
         }
       });
       if (res?.status === 'connected') {
         setConnectors(prev => prev.map(c => c.id === connectorId ? { ...c, connected: true, status: 'active' } : c));
-        setPickerConnectorId(connectorId);
+        if (connectorNeedsResourcePicker(connectorId)) setPickerConnectorId(connectorId);
       }
     } catch (err) {
       const msg = formatConnectorError(err);
@@ -97,7 +110,7 @@ export function IntegrationsView({ setActiveScreen }) {
     }
   };
 
-  const getAccountValueForConnector = (id) => {
+  const getAccountValueForConnector = (id, connector = null) => {
     const fieldMap = {
       google_ads: 'google_ads_customer_id',
       meta_ads: 'meta_ads_account_id',
@@ -107,11 +120,21 @@ export function IntegrationsView({ setActiveScreen }) {
       google_sheets: 'google_sheets_spreadsheet_id',
       google_docs: 'google_docs_document_id',
       github: 'github_repository',
+      supabase: 'supabase_project_ref',
+      firebase: 'firebase_project_id',
+      appstore_connect: 'appstore_connect_app_id',
+      google_play_console: 'google_play_package_name',
+      revenuecat: 'revenuecat_project_id',
       salesforce: 'salesforce_account_id',
       hubspot: 'hubspot_account_id'
     };
-    const field = fieldMap[id] || `${id}_account_id`;
-    return preferences[field] || null;
+    if (connectorNeedsResourcePicker(id)) {
+      const field = fieldMap[id] || `${id}_account_id`;
+      return preferences[field] || null;
+    }
+    const connectedId = connector?.connectedAccountId;
+    if (connectedId) return String(connectedId);
+    return isConnectorActive(connector) ? 'API key connected' : null;
   };
 
   const analyticsReady = connectors.some(
@@ -123,13 +146,13 @@ export function IntegrationsView({ setActiveScreen }) {
     setWebhookBusy(true);
     setWebhookNotice('');
     try {
-      const response = await fetch('/api/integrations/webhooks/rotate', {
+      const response = await apiFetch('/api/integrations/webhooks/rotate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workspaceId,
           provider: webhookProvider,
-          connectedAccountId: getAccountValueForConnector(webhookProvider),
+          connectedAccountId: connectors.find((item) => item.id === webhookProvider)?.connectedAccountId || null,
         }),
       });
       const data = await response.json();
@@ -146,7 +169,7 @@ export function IntegrationsView({ setActiveScreen }) {
 
   const revealWebhook = async (endpointId) => {
     try {
-      const response = await fetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/reveal`, {
+      const response = await apiFetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/reveal`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
       });
       const data = await response.json();
@@ -159,7 +182,7 @@ export function IntegrationsView({ setActiveScreen }) {
   const revokeWebhook = async (endpointId) => {
     setWebhookBusy(true);
     try {
-      const response = await fetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/revoke`, {
+      const response = await apiFetch(`/api/integrations/webhooks/${encodeURIComponent(endpointId)}/revoke`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId }),
       });
       if (!response.ok) throw new Error('Could not revoke endpoint');
@@ -176,7 +199,7 @@ export function IntegrationsView({ setActiveScreen }) {
           <h1>Integrations &amp; Connectors</h1>
           <p className="text-muted" style={{ marginTop: '4px' }}>Manage ad platform OAuth tokens, CRM syncs, and web analytics connectors.</p>
           {connectError ? (
-            <p className="text-muted" role="alert" style={{ marginTop: 8, color: '#c45c26', fontSize: 13 }}>
+            <p className="text-muted" role="alert" style={{ marginTop: 8, color: 'var(--color-danger)', fontSize: 13 }}>
               {connectError}
             </p>
           ) : null}
@@ -250,7 +273,8 @@ export function IntegrationsView({ setActiveScreen }) {
                 const active = isConnectorActive(ing);
                 const isConnecting = connectingId === ing.id;
                 const meta = CONNECTOR_DISPLAY[ing.id] || { bg: 'var(--color-accent)' };
-                const accountVal = getAccountValueForConnector(ing.id);
+                const needsPicker = connectorNeedsResourcePicker(ing.id);
+                const accountVal = getAccountValueForConnector(ing.id, ing);
 
                 return (
                   <tr key={ing.id}>
@@ -266,16 +290,18 @@ export function IntegrationsView({ setActiveScreen }) {
                       {active ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text)' }}>
-                            {accountVal || 'No account selected'}
+                            {needsPicker ? (accountVal || 'No account selected') : (accountVal || 'Connected')}
                           </span>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            onClick={() => setPickerConnectorId(ing.id)}
-                            style={{ padding: '2px 6px', fontSize: '10px', textDecoration: 'underline' }}
-                          >
-                            Configure
-                          </button>
+                          {needsPicker ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost"
+                              onClick={() => setPickerConnectorId(ing.id)}
+                              style={{ padding: '2px 6px', fontSize: '10px', textDecoration: 'underline' }}
+                            >
+                              Configure
+                            </button>
+                          ) : null}
                         </div>
                       ) : (
                         <span className="text-muted" style={{ fontSize: '11px' }}>—</span>
@@ -290,13 +316,19 @@ export function IntegrationsView({ setActiveScreen }) {
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
                           className={active ? 'btn btn-secondary' : 'btn btn-primary'}
-                          onClick={() => handleConnect(ing.id)}
+                          onClick={() => {
+                            if (needsPicker && isConnectorActive(ing)) {
+                              setPickerConnectorId(ing.id);
+                            } else {
+                              handleConnect(ing.id);
+                            }
+                          }}
                           disabled={isConnecting}
                           style={{ padding: '6px 12px', fontSize: '11px' }}
                         >
-                          {isConnecting ? 'Connecting...' : active ? 'Reconnect' : 'Connect'}
+                          {isConnecting ? 'Connecting...' : NO_AUTH_CONNECTORS.has(ing.id) ? 'Configure' : active ? 'Reconnect' : 'Connect'}
                         </button>
-                        {active && (
+                        {active && needsPicker && (
                           <button
                             type="button"
                             className="btn btn-ghost"

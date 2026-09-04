@@ -36,6 +36,8 @@ import {
   resolveProspectFirstName,
 } from './outreachSequences.js';
 import { syncProspectsToCrm, syncProspectToCrm } from './crmLeads.js';
+import { providerArtifact } from './providerArtifact.js';
+import { updateDb } from '../db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -49,6 +51,54 @@ function cacheRun(run) {
   runsById.set(run.id, run);
   void persistOutreachRun(run);
   return run;
+}
+
+const OUTREACH_TASK_LABELS = {
+  awaiting_activate: { title: 'Activate approved outreach', status: 'Needs approval', due: 'Awaiting activation', priority: 'High' },
+  awaiting_reply: { title: 'Review prospect reply', status: 'Not started', due: 'Awaiting reply', priority: 'Medium' },
+  awaiting_follow_up: { title: 'Review scheduled follow-up', status: 'Not started', due: 'Follow-up scheduled', priority: 'High' },
+  review_reply: { title: 'Review inbound reply', status: 'Needs approval', due: 'New reply received', priority: 'High' },
+  no_reply_needed: { title: 'Close outreach thread', status: 'Not started', due: 'No reply needed', priority: 'Low' },
+};
+
+function upsertOutreachTask(run, prospect, nextAction) {
+  if (!run?.workspaceId || !prospect?.id || !nextAction) return null;
+  const meta = OUTREACH_TASK_LABELS[nextAction] || {
+    title: 'Continue outreach workflow',
+    status: 'Not started',
+    due: String(nextAction).replaceAll('_', ' '),
+    priority: 'Medium',
+  };
+  const id = `outreach_task_${run.id}_${prospect.id}`;
+  let task = null;
+  updateDb((state) => {
+    const tasks = Array.isArray(state.tasks) ? [...state.tasks] : [];
+    const existing = tasks.find((item) => item.id === id);
+    task = {
+      ...(existing || {}),
+      id,
+      title: `${meta.title}: ${prospect.full_name || prospect.company || 'prospect'}`,
+      assignee: 'Arjun',
+      avatarLetter: 'A',
+      avatarColor: 'var(--color-accent)',
+      due: meta.due,
+      priority: meta.priority,
+      priorityClass: meta.priority === 'High' ? 'tag tag-accent-2' : 'tag tag-outline',
+      status: meta.status,
+      kind: 'outreach_next_action',
+      context: `Outreach · ${prospect.company || 'prospect'}`,
+      workspaceId: run.workspaceId,
+      runId: run.id,
+      prospectId: prospect.id,
+      campaignId: run.campaignId || null,
+      campaignName: run.campaignName || null,
+      nextAction,
+      updatedAt: new Date().toISOString(),
+    };
+    const next = existing ? tasks.map((item) => (item.id === id ? task : item)) : [task, ...tasks];
+    return { ...state, tasks: next.slice(0, 120) };
+  });
+  return task;
 }
 
 function groqKey() {
@@ -295,7 +345,7 @@ export async function createOutreachRun(input = {}) {
     if (!tool2.error) {
       return { people: extractPeople(tool2.result), source: 'apollo_people_search_broad', error: null };
     }
-    return { people: [], source: null, error: proxy.error || tool.error || tool2.error };
+    return { people: [], source: null, error: tool2.error || tool.error || proxy.error };
   }
 
   let search = await apolloSearch(searchBody);
@@ -415,6 +465,8 @@ export async function createOutreachRun(input = {}) {
     workspaceId,
     companyId,
     companyName,
+    campaignId: String(input.campaignId || input.campaign_id || '').trim() || null,
+    campaignName: String(input.campaignName || input.campaign_name || '').trim() || null,
     senderName: resolveSenderName(input.senderName || input.sender_name),
     question: String(input.question || ''),
     contactChannels: contactChannels.length ? contactChannels : ['email'],
@@ -433,6 +485,8 @@ export async function createOutreachRun(input = {}) {
       country,
       contactChannels: contactChannels.length ? contactChannels : ['email'],
       source,
+      campaignId: String(input.campaignId || input.campaign_id || '').trim() || null,
+      campaignName: String(input.campaignName || input.campaign_name || '').trim() || null,
     },
   };
   cacheRun(run);
@@ -999,6 +1053,9 @@ export async function pollGmailReplies(runId) {
     for (const reply of fresh) {
       const prospect = run.prospects.find((p) => p.id === reply.prospectId);
       if (!prospect) continue;
+      prospect.next_action = 'review_reply';
+      const nextTask = upsertOutreachTask(run, prospect, 'review_reply');
+      reply.nextTask = nextTask;
       try {
         await syncProspectToCrm(run, prospect, {
           status: 'replied',
@@ -1576,6 +1633,14 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
           method: result.method || null,
           to: result.to || null,
           draftId: result.draftId || null,
+          externalArtifact: providerArtifact({
+            provider: result.provider || channel,
+            type: result.campaign_id ? 'outreach_campaign' : result.draftId ? 'outreach_draft' : 'outreach_message',
+            result,
+            fallbackId: result.draftId || result.results?.[0]?.message_id || null,
+            campaignId: run.campaignId,
+            campaignName: run.campaignName,
+          }),
         }
       : null,
   };
@@ -1592,25 +1657,28 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
   await touchRun(run);
 
   let crmSync = null;
+  const status =
+    prospect.gmail_sequence_status === 'scheduled'
+      ? 'scheduled'
+      : result.status === 'live' || result.activated
+        ? 'sent'
+        : 'drafted';
+  const nextAction =
+    status === 'scheduled'
+      ? 'awaiting_follow_up'
+      : status === 'sent'
+        ? 'awaiting_reply'
+        : 'awaiting_activate';
+  prospect.next_action = nextAction;
+  const nextTask = upsertOutreachTask(run, prospect, nextAction);
   try {
-    const status =
-      prospect.gmail_sequence_status === 'scheduled'
-        ? 'scheduled'
-        : result.status === 'live' || result.activated
-          ? 'sent'
-          : 'drafted';
     crmSync = await syncProspectToCrm(run, prospect, {
       status,
       channel,
       provider: result.provider || '',
       campaign_id: result.campaign_id || '',
       sent_at: prospect.sent_at || '',
-      next_action:
-        status === 'scheduled'
-          ? 'awaiting_follow_up'
-          : status === 'sent'
-            ? 'awaiting_reply'
-            : 'awaiting_activate',
+      next_action: nextAction,
       source: 'outreach_go_live',
     });
     if (crmSync?.ok) await touchRun(run);
@@ -1623,9 +1691,23 @@ export async function goLiveProspect(runId, prospectId, opts = {}) {
     prospect,
     channel,
     delivery,
-    result,
+    result: result
+      ? {
+          ...result,
+          externalArtifact: providerArtifact({
+            provider: result.provider || channel,
+            type: result.campaign_id ? 'outreach_campaign' : result.draftId ? 'outreach_draft' : 'outreach_message',
+            result,
+            fallbackId: result.draftId || result.results?.[0]?.message_id || null,
+            campaignId: run.campaignId,
+            campaignName: run.campaignName,
+          }),
+        }
+      : result,
     channelPlan: OUTREACH_CHANNEL_CONNECTORS[channel] || null,
     sequence_emails: run.sequence_emails || [],
+    nextAction,
+    nextTask,
     crm_sync: crmSync,
   };
 }

@@ -1,11 +1,13 @@
 import { resolveComposioEntityIds } from '../lib/composioEntities.js';
 import { actionModeFromAgentOs } from './executionMode.js';
-import { loadAgentOsProfile } from './agentOsStore.js';
+import { loadAgentOsProfile, loadAgentOsProfileAsync } from './agentOsStore.js';
 
 const COMPOSIO_V3 = 'https://backend.composio.dev/api/v3';
+const COMPOSIO_V3_1 = 'https://backend.composio.dev/api/v3.1';
 
 const TOOLKIT = {
   apollo: 'apollo',
+  hunter: 'hunter',
   gmail: 'gmail',
   whatsapp: 'whatsapp',
   linkedin: 'linkedin',
@@ -19,8 +21,11 @@ const TOOLKIT = {
   googlesheets: 'googlesheets',
   google_docs: 'googledocs',
   googledocs: 'googledocs',
+  google_drive: 'googledrive',
+  googledrive: 'googledrive',
   hubspot: 'hubspot',
   salesforce: 'salesforce',
+  klaviyo: 'klaviyo',
   ga4: 'google_analytics',
   google_analytics: 'google_analytics',
   gsc: 'google_search_console',
@@ -30,6 +35,24 @@ const TOOLKIT = {
   google_ads: 'googleads',
   googleads: 'googleads',
   github: 'github',
+  linkedin_ads: 'linkedinads',
+  wordpress: 'wordpress',
+  webflow: 'webflow',
+  shopify: 'shopify',
+  wix: 'wix',
+  mailchimp: 'mailchimp',
+  sendgrid: 'sendgrid',
+  mixpanel: 'mixpanel',
+  amplitude: 'amplitude',
+  semrush: 'semrush',
+  ahrefs: 'ahrefs',
+  slack: 'slack',
+  appstore_connect: 'custom_appstore_connect',
+  revenuecat: 'custom_revenuecat',
+  firebase: 'custom_firebase',
+  google_play_console: 'custom_google_play_console',
+  play_console: 'custom_google_play_console',
+  supabase: 'supabase',
 };
 
 function apiKey() {
@@ -62,11 +85,41 @@ const READ_ACTION_PREFIXES = [
   'RETRIEVE_', 'DESCRIBE_', 'VERIFY_', 'VALIDATE_', 'COUNT_', 'DOWNLOAD_', 'EXPORT_',
 ];
 
-function isReadOnlyComposioAction(actionSlug = '') {
+export function isReadOnlyComposioAction(actionSlug = '') {
   const slug = String(actionSlug || '').toUpperCase();
   const last = slug.split('_').slice(1).join('_');
   return READ_ACTION_PREFIXES.some((prefix) => last.startsWith(prefix)) ||
     /_(GET|LIST|SEARCH|FIND|FETCH|LOOKUP|QUERY|CHECK|RUN|RETRIEVE|DESCRIBE|VERIFY|VALIDATE|COUNT|DOWNLOAD|EXPORT)(_|$)/.test(slug);
+}
+
+const PROXY_WRITE_PATH = /(reveal|create|update|delete|send|push|publish|insert|bulk_match|sequence|campaign|contact\/)/i;
+const PROXY_READ_PATH = /(search|enrich|lookup|find|fetch|list|query|job_postings|news_articles|api_search|mixed_people|mixed_companies|organization)/i;
+
+/** Apollo and similar REST APIs use POST for search/enrich — those are reads, not writes. */
+export function isReadOnlyProxyRequest(method = 'GET', endpoint = '') {
+  const m = String(method || 'GET').toUpperCase();
+  if (m === 'GET' || m === 'HEAD') return true;
+  if (m !== 'POST') return false;
+  const path = String(endpoint || '').split('?')[0];
+  if (PROXY_WRITE_PATH.test(path)) return false;
+  return PROXY_READ_PATH.test(path);
+}
+
+export function composioProxyPermission(method, endpoint, mode = 'draft_safe') {
+  const proxyAction = `${String(method || 'POST').toUpperCase()}_${String(endpoint || '').split('?')[0]}`;
+  const isRead = isReadOnlyProxyRequest(method, endpoint);
+  const isDraftEndpoint = /draft/i.test(String(endpoint || ''));
+  if (isRead) return { allowed: true, mode, kind: 'read' };
+  if (mode === 'live_publish') return { allowed: true, mode, kind: 'write' };
+  if (mode === 'live_drafts' && isDraftEndpoint) return { allowed: true, mode, kind: 'provider_draft' };
+  return {
+    allowed: false,
+    mode,
+    kind: 'write',
+    error: mode === 'live_drafts'
+      ? `Connector proxy is not a draft endpoint: ${proxyAction}`
+      : `Connector proxy blocked by Draft-safe mode: ${proxyAction}`,
+  };
 }
 
 function isProviderDraftAction(actionSlug = '') {
@@ -74,8 +127,57 @@ function isProviderDraftAction(actionSlug = '') {
   return /DRAFT|SAVE.*DRAFT|CREATE.*DRAFT|UPDATE.*DRAFT/.test(slug);
 }
 
-export function composioActionPermission(actionSlug, userId) {
-  const mode = actionModeFromAgentOs(loadAgentOsProfile(userId));
+const ACTION_TOOLKIT_PREFIXES = [
+  ['LINKEDINADS_', 'linkedinads'],
+  ['GOOGLE_ANALYTICS_', 'google_analytics'],
+  ['GOOGLE_SEARCH_CONSOLE_', 'google_search_console'],
+  ['GOOGLESHEETS_', 'googlesheets'],
+  ['GOOGLEDOCS_', 'googledocs'],
+  ['GOOGLEDRIVE_', 'googledrive'],
+  ['METAADS_', 'metaads'],
+  ['GOOGLEADS_', 'googleads'],
+  ['GMAIL_', 'gmail'],
+  ['APOLLO_', 'apollo'],
+  ['HUNTER_', 'hunter'],
+  ['KLAVIYO_', 'klaviyo'],
+  ['WHATSAPP_', 'whatsapp'],
+  ['INSTANTLY_', 'instantly'],
+  ['HEYREACH_', 'heyreach'],
+  ['LINKEDIN_', 'linkedin'],
+  ['FACEBOOK_', 'facebook'],
+  ['INSTAGRAM_', 'instagram'],
+  ['TWITTER_', 'twitter'],
+  ['X_', 'twitter'],
+  ['YOUTUBE_', 'youtube'],
+  ['GITHUB_', 'github'],
+  ['WORDPRESS_', 'wordpress'],
+  ['WEBFLOW_', 'webflow'],
+  ['SHOPIFY_', 'shopify'],
+  ['WIX_', 'wix'],
+  ['MAILCHIMP_', 'mailchimp'],
+  ['SENDGRID_', 'sendgrid'],
+  ['MIXPANEL_', 'mixpanel'],
+  ['AMPLITUDE_', 'amplitude'],
+  ['SEMRUSH_', 'semrush'],
+  ['AHREFS_', 'ahrefs'],
+  ['SLACK_', 'slack'],
+  ['CUSTOM_APPSTORE_CONNECT_', 'custom_appstore_connect'],
+  ['CUSTOM_REVENUECAT_', 'custom_revenuecat'],
+  ['CUSTOM_FIREBASE_', 'custom_firebase'],
+  ['CUSTOM_GOOGLE_PLAY_CONSOLE_', 'custom_google_play_console'],
+  ['SUPABASE_', 'supabase'],
+  ['RAILWAY_', 'railway'],
+];
+
+export function resolveToolkitForAction(actionSlug = '', toolkitHint = null) {
+  if (toolkitHint) return TOOLKIT[String(toolkitHint).toLowerCase()] || String(toolkitHint).toLowerCase();
+  const slug = String(actionSlug || '').toUpperCase();
+  return ACTION_TOOLKIT_PREFIXES.find(([prefix]) => slug.startsWith(prefix))?.[1] || null;
+}
+
+export async function composioActionPermission(actionSlug, userId) {
+  const profile = (await loadAgentOsProfileAsync(userId)) || loadAgentOsProfile(userId);
+  const mode = actionModeFromAgentOs(profile);
   if (isReadOnlyComposioAction(actionSlug)) {
     return { allowed: true, mode, kind: 'read' };
   }
@@ -176,64 +278,29 @@ export async function getConnectedAccountApiKey(connectorId, userId) {
 }
 
 export async function executeComposioAction(actionSlug, args, userId, toolkitHint = null) {
-  const permission = composioActionPermission(actionSlug, userId);
+  const permission = await composioActionPermission(actionSlug, userId);
   if (!permission.allowed) {
     return { error: permission.error, code: 'action_mode_blocked', actionMode: permission.mode, action: actionSlug };
   }
   const key = apiKey();
   if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
-  const toolkit =
-    toolkitHint ||
-    (actionSlug.startsWith('GMAIL_')
-      ? 'gmail'
-      : actionSlug.startsWith('APOLLO_')
-        ? 'apollo'
-        : actionSlug.startsWith('WHATSAPP_')
-          ? 'whatsapp'
-          : actionSlug.startsWith('INSTANTLY_')
-            ? 'instantly'
-            : actionSlug.startsWith('HEYREACH_')
-              ? 'heyreach'
-              : actionSlug.startsWith('LINKEDIN_')
-                ? 'linkedin'
-                : actionSlug.startsWith('FACEBOOK_')
-                  ? 'facebook'
-                  : actionSlug.startsWith('INSTAGRAM_')
-                    ? 'instagram'
-                    : actionSlug.startsWith('TWITTER_') || actionSlug.startsWith('X_')
-                      ? 'twitter'
-                      : actionSlug.startsWith('YOUTUBE_')
-                        ? 'youtube'
-                      : actionSlug.startsWith('GITHUB_')
-                            ? 'github'
-                            : actionSlug.startsWith('METAADS_')
-                              ? 'metaads'
-                              : actionSlug.startsWith('GOOGLE_ANALYTICS_')
-                                ? 'google_analytics'
-                                : actionSlug.startsWith('GOOGLEADS_')
-                                  ? 'googleads'
-                                  : actionSlug.startsWith('GOOGLE_SEARCH_CONSOLE_')
-                                    ? 'google_search_console'
-                                    : actionSlug.startsWith('GOOGLESHEETS_')
-                                      ? 'googlesheets'
-                                      : actionSlug.startsWith('GOOGLEDOCS_')
-                                        ? 'googledocs'
-                                        : actionSlug.startsWith('GOOGLEDRIVE_')
-                                          ? 'googledrive'
-                            : actionSlug.startsWith('RAILWAY_')
-                              ? 'railway'
-                              : null);
+  const toolkit = resolveToolkitForAction(actionSlug, toolkitHint);
   try {
-    const connectedAccountId = await resolveConnectedAccountId(toolkit || 'gmail', userId);
+    const noAuthCustomMcp = ['custom_appstore_connect', 'custom_firebase', 'custom_google_play_console'].includes(toolkit);
+    const connectedAccountId = noAuthCustomMcp ? null : await resolveConnectedAccountId(toolkit || 'gmail', userId);
     const payload = {
-      connected_account_id: connectedAccountId,
       user_id: userId,
       arguments: args || {},
     };
+    if (connectedAccountId) payload.connected_account_id = connectedAccountId;
     if (['google_analytics', 'metaads', 'googleads', 'google_search_console', 'googlesheets', 'googledocs', 'googledrive'].includes(toolkit)) {
       payload.version = process.env.COMPOSIO_TOOLKIT_VERSION || 'latest';
     }
-    const res = await fetch(`${COMPOSIO_V3}/tools/execute/${actionSlug}`, {
+    // Supabase's read-only database actions are exposed on Composio v3.1.
+    // Keep account resolution on v3, but route Supabase execution through the
+    // endpoint that honors the database:read OAuth scope.
+    const executionBase = toolkit === 'supabase' ? COMPOSIO_V3_1 : COMPOSIO_V3;
+    const res = await fetch(`${executionBase}/tools/execute/${actionSlug}`, {
       method: 'POST',
       headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -253,15 +320,11 @@ export async function executeComposioAction(actionSlug, args, userId, toolkitHin
 }
 
 export async function executeComposioProxy({ toolkit, userId, method = 'POST', endpoint, body = null }) {
-  const proxyAction = `${String(method || 'POST').toUpperCase()}_${String(endpoint || '').split('?')[0]}`;
-  const mode = actionModeFromAgentOs(loadAgentOsProfile(userId));
-  const isRead = String(method || 'POST').toUpperCase() === 'GET';
-  const isDraftEndpoint = /draft/i.test(String(endpoint || ''));
-  if (!isRead && mode === 'draft_safe') {
-    return { error: `Connector proxy blocked by Draft-safe mode: ${proxyAction}`, code: 'action_mode_blocked', actionMode: mode };
-  }
-  if (!isRead && mode === 'live_drafts' && !isDraftEndpoint) {
-    return { error: `Connector proxy is not a draft endpoint: ${proxyAction}`, code: 'action_mode_blocked', actionMode: mode };
+  const profile = (await loadAgentOsProfileAsync(userId)) || loadAgentOsProfile(userId);
+  const mode = actionModeFromAgentOs(profile);
+  const permission = composioProxyPermission(method, endpoint, mode);
+  if (!permission.allowed) {
+    return { error: permission.error, code: 'action_mode_blocked', actionMode: mode };
   }
   const key = apiKey();
   if (!key) return { error: 'COMPOSIO_API_KEY not configured' };
